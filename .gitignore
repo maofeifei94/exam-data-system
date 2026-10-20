@@ -1,0 +1,25 @@
+# 依赖
+node_modules/
+
+# 前端构建产物
+frontend/dist/
+frontend/release/
+frontend/build/backend/
+
+# Rust 构建产物
+backend/target/
+
+# 运行时数据（数据库与临时文件）
+*.db
+*.db-shm
+*.db-wal
+backend/tmp_scores.csv
+
+# 构建日志
+*.log
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
