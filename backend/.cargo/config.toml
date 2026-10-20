@@ -1,5 +1,0 @@
-# 交叉编译到 Windows (x86_64-pc-windows-gnu) 所需的链接器配置。
-# 依赖 mingw-w64 工具链，产出可在 Win10 上直接运行的 .exe。
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
-ar = "x86_64-w64-mingw32-ar"
