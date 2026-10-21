@@ -126,7 +126,15 @@ function saveBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-export default function TemplatePage() {
+export default function TemplatePage({
+  initialScope = 'global',
+  initialTemplateId,
+  onSaved,
+}: {
+  initialScope?: 'global' | 'project';
+  initialTemplateId?: string;
+  onSaved?: (template: PdfTemplate) => void;
+}) {
   const { show } = useToast();
   const { currentProject, currentProjectId } = useProject();
 
@@ -137,7 +145,7 @@ export default function TemplatePage() {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [datasetId, setDatasetId] = useState('');
-  const [scope, setScope] = useState<'project' | 'global'>('global');
+  const [scope, setScope] = useState<'project' | 'global'>(initialScope);
 
   const [draft, setDraft] = useState<TemplateDraft>(EMPTY_DRAFT);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -149,11 +157,14 @@ export default function TemplatePage() {
   const page = pageSizeMm(draft.page);
   const scale = useMemo(() => {
     const s = Math.min((size.w - PAD * 2) / page.w, (size.h - PAD * 2) / page.h);
-    return Math.max(0.6, Math.min(4, s));
+    return Math.max(0.2, Math.min(4, s));
   }, [size, page.w, page.h]);
 
   const origin = useMemo(
-    () => ({ x: Math.max(PAD, (size.w - page.w * scale) / 2), y: PAD }),
+    () => ({
+      x: Math.max(PAD, (size.w - page.w * scale) / 2),
+      y: Math.max(PAD, (size.h - page.h * scale) / 2),
+    }),
     [size.w, page.w, scale, page.h, size.h],
   );
 
@@ -206,7 +217,9 @@ export default function TemplatePage() {
         );
         if (!active) return;
         setTemplates(list);
-        setDraft(list.length > 0 ? toDraft(list[0]) : { ...EMPTY_DRAFT, scope });
+        const preferred =
+          (initialTemplateId && list.find((item) => item.id === initialTemplateId)) || list[0];
+        setDraft(preferred ? toDraft(preferred) : { ...EMPTY_DRAFT, scope });
         setSelectedId(null);
       } catch (err) {
         show(err instanceof Error ? err.message : '加载模板列表失败', 'error');
@@ -552,6 +565,7 @@ export default function TemplatePage() {
         : await createPdfTemplate(payload);
       setDraft(toDraft(saved));
       await refreshTemplates();
+      onSaved?.(saved);
       show(scope === 'global' ? '已保存到全局模板库' : '已保存到本项目', 'success');
     } catch (err) {
       show(err instanceof Error ? err.message : '保存模板失败', 'error');

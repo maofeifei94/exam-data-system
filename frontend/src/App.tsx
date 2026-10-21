@@ -1,31 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
 import { getHealth } from './api/client';
 import { ProjectProvider, useProject } from './context/ProjectContext';
-import ProjectsPage from './pages/ProjectsPage';
-import DatasetsPage from './pages/DatasetsPage';
+import { desktop } from './lib/native';
+import ProjectFilesPage from './pages/ProjectFilesPage';
+import ProjectFlowPage from './pages/ProjectFlowPage';
 import ImportPage from './pages/ImportPage';
 import AliasPage from './pages/AliasPage';
-import FlowPage from './pages/FlowPage';
 import TemplatePage from './pages/TemplatePage';
+import { NewProjectDialog } from './components/NewProjectDialog';
 
-export type ViewKey = 'projects' | 'datasets' | 'import' | 'flows' | 'templates' | 'alias';
+export type ViewKey = 'files' | 'flow' | 'import' | 'alias' | 'templates';
 
 interface ViewMeta {
   key: ViewKey;
   label: string;
   icon: string;
-  hint: string;
 }
 
-// 活动栏图标：使用内联 SVG 路径（VS Code 风格单色图标）
-const VIEWS: ViewMeta[] = [
-  { key: 'projects', label: '考试项目', icon: 'folder', hint: '新建 / 切换考试项目' },
-  { key: 'datasets', label: '数据集', icon: 'table', hint: '本项目的数据集' },
-  { key: 'import', label: '数据导入', icon: 'import', hint: '导入并做字段映射' },
-  { key: 'flows', label: '处理流程', icon: 'flow', hint: '流程图式自定义处理流程' },
-  { key: 'templates', label: 'PDF 模板', icon: 'layout', hint: 'PPT 式参数化模板' },
-  { key: 'alias', label: '字段别名', icon: 'tag', hint: '标准字段与别名卡片' },
-];
+const VIEWS: Record<ViewKey, ViewMeta> = {
+  files: { key: 'files', label: '项目文件', icon: 'folder' },
+  flow: { key: 'flow', label: '项目流程', icon: 'flow' },
+  import: { key: 'import', label: '数据导入', icon: 'import' },
+  alias: { key: 'alias', label: '字段别名', icon: 'tag' },
+  templates: { key: 'templates', label: 'PDF 模板', icon: 'layout' },
+};
+
+/** 左侧边栏只保留两项：项目文件、项目流程。字段别名 / PDF 模板属于全局配置，从顶栏菜单进入。 */
+const SIDEBAR_VIEWS: ViewKey[] = ['files', 'flow'];
 
 const ICONS: Record<string, string> = {
   folder: 'M3 5.5A1.5 1.5 0 0 1 4.5 4h4l1.5 2H19a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 17H4.5A1.5 1.5 0 0 1 3 15.5z',
@@ -36,6 +37,8 @@ const ICONS: Record<string, string> = {
   tag: 'M3 12 12 3h7a2 2 0 0 1 2 2v7l-9 9zM16 7h.01',
   close: 'M5 5l14 14M19 5 5 19',
   dot: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
+  folderOpen: 'M3 7h6l2 2h8v9H3zM3 7V5h6l2 2',
+  refresh: 'M4 11a8 8 0 0 1 13.5-5.7L20 8M20 4v4h-4M20 13a8 8 0 0 1-13.5 5.7L4 16M4 20v-4h4',
 };
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -82,6 +85,54 @@ function useBackendStatus(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// 自定义标题栏：窗口控制按钮（无边框窗口）
+// ---------------------------------------------------------------------------
+
+function WindowControls() {
+  const api = desktop();
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    if (!api) return;
+    api.isMaximized().then(setMaximized).catch(() => undefined);
+    return api.onMaximizedChange(setMaximized);
+  }, [api]);
+
+  if (!api) return null;
+
+  return (
+    <div className="window-controls">
+      <button className="wc-btn" title="最小化" onClick={() => api.minimize()}>
+        <svg width="12" height="12" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+          <path d="M5 12h14" />
+        </svg>
+      </button>
+      <button
+        className="wc-btn"
+        title={maximized ? '还原' : '最大化'}
+        onClick={() => api.toggleMaximize()}
+      >
+        {maximized ? (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+            <rect x="5" y="9" width="10" height="10" />
+            <path d="M9 5h10v10" />
+          </svg>
+        ) : (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+            <rect x="5" y="5" width="14" height="14" />
+          </svg>
+        )}
+      </button>
+      <button className="wc-btn wc-close" title="关闭" onClick={() => api.close()}>
+        <svg width="12" height="12" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8">
+          <path d="M5 5l14 14M19 5 5 19" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 顶栏下拉菜单
 // ---------------------------------------------------------------------------
 
@@ -99,6 +150,7 @@ function MenuBar({
   onOpenView: (view: ViewKey) => void;
   onNewProject: () => void;
 }) {
+  const api = desktop();
   const { projects, currentProject, selectProject } = useProject();
   const [open, setOpen] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -117,24 +169,27 @@ function MenuBar({
   const menus: Record<string, MenuItem[]> = {
     文件: [
       { label: '新建考试项目…', onClick: onNewProject },
-      { label: '导入数据', onClick: () => onOpenView('import') },
+      { label: '数据导入…', onClick: () => onOpenView('import') },
       { separator: true, label: '' },
-      { label: '数据集', onClick: () => onOpenView('datasets') },
+      {
+        label: '在文件管理器中打开项目文件夹',
+        disabled: !currentProject?.folder,
+        onClick: () => currentProject && api?.openPath(currentProject.folder),
+      },
+      { separator: true, label: '' },
+      { label: '退出', disabled: !api, onClick: () => api?.close() },
     ],
     项目: projects.length
-      ? projects.map((p) => ({
-          label: `${p.id === currentProject?.id ? '● ' : '　'}${p.name}`,
-          onClick: () => selectProject(p.id),
+      ? projects.map((project) => ({
+          label: `${project.id === currentProject?.id ? '● ' : '　'}${project.name}`,
+          onClick: () => selectProject(project.id),
         }))
       : [{ label: '暂无项目，先新建一个', disabled: true }],
-    配置: [
+    全局配置: [
       { label: '字段别名管理', onClick: () => onOpenView('alias') },
-      { label: '处理流程库', onClick: () => onOpenView('flows') },
       { label: 'PDF 模板库', onClick: () => onOpenView('templates') },
-      { separator: true, label: '' },
-      { label: '考试项目设置', onClick: () => onOpenView('projects') },
     ],
-    帮助: [{ label: '关于本系统', disabled: true }],
+    帮助: [{ label: '考试数据处理系统 v0.1.0', disabled: true }],
   };
 
   return (
@@ -176,6 +231,8 @@ function MenuBar({
           ) : null}
         </div>
       ))}
+      <div className="menubar-fill" />
+      <WindowControls />
     </div>
   );
 }
@@ -184,26 +241,22 @@ function MenuBar({
 // 主外壳
 // ---------------------------------------------------------------------------
 
-function Workbench({
-  initialNewProject,
-  clearInitialNewProject,
-}: {
-  initialNewProject: boolean;
-  clearInitialNewProject: () => void;
-}) {
-  const { projects, currentProject, currentProjectId, selectProject, refresh, loading } = useProject();
+function Workbench() {
+  const api = desktop();
+  const { projects, currentProject, currentProjectId, selectProject, loading } = useProject();
   const connected = useBackendStatus();
 
-  const [tabs, setTabs] = useState<ViewKey[]>(['projects']);
-  const [active, setActive] = useState<ViewKey>('projects');
-  const [focusNewProject, setFocusNewProject] = useState(initialNewProject);
+  const [tabs, setTabs] = useState<ViewKey[]>(['files']);
+  const [active, setActive] = useState<ViewKey>('files');
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
 
+  // 首次启动且没有任何项目时，直接弹出「新建项目」窗口（IDE 常见行为）
   useEffect(() => {
-    if (initialNewProject) {
-      setFocusNewProject(true);
-      clearInitialNewProject();
+    if (!loading && projects.length === 0) {
+      setNewProjectOpen(true);
     }
-  }, [initialNewProject, clearInitialNewProject]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
   const openView = (view: ViewKey) => {
     setTabs((prev) => (prev.includes(view) ? prev : [...prev, view]));
@@ -212,54 +265,45 @@ function Workbench({
 
   const closeTab = (view: ViewKey) => {
     setTabs((prev) => {
-      const next = prev.filter((t) => t !== view);
+      const next = prev.filter((tab) => tab !== view);
       if (view === active) {
-        setActive(next[next.length - 1] ?? 'projects');
+        setActive(next[next.length - 1] ?? 'files');
       }
-      return next.length ? next : ['projects'];
+      return next.length ? next : ['files'];
     });
-  };
-
-  const openNewProject = () => {
-    setFocusNewProject(true);
-    openView('projects');
   };
 
   const renderView = (view: ViewKey) => {
     switch (view) {
-      case 'projects':
+      case 'files':
         return (
-          <ProjectsPage
-            autoOpenCreate={focusNewProject}
-            onCloseCreate={() => setFocusNewProject(false)}
-            onNavigate={(next) => openView(next)}
+          <ProjectFilesPage
+            onNewProject={() => setNewProjectOpen(true)}
+            onOpenImport={() => openView('import')}
+            onOpenFlow={() => openView('flow')}
           />
         );
-      case 'datasets':
-        return <DatasetsPage />;
+      case 'flow':
+        return <ProjectFlowPage />;
       case 'import':
         return <ImportPage onNavigate={(next) => openView(next)} />;
-      case 'flows':
-        return <FlowPage />;
-      case 'templates':
-        return <TemplatePage />;
       case 'alias':
         return <AliasPage />;
+      case 'templates':
+        return <TemplatePage />;
       default:
         return null;
     }
   };
 
-  const activeMeta = VIEWS.find((v) => v.key === active);
-
   return (
     <div className="vscode">
-      <MenuBar onOpenView={openView} onNewProject={openNewProject} />
+      <MenuBar onOpenView={openView} onNewProject={() => setNewProjectOpen(true)} />
 
-      {/* 项目选择器行 */}
+      {/* 项目切换工具条 */}
       <div className="toolbar">
         <label className="toolbar-select">
-          <span className="toolbar-label">考试项目</span>
+          <span className="toolbar-label">当前项目</span>
           <select
             value={currentProjectId}
             onChange={(event) => selectProject(event.target.value)}
@@ -275,51 +319,53 @@ function Workbench({
           </select>
         </label>
         {currentProject?.folder ? (
-          <span className="toolbar-path" title={currentProject.config_file}>
-            {currentProject.folder}
-          </span>
+          <button
+            className="toolbar-path toolbar-path-link"
+            title={`在文件管理器中打开：${currentProject.folder}`}
+            onClick={() => api?.openPath(currentProject.folder)}
+          >
+            <Icon name="folderOpen" size={14} />
+            <span>{currentProject.folder}</span>
+          </button>
         ) : (
           <span className="toolbar-path muted">未指定项目文件夹</span>
         )}
-        <button className="btn btn-sm" onClick={openNewProject}>
-          ＋ 新建考试项目
+        <div className="toolbar-fill" />
+        <button className="btn btn-sm" onClick={() => setNewProjectOpen(true)}>
+          ＋ 新建项目
         </button>
       </div>
 
       <div className="workbench">
-        {/* 活动栏 */}
+        {/* 左侧边栏：只保留项目文件 / 项目流程 */}
         <aside className="activitybar">
-          {VIEWS.map((view) => (
-            <button
-              key={view.key}
-              className={`activity-item ${active === view.key ? 'active' : ''}`}
-              onClick={() => openView(view.key)}
-              title={view.hint}
-            >
-              <Icon name={view.icon} size={22} />
-              <span className="activity-label">{view.label}</span>
-            </button>
-          ))}
-          <div className="activity-spacer" />
-          <button className="activity-item" onClick={() => refresh()} title="刷新项目列表">
-            <Icon name="dot" size={18} />
-            <span className="activity-label">刷新</span>
-          </button>
+          {SIDEBAR_VIEWS.map((view) => {
+            const meta = VIEWS[view];
+            return (
+              <button
+                key={view}
+                className={`activity-item ${active === view ? 'active' : ''}`}
+                onClick={() => openView(view)}
+              >
+                <Icon name={meta.icon} size={22} />
+                <span className="activity-label">{meta.label}</span>
+              </button>
+            );
+          })}
         </aside>
 
-        {/* 编辑器区 */}
         <section className="editor">
           <div className="tabbar">
             {tabs.map((view) => {
-              const meta = VIEWS.find((v) => v.key === view);
+              const meta = VIEWS[view];
               return (
                 <div
                   key={view}
                   className={`tab ${active === view ? 'active' : ''}`}
                   onClick={() => setActive(view)}
                 >
-                  <Icon name={meta?.icon ?? 'dot'} size={14} />
-                  <span className="tab-label">{meta?.label ?? view}</span>
+                  <Icon name={meta.icon} size={14} />
+                  <span className="tab-label">{meta.label}</span>
                   <button
                     className="tab-close"
                     title="关闭"
@@ -336,41 +382,30 @@ function Workbench({
             <div className="tabbar-fill" />
           </div>
           <div className="editor-content">
-            <div className="breadcrumb">
-              <span>{currentProject ? currentProject.name : '全部数据'}</span>
-              <span className="breadcrumb-sep">›</span>
-              <span className="breadcrumb-current">{activeMeta?.label}</span>
-            </div>
             <div className="editor-scroll">{renderView(active)}</div>
           </div>
         </section>
       </div>
 
-      {/* 状态栏 */}
       <footer className="statusbar">
         <span className="status-item">
           <span className={`status-dot ${connected ? 'ok' : 'down'}`} />
           {connected ? '后端已连接' : '后端未连接'}
         </span>
-        <span className="status-item">
-          项目：{currentProject?.name ?? '全部数据'}
-        </span>
+        <span className="status-item">项目：{currentProject?.name ?? '全部数据'}</span>
         <span className="status-spacer" />
-        <span className="status-item">考试数据处理系统</span>
+        <span className="status-item">{VIEWS[active].label}</span>
       </footer>
+
+      <NewProjectDialog open={newProjectOpen} onClose={() => setNewProjectOpen(false)} />
     </div>
   );
 }
 
 export default function App() {
-  const [initialNewProject, setInitialNewProject] = useState(false);
-
   return (
     <ProjectProvider>
-      <Workbench
-        initialNewProject={initialNewProject}
-        clearInitialNewProject={() => setInitialNewProject(false)}
-      />
+      <Workbench />
     </ProjectProvider>
   );
 }

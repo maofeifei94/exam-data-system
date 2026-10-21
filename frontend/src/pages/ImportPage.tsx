@@ -26,7 +26,13 @@ function matchedBadge(suggestion: ColumnSuggestion): { className: string; text: 
   }
 }
 
-export default function ImportPage({ onNavigate }: { onNavigate?: (view: ViewKey) => void }) {
+interface Props {
+  onNavigate?: (view: ViewKey) => void;
+  /** 映射应用完成后的回调（在项目流程的「数据导入」节点内嵌使用时，用于自动绑定数据集） */
+  onImported?: (dataset: Dataset) => void;
+}
+
+export default function ImportPage({ onNavigate, onImported }: Props) {
   const { show } = useToast();
   const { currentProject, currentProjectId } = useProject();
   const [file, setFile] = useState<File | null>(null);
@@ -84,6 +90,7 @@ export default function ImportPage({ onNavigate }: { onNavigate?: (view: ViewKey
       setAppliedDataset(dataset);
       setAppliedRows(await getDatasetRows(dataset.id, 0, 100));
       show('映射已应用', 'success');
+      onImported?.(dataset);
     } catch (err) {
       show(err instanceof Error ? err.message : '应用映射失败', 'error');
     } finally {
@@ -228,8 +235,8 @@ export default function ImportPage({ onNavigate }: { onNavigate?: (view: ViewKey
           />
           <div className="link-row">
             {onNavigate ? (
-              <button className="link" onClick={() => onNavigate('flows')}>
-                前往处理流程 →
+              <button className="link" onClick={() => onNavigate('flow')}>
+                前往项目流程 →
               </button>
             ) : null}
           </div>

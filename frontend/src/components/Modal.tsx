@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { DialogWindow } from './DialogWindow';
 
 export interface ModalProps {
   open: boolean;
@@ -9,24 +10,12 @@ export interface ModalProps {
   footer?: ReactNode;
 }
 
+/** 兼容旧调用：统一改用窗口式对话框，保持桌面软件的窗口外观。 */
 export function Modal({ open, title, children, onClose, width = 520, footer }: ModalProps) {
-  if (!open) {
-    return null;
-  }
-
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ width }} onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <h3>{title}</h3>
-          <button className="icon-btn" onClick={onClose} aria-label="关闭">
-            ✕
-          </button>
-        </div>
-        <div className="modal-body">{children}</div>
-        {footer ? <div className="modal-footer">{footer}</div> : null}
-      </div>
-    </div>
+    <DialogWindow open={open} title={title ?? ''} onClose={onClose} width={width} footer={footer}>
+      {children}
+    </DialogWindow>
   );
 }
 

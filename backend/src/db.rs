@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS exam_projects (
     config_file    TEXT NOT NULL DEFAULT '',
     flow_id        TEXT NOT NULL DEFAULT '',
     pdf_template_id TEXT NOT NULL DEFAULT '',
+    dataset_id     TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
 );
@@ -39,11 +40,21 @@ CREATE TABLE IF NOT EXISTS dataset_columns (
     PRIMARY KEY (dataset_id, idx)
 );
 
+-- 字段分组：字段别名页按分组展示卡片，避免一屏几十张卡片混在一起
+CREATE TABLE IF NOT EXISTS field_groups (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS standard_fields (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     label       TEXT NOT NULL DEFAULT '',
     dtype       TEXT NOT NULL DEFAULT 'text',
+    precision   INTEGER NOT NULL DEFAULT 2,
+    group_id    TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     system      INTEGER NOT NULL DEFAULT 0
 );
@@ -122,6 +133,9 @@ pub fn init(conn: &Connection) -> Result<()> {
 fn migrate(conn: &Connection) -> Result<()> {
     let columns: &[(&str, &str, &str)] = &[
         ("datasets", "project_id", "TEXT NOT NULL DEFAULT ''"),
+        ("exam_projects", "dataset_id", "TEXT NOT NULL DEFAULT ''"),
+        ("standard_fields", "precision", "INTEGER NOT NULL DEFAULT 2"),
+        ("standard_fields", "group_id", "TEXT NOT NULL DEFAULT ''"),
         ("flows", "scope", "TEXT NOT NULL DEFAULT 'global'"),
         ("flows", "project_id", "TEXT NOT NULL DEFAULT ''"),
         ("flows", "source_id", "TEXT NOT NULL DEFAULT ''"),
@@ -149,31 +163,47 @@ fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> Resul
 /// 初始化标准字段字典 / 别名映射 / 示例流程 / 示例 PDF 模板。
 /// 全部使用 INSERT OR IGNORE，用户可以自由修改而不会被覆盖。
 fn seed(conn: &Connection) -> Result<()> {
-    let fields: &[(&str, &str, &str, &str)] = &[
-        ("身份证号", "身份证号", "text", "考生唯一标识，必填"),
-        ("姓名", "姓名", "text", "考生姓名"),
-        ("准考证号", "准考证号", "text", "准考证编号"),
-        ("性别", "性别", "text", ""),
-        ("手机号", "手机号", "text", ""),
-        ("报考岗位", "报考岗位", "text", "招聘岗位名称"),
-        ("考场", "考场", "text", "考场编号"),
-        ("座位号", "座位号", "text", "考场内座位号"),
-        ("笔试成绩", "笔试成绩", "number", "笔试原始分"),
-        ("面试成绩", "面试成绩", "number", "面试原始分"),
-        ("总成绩", "总成绩", "number", "加权后的综合成绩"),
-        ("排名", "排名", "number", "按总成绩排名"),
-        ("照片", "照片", "image", "考生照片文件路径或文件名"),
-        ("出生日期", "出生日期", "date", ""),
-        ("学历", "学历", "text", ""),
-        ("毕业院校", "毕业院校", "text", ""),
-        ("专业", "专业", "text", ""),
-        ("体检结果", "体检结果", "text", ""),
+    // 字段分组：让「字段别名」页按业务域分区展示
+    let groups: &[(&str, &str, i64)] = &[
+        ("grp_identity", "身份信息", 10),
+        ("grp_score", "成绩", 20),
+        ("grp_exam", "考务安排", 30),
     ];
-    for (name, label, dtype, desc) in fields {
+    for (id, name, sort_order) in groups {
         conn.execute(
-            "INSERT OR IGNORE INTO standard_fields (id, name, label, dtype, description, system)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
-            rusqlite::params![new_id(), name, label, dtype, desc],
+            "INSERT OR IGNORE INTO field_groups (id, name, sort_order, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, name, sort_order, now()],
+        )?;
+    }
+
+    // (标准名, 显示标签, 数据类型, 小数精度, 所属分组, 描述)
+    let fields: &[(&str, &str, &str, i64, &str, &str)] = &[
+        ("身份证号", "身份证号", "text", 0, "grp_identity", "考生唯一标识，必填"),
+        ("姓名", "姓名", "text", 0, "grp_identity", "考生姓名"),
+        ("准考证号", "准考证号", "text", 0, "grp_identity", "准考证编号"),
+        ("性别", "性别", "text", 0, "grp_identity", ""),
+        ("手机号", "手机号", "text", 0, "grp_identity", ""),
+        ("照片", "照片", "image", 0, "grp_identity", "考生照片文件路径或文件名"),
+        ("出生日期", "出生日期", "date", 0, "grp_identity", ""),
+        ("学历", "学历", "text", 0, "grp_identity", ""),
+        ("毕业院校", "毕业院校", "text", 0, "grp_identity", ""),
+        ("专业", "专业", "text", 0, "grp_identity", ""),
+        ("笔试成绩", "笔试成绩", "decimal", 2, "grp_score", "笔试原始分"),
+        ("面试成绩", "面试成绩", "decimal", 2, "grp_score", "面试原始分"),
+        ("总成绩", "总成绩", "decimal", 2, "grp_score", "加权后的综合成绩"),
+        ("排名", "排名", "integer", 0, "grp_score", "按总成绩排名"),
+        ("报考岗位", "报考岗位", "text", 0, "grp_exam", "招聘岗位名称"),
+        ("考场", "考场", "text", 0, "grp_exam", "考场编号"),
+        ("座位号", "座位号", "integer", 0, "grp_exam", "考场内座位号"),
+        ("体检结果", "体检结果", "text", 0, "grp_exam", ""),
+    ];
+    for (name, label, dtype, precision, group_id, desc) in fields {
+        conn.execute(
+            "INSERT OR IGNORE INTO standard_fields
+               (id, name, label, dtype, precision, group_id, description, system)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+            rusqlite::params![new_id(), name, label, dtype, precision, group_id, desc],
         )?;
     }
 

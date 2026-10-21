@@ -1,7 +1,27 @@
 // 考试数据处理系统 —— 后端 API 类型定义
 // 对应后端 base http://127.0.0.1:8710, 前缀 /api
 
-export type ColumnDtype = 'text' | 'number' | 'date' | 'image';
+/** 字段数据类型，参考 Excel 的数值/日期分类：整数与小数分开，小数带精度 */
+export type ColumnDtype =
+  | 'text'
+  | 'integer'
+  | 'decimal'
+  | 'percent'
+  | 'date'
+  | 'datetime'
+  | 'boolean'
+  | 'image';
+
+/** 需要「精度（保留小数位）」的类型 */
+export const PRECISION_DTYPES: ColumnDtype[] = ['decimal', 'percent'];
+
+/** 兼容后端历史数据里把数值统一记成 number 的情况 */
+export function normalizeDtype(dtype: string | undefined): ColumnDtype {
+  if (!dtype || dtype === 'number') {
+    return dtype === 'number' ? 'decimal' : 'text';
+  }
+  return dtype as ColumnDtype;
+}
 
 export interface DatasetColumn {
   name: string;
@@ -31,6 +51,8 @@ export interface ExamProject {
   config_file: string;
   flow_id: string;
   pdf_template_id: string;
+  /** 项目流程「数据导入」节点绑定的数据集 */
+  dataset_id: string;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +63,7 @@ export interface ExamProjectInput {
   folder?: string;
   flow_id?: string;
   pdf_template_id?: string;
+  dataset_id?: string;
 }
 
 /** global = 全局库；project = 某考试项目的本地副本 */
@@ -56,6 +79,10 @@ export interface StandardField {
   name: string;
   label: string;
   dtype: ColumnDtype;
+  /** 小数类型的精度（保留小数位） */
+  precision: number;
+  /** 所属字段分组；空字符串表示未分组 */
+  group_id: string;
   description: string;
   system: boolean;
 }
@@ -64,7 +91,20 @@ export interface StandardFieldInput {
   name: string;
   label: string;
   dtype: ColumnDtype;
+  precision?: number;
+  group_id?: string;
   description: string;
+}
+
+export interface FieldGroup {
+  id: string;
+  name: string;
+  sort_order: number;
+}
+
+export interface FieldGroupInput {
+  name: string;
+  sort_order?: number;
 }
 
 export interface AliasMapping {

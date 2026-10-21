@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -11,6 +11,7 @@ const BACKEND_PORT = process.env.EXAM_PORT || '8710';
 const BACKEND_HOST = '127.0.0.1';
 
 let backendProcess = null;
+let mainWindow = null;
 
 /**
  * 打包运行时拉起随包发布的后端可执行文件。
@@ -88,15 +89,32 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 1100,
-    minHeight: 700,
+    minWidth: 1024,
+    minHeight: 640,
     title: '考试数据处理系统',
+    // 无边框窗口：标题栏与窗口按钮由渲染进程自绘，像原生桌面软件而不是网页
+    frame: false,
+    show: false,
+    backgroundColor: '#f4f6f9',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+
+  mainWindow = win;
+
+  // 避免白屏闪烁：等首帧准备好再显示
+  win.once('ready-to-show', () => win.show());
+
+  const notifyMaximized = () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('window:maximized-changed', win.isMaximized());
+    }
+  };
+  win.on('maximize', notifyMaximized);
+  win.on('unmaximize', notifyMaximized);
 
   // Open external links in the user's default browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -114,7 +132,86 @@ function createWindow() {
   return win;
 }
 
+// ---------------------------------------------------------------------------
+// 无边框窗口控制 + 系统原生对话框（渲染进程通过 preload 暴露的 API 调用）
+// ---------------------------------------------------------------------------
+
+function registerIpc() {
+  ipcMain.handle('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
+  });
+
+  ipcMain.handle('window:toggle-maximize', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return false;
+    if (win.isMaximized()) {
+      win.unmaximize();
+    } else {
+      win.maximize();
+    }
+    return win.isMaximized();
+  });
+
+  ipcMain.handle('window:close', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
+
+  ipcMain.handle('window:is-maximized', (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false;
+  });
+
+  // 选择项目文件夹：弹出系统文件夹选择窗口
+  ipcMain.handle('dialog:select-folder', async (event, defaultPath) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择项目文件夹',
+      defaultPath: typeof defaultPath === 'string' && defaultPath ? defaultPath : undefined,
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: '选择此文件夹',
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  // 选择要导入的数据文件：弹出系统文件选择窗口
+  ipcMain.handle('dialog:select-file', async (event, options) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const opts = options && typeof options === 'object' ? options : {};
+    const result = await dialog.showOpenDialog(win, {
+      title: opts.title || '选择文件',
+      properties: ['openFile'],
+      filters: opts.filters || [
+        { name: '表格文件', extensions: ['xlsx', 'xls', 'csv'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  // 导出文件时选择保存位置
+  ipcMain.handle('dialog:save-file', async (event, options) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const opts = options && typeof options === 'object' ? options : {};
+    const result = await dialog.showSaveDialog(win, {
+      title: opts.title || '保存文件',
+      defaultPath: opts.defaultPath || undefined,
+      filters: opts.filters,
+    });
+    if (result.canceled || !result.filePath) return null;
+    return result.filePath;
+  });
+
+  // 在系统文件管理器中打开某个目录
+  ipcMain.handle('shell:open-path', async (_event, target) => {
+    if (typeof target !== 'string' || !target) return false;
+    const err = await shell.openPath(target);
+    return err === '';
+  });
+}
+
 app.whenReady().then(async () => {
+  registerIpc();
   startBackend();
   await waitForBackend();
   createWindow();

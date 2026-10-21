@@ -32,6 +32,11 @@ pub fn router() -> Router<Arc<AppState>> {
             "/api/standard-fields/:id",
             put(fields::update_standard).delete(fields::delete_standard),
         )
+        .route("/api/field-groups", get(fields::list_groups).post(fields::create_group))
+        .route(
+            "/api/field-groups/:id",
+            put(fields::update_group).delete(fields::delete_group),
+        )
         .route("/api/aliases", get(fields::list_aliases).post(fields::save_aliases))
         .route("/api/aliases/:id", delete(fields::delete_alias))
         .route("/api/aliases/suggest", post(fields::suggest))

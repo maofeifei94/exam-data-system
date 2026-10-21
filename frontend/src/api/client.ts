@@ -6,6 +6,8 @@ import type {
   DuplicateInput,
   ExamProject,
   ExamProjectInput,
+  FieldGroup,
+  FieldGroupInput,
   Flow,
   FlowInput,
   FlowRun,
@@ -147,6 +149,32 @@ export function updateStandardField(id: string, input: StandardFieldInput): Prom
 
 export function deleteStandardField(id: string): Promise<OkResponse> {
   return request<OkResponse>(`/api/standard-fields/${id}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// 字段分组 Field Groups
+// ---------------------------------------------------------------------------
+
+export function listFieldGroups(): Promise<FieldGroup[]> {
+  return request<FieldGroup[]>('/api/field-groups');
+}
+
+export function createFieldGroup(input: FieldGroupInput): Promise<FieldGroup> {
+  return request<FieldGroup>('/api/field-groups', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateFieldGroup(id: string, input: FieldGroupInput): Promise<FieldGroup> {
+  return request<FieldGroup>(`/api/field-groups/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteFieldGroup(id: string): Promise<OkResponse> {
+  return request<OkResponse>(`/api/field-groups/${id}`, { method: 'DELETE' });
 }
 
 // ---------------------------------------------------------------------------

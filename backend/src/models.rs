@@ -35,6 +35,8 @@ pub struct ExamProject {
     pub config_file: String,
     pub flow_id: String,
     pub pdf_template_id: String,
+    /// 项目流程「数据导入」节点绑定的数据集
+    pub dataset_id: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -50,6 +52,8 @@ pub struct ExamProjectInput {
     pub flow_id: String,
     #[serde(default)]
     pub pdf_template_id: String,
+    #[serde(default)]
+    pub dataset_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +99,9 @@ pub struct StandardField {
     pub name: String,
     pub label: String,
     pub dtype: String,
+    /// 小数类型的精度（保留小数位）；非小数类型该值无意义
+    pub precision: i64,
+    pub group_id: String,
     pub description: String,
     pub system: bool,
 }
@@ -107,11 +114,29 @@ pub struct StandardFieldInput {
     #[serde(default = "default_dtype")]
     pub dtype: String,
     #[serde(default)]
+    pub precision: Option<i64>,
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
     pub description: String,
 }
 
 fn default_dtype() -> String {
     "text".to_string()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldGroup {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FieldGroupInput {
+    pub name: String,
+    #[serde(default)]
+    pub sort_order: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

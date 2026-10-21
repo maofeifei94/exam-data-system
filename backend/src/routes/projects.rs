@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// 每个考试项目在指定文件夹下写出一个配置文件，记录它引用哪套数据处理流程与 PDF 模板。
 pub const CONFIG_FILE_NAME: &str = "exam-project.json";
 
-const PROJ_COLS: &str = "id, name, description, folder, config_file, flow_id, pdf_template_id, created_at, updated_at";
+const PROJ_COLS: &str = "id, name, description, folder, config_file, flow_id, pdf_template_id, dataset_id, created_at, updated_at";
 
 fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<ExamProject> {
     Ok(ExamProject {
@@ -24,8 +24,9 @@ fn row_to_project(r: &rusqlite::Row<'_>) -> rusqlite::Result<ExamProject> {
         config_file: r.get(4)?,
         flow_id: r.get(5)?,
         pdf_template_id: r.get(6)?,
-        created_at: r.get(7)?,
-        updated_at: r.get(8)?,
+        dataset_id: r.get(7)?,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
     })
 }
 
@@ -42,6 +43,7 @@ struct ConfigFile {
     description: String,
     flow_id: String,
     pdf_template_id: String,
+    dataset_id: String,
     updated_at: String,
 }
 
@@ -61,6 +63,7 @@ fn write_config(project: &ExamProject) -> AppResult<String> {
         description: project.description.clone(),
         flow_id: project.flow_id.clone(),
         pdf_template_id: project.pdf_template_id.clone(),
+        dataset_id: project.dataset_id.clone(),
         updated_at: project.updated_at.clone(),
     };
     let text = serde_json::to_string_pretty(&content)?;
@@ -102,6 +105,7 @@ pub async fn create(
         config_file: String::new(),
         flow_id: input.flow_id,
         pdf_template_id: input.pdf_template_id,
+        dataset_id: input.dataset_id,
         created_at: ts.clone(),
         updated_at: ts,
     };
@@ -111,8 +115,8 @@ pub async fn create(
     let conn = state.lock()?;
     conn.execute(
         "INSERT INTO exam_projects
-           (id, name, description, folder, config_file, flow_id, pdf_template_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+           (id, name, description, folder, config_file, flow_id, pdf_template_id, dataset_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
         params![
             project.id,
             project.name,
@@ -121,6 +125,7 @@ pub async fn create(
             project.config_file,
             project.flow_id,
             project.pdf_template_id,
+            project.dataset_id,
             project.created_at
         ],
     )?;
@@ -143,13 +148,15 @@ pub async fn update(
     project.folder = input.folder.trim().to_string();
     project.flow_id = input.flow_id;
     project.pdf_template_id = input.pdf_template_id;
+    project.dataset_id = input.dataset_id;
     project.updated_at = now();
     project.config_file = write_config(&project)?;
 
     conn.execute(
         "UPDATE exam_projects
-         SET name = ?1, description = ?2, folder = ?3, config_file = ?4, flow_id = ?5, pdf_template_id = ?6, updated_at = ?7
-         WHERE id = ?8",
+         SET name = ?1, description = ?2, folder = ?3, config_file = ?4, flow_id = ?5,
+             pdf_template_id = ?6, dataset_id = ?7, updated_at = ?8
+         WHERE id = ?9",
         params![
             project.name,
             project.description,
@@ -157,6 +164,7 @@ pub async fn update(
             project.config_file,
             project.flow_id,
             project.pdf_template_id,
+            project.dataset_id,
             project.updated_at,
             id
         ],
