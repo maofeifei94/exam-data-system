@@ -71,6 +71,8 @@ export default function AliasPage() {
   const [groups, setGroups] = useState<FieldGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  /** 分组筛选：null=全部；''=未分组；其它为分组 id */
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -155,6 +157,14 @@ export default function AliasPage() {
     }
     return [...buckets.entries()];
   }, [searchedCards, groups]);
+
+  /** 点击分组总览矩形后只看该组；再次点击恢复全部。 */
+  const visibleSections = useMemo(
+    () => (activeGroup === null ? sections : sections.filter(([key]) => key === activeGroup)),
+    [sections, activeGroup],
+  );
+
+  const totalCount = searchedCards.length;
 
   // ------------------------- 字段：保存与拖拽 -------------------------
 
@@ -374,12 +384,26 @@ export default function AliasPage() {
 
       <div className="group-bar">
         <span className="group-bar-label">分组</span>
+        <button
+          type="button"
+          className={`group-chip ${activeGroup === null ? 'active' : ''}`}
+          onClick={() => setActiveGroup(null)}
+        >
+          全部 <span className="group-count">{totalCount}</span>
+        </button>
         {sections.map(([key, list]) => (
-          <span key={key || 'ungrouped'} className="group-chip static">
+          <button
+            key={key || 'ungrouped'}
+            type="button"
+            className={`group-chip ${activeGroup === key ? 'active' : ''}`}
+            onClick={() => setActiveGroup((prev) => (prev === key ? null : key))}
+          >
             {key ? groupName(key) : '未分组'} <span className="group-count">{list.length}</span>
-          </span>
+          </button>
         ))}
-        <span className="group-bar-hint">拖动卡片到目标分组即可归档</span>
+        <span className="group-bar-hint">
+          {activeGroup === null ? '拖动卡片到目标分组即可归档' : '再次点击分组恢复全部'}
+        </span>
       </div>
 
       {loading ? (
@@ -393,7 +417,7 @@ export default function AliasPage() {
         </div>
       ) : (
         <div className="page-body">
-          {sections.map(([key, list]) => {
+          {visibleSections.map(([key, list]) => {
             const group = groups.find((item) => item.id === key);
             return (
               <section
@@ -446,30 +470,25 @@ export default function AliasPage() {
                         />
                       </div>
                       <div className="alias-card-meta">
-                        <InlineSelect
-                          value={newField.dtype}
-                          options={dtypeOptions}
-                          onChange={(value) =>
-                            setNewField((prev) => (prev ? { ...prev, dtype: value as ColumnDtype } : prev))
-                          }
-                        />
-                        {PRECISION_DTYPES.includes(newField.dtype) ? (
-                          <label className="alias-precision">
-                            小数位
-                            <input
-                              type="number"
-                              min={0}
-                              max={10}
+                        <div className="alias-type-combo">
+                          <InlineSelect
+                            value={newField.dtype}
+                            options={dtypeOptions}
+                            onChange={(value) =>
+                              setNewField((prev) => (prev ? { ...prev, dtype: value as ColumnDtype } : prev))
+                            }
+                          />
+                          {PRECISION_DTYPES.includes(newField.dtype) ? (
+                            <PrecisionInput
                               value={newField.precision}
-                              onChange={(event) =>
-                                setNewField((prev) =>
-                                  prev ? { ...prev, precision: Number(event.target.value) || 0 } : prev,
-                                )
+                              onChange={(value) =>
+                                setNewField((prev) => (prev ? { ...prev, precision: value } : prev))
                               }
                             />
-                          </label>
-                        ) : null}
+                          ) : null}
+                        </div>
                         <InlineSelect
+                          variant="group"
                           value={newField.groupId}
                           options={groupOptions}
                           onChange={(value) =>
@@ -538,33 +557,28 @@ export default function AliasPage() {
 
                       {card.field ? (
                         <div className="alias-card-meta">
-                          <InlineSelect
-                            value={normalizeDtype(card.field.dtype)}
-                            options={dtypeOptions}
-                            onChange={(value) => saveField(card.field!, { dtype: value as ColumnDtype })}
-                          />
-                          {PRECISION_DTYPES.includes(normalizeDtype(card.field.dtype)) ? (
-                            <label className="alias-precision">
-                              小数位
-                              <input
-                                type="number"
-                                min={0}
-                                max={10}
+                          <div className="alias-type-combo">
+                            <InlineSelect
+                              value={normalizeDtype(card.field.dtype)}
+                              options={dtypeOptions}
+                              onChange={(value) => saveField(card.field!, { dtype: value as ColumnDtype })}
+                            />
+                            {PRECISION_DTYPES.includes(normalizeDtype(card.field.dtype)) ? (
+                              <PrecisionInput
                                 value={card.field.precision ?? 2}
-                                onChange={(event) =>
+                                onChange={(value) =>
                                   setFields((prev) =>
                                     prev.map((item) =>
-                                      item.id === card.field!.id
-                                        ? { ...item, precision: Number(event.target.value) || 0 }
-                                        : item,
+                                      item.id === card.field!.id ? { ...item, precision: value } : item,
                                     ),
                                   )
                                 }
-                                onBlur={() => saveField(card.field!, { precision: card.field!.precision })}
+                                onCommit={(value) => saveField(card.field!, { precision: value })}
                               />
-                            </label>
-                          ) : null}
+                            ) : null}
+                          </div>
                           <InlineSelect
+                            variant="group"
                             value={card.field.group_id ?? ''}
                             options={groupOptions}
                             onChange={(value) => saveField(card.field!, { group_id: value })}
@@ -582,6 +596,7 @@ export default function AliasPage() {
                         ) : (
                           card.aliases.map((alias) => (
                             <span key={alias.id} className="alias-chip">
+                              <span className="alias-chip-prefix">别名：</span>
                               {alias.alias}
                               <button
                                 className="alias-chip-remove"
@@ -667,9 +682,55 @@ interface InlineSelectProps {
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
   title?: string;
+  /** dtype=数据类型（蓝色），group=分组（琥珀色），两者圆角更小以区别于别名胶囊 */
+  variant?: 'dtype' | 'group';
 }
 
-function InlineSelect({ value, options, onChange, title }: InlineSelectProps) {
+/** 小数位：纯键盘输入，隐藏上下调节按钮，并与数据类型放在同一个控件框内。 */
+function PrecisionInput({
+  value,
+  onChange,
+  onCommit,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  onCommit?: (value: number) => void;
+}) {
+  const [text, setText] = useState(String(value ?? 2));
+  const current = useRef(value);
+
+  useEffect(() => {
+    setText(String(value ?? 2));
+    current.current = value;
+  }, [value]);
+
+  const apply = (raw: string) => {
+    const digits = raw.replace(/[^\d]/g, '').slice(0, 2);
+    const next = digits === '' ? 0 : Math.min(10, Number(digits));
+    setText(digits);
+    current.current = next;
+    onChange(next);
+  };
+
+  return (
+    <label className="alias-precision" title="保留小数位">
+      <span>小数位</span>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={text}
+        onChange={(event) => apply(event.target.value)}
+        onBlur={() => onCommit?.(current.current)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur();
+          if (event.key === 'Escape') setText(String(value ?? 2));
+        }}
+      />
+    </label>
+  );
+}
+
+function InlineSelect({ value, options, onChange, title, variant = 'dtype' }: InlineSelectProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
@@ -723,7 +784,7 @@ function InlineSelect({ value, options, onChange, title }: InlineSelectProps) {
       <button
         type="button"
         ref={triggerRef}
-        className="alias-select-trigger"
+        className={`alias-select-trigger alias-select-trigger--${variant}`}
         title={title}
         onClick={() => setOpen((prev) => !prev)}
       >

@@ -294,7 +294,7 @@ function Workbench() {
 
       {/* 项目切换工具条 */}
       <div className="toolbar">
-        <label className="toolbar-select">
+        <div className="toolbar-select">
           <span className="toolbar-label">当前项目</span>
           <Select
             size="small"
@@ -303,12 +303,11 @@ function Workbench() {
             onChange={(value) => selectProject(value)}
             disabled={loading}
             options={[
-              ...(projects.length === 0 ? [{ value: '', label: '（暂无项目）' }] : []),
-              { value: '', label: '全部数据（不限定项目）' },
+              { value: '', label: projects.length === 0 ? '（暂无项目，显示全部数据）' : '全部数据（不限定项目）' },
               ...projects.map((project) => ({ value: project.id, label: project.name })),
             ]}
           />
-        </label>
+        </div>
         {currentProject?.folder ? (
           <button
             className="toolbar-path toolbar-path-link"

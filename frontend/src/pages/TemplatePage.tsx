@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { App, Group, Rect, Text } from 'leafer-ui';
 import {
   createPdfTemplate,
@@ -25,14 +26,34 @@ import { Spinner } from '../components/Spinner';
 import { TokenEditor } from '../components/TokenEditor';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import {
+  DEFAULT_MATRIX,
+  appendChild,
+  contentSizeMm,
+  createElement,
+  elementIcon,
+  elementLabel,
+  findElement,
+  findPath,
+  isContainer,
+  normalizeTemplate,
+  pageSizeMm,
+  removeElement,
+  round1,
+  updateElement,
+  walkElements,
+} from '../lib/templateModel';
+import type { ElementType } from '../lib/templateModel';
 import { fieldColor, hexToRgba, splitTemplateTokens } from '../lib/tokens';
 
 const MM_PER_PT = 0.352778;
-const PAD = 22;
+const PAD = 34;
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 8;
 
-type ElementType = TemplateElement['type'];
-
-type Selection = { type: 'page' } | { type: 'matrix' } | { type: 'element'; id: string } | null;
+type Tool = 'select' | 'hand';
+type Selection = { type: 'page' } | { type: 'element'; id: string };
+type InsertTarget = 'container' | 'page';
 
 interface TemplateDraft {
   id: string | null;
@@ -40,9 +61,14 @@ interface TemplateDraft {
   kind: 'single' | 'matrix';
   description: string;
   page: PageSetup;
-  matrix: MatrixSetup;
   elements: TemplateElement[];
   scope: 'global' | 'project';
+}
+
+interface ViewState {
+  zoom: number;
+  panX: number;
+  panY: number;
 }
 
 const DEFAULT_PAGE: PageSetup = {
@@ -51,24 +77,12 @@ const DEFAULT_PAGE: PageSetup = {
   margin_mm: { top: 15, right: 12, bottom: 12, left: 12 },
 };
 
-const DEFAULT_MATRIX: MatrixSetup = {
-  rows: 5,
-  cols: 6,
-  gap_x_mm: 2,
-  gap_y_mm: 2,
-  cell_h_mm: 42,
-  origin_y_mm: 0,
-  show_grid: true,
-  show_border: true,
-};
-
 const EMPTY_DRAFT: TemplateDraft = {
   id: null,
   name: '新模板',
   kind: 'single',
   description: '',
   page: DEFAULT_PAGE,
-  matrix: DEFAULT_MATRIX,
   elements: [],
   scope: 'global',
 };
@@ -79,65 +93,15 @@ const ELEMENT_LABELS: Record<ElementType, string> = {
   image: '图片',
   line: '线条',
   rect: '矩形',
+  matrix: '矩阵',
 };
 
-const ELEMENT_ICONS: Record<ElementType, string> = {
-  text: 'T',
-  field: '⌗',
-  image: '▣',
-  line: '╱',
-  rect: '▭',
-};
+const INSERT_TYPES: ElementType[] = ['text', 'field', 'image', 'line', 'rect'];
 
-function defaultElement(type: ElementType, field: string, pageLevel: boolean): TemplateElement {
-  const base = {
-    w_mm: 60,
-    h_mm: 8,
-    text: '',
-    field: '',
-    font_size: 11,
-    bold: false,
-    align: 'left' as const,
-    color: '#000000',
-    fill: '',
-    border: false,
-    border_radius_mm: 0,
-    page_level: pageLevel,
-  };
-  switch (type) {
-    case 'rect':
-      return { ...base, id: newElementId(), type, x_mm: 6, y_mm: 6, w_mm: 60, h_mm: 30, fill: '#ffffff', border: true };
-    case 'line':
-      return { ...base, id: newElementId(), type, x_mm: 6, y_mm: 6, w_mm: 120, h_mm: 1 };
-    case 'image':
-      return { ...base, id: newElementId(), type, x_mm: 6, y_mm: 6, w_mm: 30, h_mm: 40, field: field || '照片', border: true };
-    case 'field':
-      return { ...base, id: newElementId(), type, x_mm: 6, y_mm: 6, w_mm: 60, h_mm: 7, field: field || '姓名' };
-    default:
-      return { ...base, id: newElementId(), type, x_mm: 6, y_mm: 6, w_mm: 60, h_mm: 8, text: '文本内容' };
-  }
-}
+// --------------------------------------------------------------------
+// 画布：把模板文本渲染成「文字 + 字段胶囊」
+// --------------------------------------------------------------------
 
-function newElementId(): string {
-  return `el_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-}
-
-function pageSizeMm(page: PageSetup): { w: number; h: number } {
-  const sizes: Record<string, [number, number]> = {
-    A3: [297, 420],
-    A4: [210, 297],
-    A5: [148, 210],
-    Letter: [215.9, 279.4],
-  };
-  const [w, h] = sizes[page.size] ?? sizes.A4;
-  return page.orientation === 'landscape' ? { w: h, h: w } : { w, h };
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10) / 10;
-}
-
-/** 近似文本宽度：中文按 1 个字号，ASCII 按 0.55，其他按 0.85。 */
 function measureTextWidth(text: string, fontSize: number): number {
   let units = 0;
   for (const ch of text) {
@@ -157,19 +121,16 @@ interface RichItem {
   y: number;
 }
 
-/**
- * 把模板文本渲染为“字段胶囊 + 文本”的可视化内容。
- * 展示态不出现 `{{}}`，字段以有颜色的圆角矩形封装。
- */
 function buildRichContent(
   content: string,
   width: number,
   height: number,
-  fontSize: number,
   element: TemplateElement,
+  strokeMm: number,
 ): Array<Rect | Text> {
+  const fontSize = Math.max(0.6, element.font_size * MM_PER_PT);
   const lineHeight = fontSize * 1.45;
-  const pad = Math.max(1, fontSize * 0.15);
+  const pad = Math.max(0.25, fontSize * 0.16);
   const items: RichItem[] = [];
   let cursorX = 0;
   let cursorY = 0;
@@ -208,14 +169,14 @@ function buildRichContent(
 
     flush();
     const label = token.field || '空字段';
-    const pillFontSize = Math.max(6, fontSize * 0.82);
-    const pillWidth = measureTextWidth(label, pillFontSize) + pillFontSize * 1.25;
+    const pillFontSize = Math.max(0.55, fontSize * 0.82);
+    const pillWidth = measureTextWidth(label, pillFontSize) + pillFontSize * 1.4;
     if (cursorX + pillWidth > width - pad * 2 && cursorX > 0) {
       cursorX = 0;
       cursorY += lineHeight;
     }
     items.push({ kind: token.kind, text: label, x: cursorX, w: pillWidth, y: cursorY });
-    cursorX += pillWidth + pillFontSize * 0.28;
+    cursorX += pillWidth + pillFontSize * 0.3;
   }
   flush();
 
@@ -245,7 +206,7 @@ function buildRichContent(
         new Text({
           x,
           y,
-          width: item.w + 2,
+          width: item.w + 0.5,
           height: lineHeight,
           text: item.text,
           fontSize,
@@ -260,17 +221,17 @@ function buildRichContent(
     const color = item.kind === 'builtin' ? '#64748b' : fieldColor(item.text);
     const pillHeight = lineHeight * 0.82;
     const pillY = y + (lineHeight - pillHeight) / 2;
-    const pillFontSize = Math.max(6, fontSize * 0.82);
+    const pillFontSize = Math.max(0.55, fontSize * 0.82);
     output.push(
       new Rect({
         x,
         y: pillY,
         width: item.w,
         height: pillHeight,
-        fill: hexToRgba(color, 0.13),
-        stroke: hexToRgba(color, 0.4),
-        strokeWidth: 1,
-        cornerRadius: Math.max(3, pillHeight * 0.32),
+        fill: hexToRgba(color, 0.14),
+        stroke: hexToRgba(color, 0.45),
+        strokeWidth: strokeMm,
+        cornerRadius: pillHeight * 0.3,
       }),
       new Text({
         x,
@@ -324,41 +285,61 @@ export default function TemplatePage({
 
   const [draft, setDraft] = useState<TemplateDraft>(EMPTY_DRAFT);
   const [selection, setSelection] = useState<Selection>({ type: 'page' });
-  /** 插入元素时的落点：矩阵模板可选择插入单元格或整页 */
-  const [insertTarget, setInsertTarget] = useState<'cell' | 'page'>('cell');
   /** 画布中双击元素后，让属性面板的 Token 编辑器立即进入编辑态 */
   const [editRequestId, setEditRequestId] = useState<string | null>(null);
+  const [insertTarget, setInsertTarget] = useState<InsertTarget>('container');
+  const [tool, setTool] = useState<Tool>('select');
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [size, setSize] = useState({ w: 620, h: 740 });
+  const [view, setView] = useState<ViewState>({ zoom: 1, panX: 0, panY: 0 });
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<App | null>(null);
+  const viewportRef = useRef<Group | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const panDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
 
   const page = pageSizeMm(draft.page);
-  const scale = useMemo(() => {
-    const s = Math.min((size.w - PAD * 2) / page.w, (size.h - PAD * 2) / page.h);
-    return Math.max(0.2, Math.min(4, s));
+  const content = contentSizeMm(draft.page);
+
+  const fit = useMemo(() => {
+    const availW = Math.max(60, size.w - PAD * 2);
+    const availH = Math.max(60, size.h - PAD * 2);
+    const scale = Math.max(0.15, Math.min(4, Math.min(availW / page.w, availH / page.h)));
+    return { scale, tx: (size.w - page.w * scale) / 2, ty: (size.h - page.h * scale) / 2 };
   }, [size, page.w, page.h]);
 
-  const origin = useMemo(
-    () => ({
-      x: Math.max(PAD, (size.w - page.w * scale) / 2),
-      y: Math.max(PAD, (size.h - page.h * scale) / 2),
-    }),
-    [size.w, page.w, scale, page.h, size.h],
-  );
+  const scale = fit.scale * view.zoom;
+  const translateX = fit.tx + view.panX;
+  const translateY = fit.ty + view.panY;
 
+  const matrixElement = useMemo(() => {
+    let found: TemplateElement | null = null;
+    walkElements(draft.elements, (located) => {
+      if (!found && located.element.type === 'matrix') found = located.element;
+    });
+    return found as TemplateElement | null;
+  }, [draft.elements]);
+
+  const selectedLocated =
+    selection.type === 'element' ? findElement(draft.elements, selection.id) : null;
+  const selectedElement = selectedLocated?.element ?? null;
+  const selectedPath =
+    selection.type === 'element' ? findPath(draft.elements, selection.id) : [];
   const isMatrix = draft.kind === 'matrix';
-  const selectedElement =
-    selection?.type === 'element'
-      ? draft.elements.find((element) => element.id === selection.id) ?? null
-      : null;
 
-  const cellElements = isMatrix
-    ? draft.elements.filter((element) => !element.page_level)
-    : draft.elements;
-  const pageElements = isMatrix
-    ? draft.elements.filter((element) => element.page_level)
-    : [];
+  const matrixTarget = selectedElement?.type === 'matrix' ? selectedElement : matrixElement;
+  const matrixConfig = useMemo<MatrixSetup>(
+    () => ({ ...DEFAULT_MATRIX, ...(matrixTarget?.matrix ?? {}) }),
+    [matrixTarget],
+  );
 
   const columnNames = useMemo(() => {
     const names = new Set<string>();
@@ -406,10 +387,11 @@ export default function TemplatePage({
           scope === 'project' && currentProjectId ? { projectId: currentProjectId } : { scope: 'global' },
         );
         if (!active) return;
-        setTemplates(list);
-        const preferred =
+        const source =
           (initialTemplateId && list.find((item) => item.id === initialTemplateId)) || list[0];
-        setDraft(preferred ? toDraft(preferred) : { ...EMPTY_DRAFT, scope });
+        setTemplates(list);
+        setDraft(source ? toDraft(source) : { ...EMPTY_DRAFT, scope });
+        setCollapsed(new Set());
         setSelection({ type: 'page' });
       } catch (err) {
         show(err instanceof Error ? err.message : '加载模板列表失败', 'error');
@@ -422,7 +404,7 @@ export default function TemplatePage({
   }, [scope, currentProjectId]);
 
   // ------------------------------------------------------------------
-  // 初始化画布
+  // 初始化 Leafer 画布
   // ------------------------------------------------------------------
   useEffect(() => {
     const host = hostRef.current;
@@ -442,6 +424,7 @@ export default function TemplatePage({
       observer.disconnect();
       app.destroy();
       appRef.current = null;
+      viewportRef.current = null;
     };
     // 依赖 loading：加载期间画布容器尚未挂载，需等真实布局渲染后再创建画布。
   }, [loading]);
@@ -452,8 +435,51 @@ export default function TemplatePage({
     app.resize({ width: size.w, height: size.h });
   }, [size]);
 
+  // 切换模板 / 纸张尺寸时回到「适应窗口」
+  useEffect(() => {
+    setView({ zoom: 1, panX: 0, panY: 0 });
+  }, [draft.id, page.w, page.h]);
+
   // ------------------------------------------------------------------
-  // 重建画布
+  // Ctrl + 滚轮缩放；普通滚轮平移
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      if (event.ctrlKey || event.metaKey) {
+        const rect = host.getBoundingClientRect();
+        const cx = event.clientX - rect.left;
+        const cy = event.clientY - rect.top;
+        const factor = Math.exp(-event.deltaY * 0.0015);
+        setView((prev) => {
+          const oldScale = fit.scale * prev.zoom;
+          const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.zoom * factor));
+          const nextScale = fit.scale * nextZoom;
+          const k = nextScale / oldScale;
+          const oldTx = fit.tx + prev.panX;
+          const oldTy = fit.ty + prev.panY;
+          return {
+            zoom: nextZoom,
+            panX: cx - (cx - oldTx) * k - fit.tx,
+            panY: cy - (cy - oldTy) * k - fit.ty,
+          };
+        });
+        return;
+      }
+      setView((prev) => ({
+        ...prev,
+        panX: prev.panX - event.deltaX,
+        panY: prev.panY - event.deltaY,
+      }));
+    };
+    host.addEventListener('wheel', onWheel, { passive: false });
+    return () => host.removeEventListener('wheel', onWheel);
+  }, [fit.scale, fit.tx, fit.ty]);
+
+  // ------------------------------------------------------------------
+  // 构建 / 重建画布场景
   // ------------------------------------------------------------------
   useEffect(() => {
     const app = appRef.current;
@@ -461,64 +487,147 @@ export default function TemplatePage({
     const tree = app.tree;
     tree.removeAll();
 
-    const background = new Rect({ x: 0, y: 0, width: size.w, height: size.h, fill: '#eef2f7' });
-    background.hittable = true;
+    const strokeMm = 1 / fit.scale;
+    const currentView = viewRef.current;
+    const viewport = new Group({
+      x: fit.tx + currentView.panX,
+      y: fit.ty + currentView.panY,
+      scale: fit.scale * currentView.zoom,
+    });
+    viewportRef.current = viewport;
+
+    const background = new Rect({ x: 0, y: 0, width: size.w, height: size.h, fill: '#e8ecf2' });
     background.on('tap', () => setSelection({ type: 'page' }));
     tree.add(background);
+    tree.add(viewport);
 
-    // 纸张
     const paper = new Rect({
-      x: origin.x,
-      y: origin.y,
-      width: page.w * scale,
-      height: page.h * scale,
+      x: 0,
+      y: 0,
+      width: page.w,
+      height: page.h,
       fill: '#ffffff',
       stroke: '#cbd5e1',
-      strokeWidth: 1,
+      strokeWidth: strokeMm,
+      cornerRadius: 0.6,
     });
-    paper.hittable = true;
     paper.on('tap', () => setSelection({ type: 'page' }));
-    tree.add(paper);
+    viewport.add(paper);
 
     const m = draft.page.margin_mm;
-    const contentX = origin.x + m.left * scale;
-    const contentY = origin.y + m.top * scale;
-    const contentW = Math.max(10, (page.w - m.left - m.right) * scale);
-    const contentH = Math.max(10, (page.h - m.top - m.bottom) * scale);
-
-    tree.add(
+    viewport.add(
       new Rect({
-        x: contentX,
-        y: contentY,
-        width: contentW,
-        height: contentH,
+        x: m.left,
+        y: m.top,
+        width: Math.max(1, page.w - m.left - m.right),
+        height: Math.max(1, page.h - m.top - m.bottom),
         stroke: '#cbd5e1',
-        strokeWidth: 1,
-        dashPattern: [4, 4],
+        strokeWidth: strokeMm,
+        dashPattern: [4 * strokeMm, 4 * strokeMm],
       }),
     );
 
-    const isElementSelected = (id: string) => selection?.type === 'element' && selection.id === id;
+    const buildElementNode = (element: TemplateElement, interactive: boolean): Group => {
+      const w = Math.max(0.5, element.w_mm);
+      const h = Math.max(0.5, element.h_mm);
+      const radius = Math.max(0, element.border_radius_mm);
+      const isSelected = interactive && selectedElement?.id === element.id;
 
-    const buildElement = (
-      element: TemplateElement,
-      ox: number,
-      oy: number,
-      interactive: boolean,
-    ): Group => {
-      const gx = ox + element.x_mm * scale;
-      const gy = oy + element.y_mm * scale;
-      const w = Math.max(2, element.w_mm * scale);
-      const h = Math.max(2, element.h_mm * scale);
-      const fs = Math.max(6, element.font_size * MM_PER_PT * scale);
-      const radius = Math.max(0, element.border_radius_mm * scale);
-      const selected = isElementSelected(element.id);
-      const children = [
-        new Rect({ x: 0, y: 0, width: w, height: h, fill: 'rgba(0,0,0,0.001)', hittable: true }),
-      ];
+      const node = new Group({
+        x: element.x_mm,
+        y: element.y_mm,
+        opacity: interactive ? 1 : 0.35,
+        hittable: interactive,
+        draggable: interactive && tool === 'select',
+        cursor: interactive ? (tool === 'select' ? 'move' : 'default') : 'default',
+      });
 
-      if (element.type === 'rect') {
-        children.push(
+      node.add(
+        new Rect({ x: 0, y: 0, width: w, height: h, fill: 'rgba(0,0,0,0.001)', hittable: interactive }),
+      );
+
+      if (interactive) {
+        node.on('tap', (event: { stop: () => void }) => {
+          event.stop();
+          setSelection({ type: 'element', id: element.id });
+          setEditRequestId(null);
+        });
+        node.on('double_tap', (event: { stop: () => void }) => {
+          event.stop();
+          setSelection({ type: 'element', id: element.id });
+          setEditRequestId(element.id);
+        });
+        node.on('drag.end', () => {
+          const nx = round1(Number(node.x ?? element.x_mm));
+          const ny = round1(Number(node.y ?? element.y_mm));
+          setDraft((prev) => ({
+            ...prev,
+            elements: updateElement(prev.elements, element.id, { x_mm: nx, y_mm: ny }),
+          }));
+        });
+      }
+
+      if (element.type === 'matrix') {
+        const mx = { ...DEFAULT_MATRIX, ...(element.matrix ?? {}) };
+        const cols = Math.max(1, Math.round(mx.cols));
+        const rows = Math.max(1, Math.round(mx.rows));
+        const cellW = w / cols;
+        const cellH = h / rows;
+
+        if (element.fill) {
+          node.add(new Rect({ x: 0, y: 0, width: w, height: h, fill: element.fill }));
+        }
+        if (mx.show_grid) {
+          for (let c = 1; c < cols; c += 1) {
+            node.add(
+              new Rect({
+                x: c * cellW - strokeMm / 2,
+                y: 0,
+                width: strokeMm,
+                height: h,
+                fill: '#cbd5e1',
+                hittable: false,
+              }),
+            );
+          }
+          for (let r = 1; r < rows; r += 1) {
+            node.add(
+              new Rect({
+                x: 0,
+                y: r * cellH - strokeMm / 2,
+                width: w,
+                height: strokeMm,
+                fill: '#cbd5e1',
+                hittable: false,
+              }),
+            );
+          }
+        }
+        for (let r = 0; r < rows; r += 1) {
+          for (let c = 0; c < cols; c += 1) {
+            if (element.children.length === 0) continue;
+            const cell = new Group({ x: c * cellW, y: r * cellH, hittable: false });
+            const editableCell = interactive && r === 0 && c === 0;
+            element.children.forEach((child) => cell.add(buildElementNode(child, editableCell)));
+            node.add(cell);
+          }
+        }
+        if (mx.show_border) {
+          node.add(
+            new Rect({
+              x: 0,
+              y: 0,
+              width: w,
+              height: h,
+              stroke: element.color || '#475569',
+              strokeWidth: strokeMm,
+              cornerRadius: radius,
+              hittable: false,
+            }),
+          );
+        }
+      } else if (element.type === 'rect') {
+        node.add(
           new Rect({
             x: 0,
             y: 0,
@@ -526,215 +635,362 @@ export default function TemplatePage({
             height: h,
             fill: element.fill || undefined,
             stroke: element.border ? element.color : undefined,
-            strokeWidth: element.border ? 1 : 0,
+            strokeWidth: element.border ? strokeMm : 0,
             cornerRadius: radius,
+            hittable: false,
           }),
         );
+        element.children.forEach((child) => node.add(buildElementNode(child, interactive)));
       } else if (element.type === 'line') {
-        children.push(new Rect({ x: 0, y: 0, width: w, height: Math.max(1, h), fill: element.color || '#000000' }));
-      } else if (element.type === 'image') {
-        children.push(
-          new Rect({ x: 0, y: 0, width: w, height: h, fill: element.fill || '#f1f5f9', stroke: '#cbd5e1', strokeWidth: 1 }),
-          new Text({
+        node.add(
+          new Rect({
             x: 0,
-            y: h / 2 - fs / 2,
+            y: 0,
             width: w,
-            text: `▣ ${element.field || '照片'}`,
-            fontSize: Math.min(fs, 12),
-            fill: '#94a3b8',
-            textAlign: 'center',
+            height: Math.max(0.25, h),
+            fill: element.color || '#000000',
+            hittable: false,
           }),
         );
-      } else {
-        if (element.fill) {
-          children.push(new Rect({ x: 0, y: 0, width: w, height: h, fill: element.fill, cornerRadius: radius }));
-        }
-        if (element.border) {
-          children.push(new Rect({ x: 0, y: 0, width: w, height: h, stroke: element.color, strokeWidth: 1, cornerRadius: radius }));
-        }
-        const content = element.text.trim()
-          ? element.text
-          : element.field
-            ? `{{${element.field}}}`
-            : '';
-        children.push(...buildRichContent(content || '（空）', w, h, fs, element));
-      }
-
-      if (interactive) {
-        children.push(
+      } else if (element.type === 'image') {
+        node.add(
           new Rect({
             x: 0,
             y: 0,
             width: w,
             height: h,
-            stroke: selected ? '#0f766e' : '#94a3b8',
-            strokeWidth: selected ? 2 : 1,
-            dashPattern: selected ? undefined : [4, 3],
+            fill: element.fill || '#f1f5f9',
+            stroke: element.border ? element.color : '#cbd5e1',
+            strokeWidth: strokeMm,
+            cornerRadius: radius,
+            hittable: false,
           }),
         );
-      }
-
-      const group = new Group({
-        x: gx,
-        y: gy,
-        width: w,
-        height: h,
-        children,
-        draggable: interactive,
-        cursor: interactive ? 'move' : 'default',
-      });
-
-      if (interactive) {
-        group.on('tap', () => {
-          setSelection({ type: 'element', id: element.id });
-          setEditRequestId(null);
-        });
-        group.on('double_tap', () => {
-          setSelection({ type: 'element', id: element.id });
-          setEditRequestId(element.id);
-        });
-        group.on('drag.end', () => {
-          const nx = ((group.x ?? gx) - ox) / scale;
-          const ny = ((group.y ?? gy) - oy) / scale;
-          setDraft((prev) => ({
-            ...prev,
-            elements: prev.elements.map((item) =>
-              item.id === element.id ? { ...item, x_mm: round1(nx), y_mm: round1(ny) } : item,
-            ),
-          }));
-        });
+        node.add(
+          new Text({
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+            text: `▣ ${element.field || '照片'}`,
+            fontSize: Math.min(element.font_size * MM_PER_PT, 3.2),
+            fill: '#94a3b8',
+            textAlign: 'center',
+            verticalAlign: 'middle',
+            hittable: false,
+          }),
+        );
       } else {
-        group.opacity = 0.4;
+        if (element.fill) {
+          node.add(new Rect({ x: 0, y: 0, width: w, height: h, fill: element.fill, cornerRadius: radius, hittable: false }));
+        }
+        if (element.border) {
+          node.add(
+            new Rect({
+              x: 0,
+              y: 0,
+              width: w,
+              height: h,
+              stroke: element.color,
+              strokeWidth: strokeMm,
+              cornerRadius: radius,
+              hittable: false,
+            }),
+          );
+        }
+        const text = element.text.trim()
+          ? element.text
+          : element.field
+            ? `{{${element.field}}}`
+            : '（空）';
+        buildRichContent(text, w, h, element, strokeMm).forEach((item) => {
+          item.hittable = false;
+          node.add(item);
+        });
+        element.children.forEach((child) => node.add(buildElementNode(child, interactive)));
       }
 
-      return group;
+      if (isSelected) {
+        node.add(
+          new Rect({
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+            stroke: '#2563eb',
+            strokeWidth: 2 * strokeMm,
+            hittable: false,
+          }),
+        );
+        const handle = 4 * strokeMm;
+        const points: Array<[number, number]> = [
+          [0, 0],
+          [w, 0],
+          [0, h],
+          [w, h],
+        ];
+        points.forEach(([hx, hy]) => {
+          node.add(
+            new Rect({
+              x: hx - handle / 2,
+              y: hy - handle / 2,
+              width: handle,
+              height: handle,
+              fill: '#ffffff',
+              stroke: '#2563eb',
+              strokeWidth: strokeMm,
+              hittable: false,
+            }),
+          );
+        });
+      }
+
+      return node;
     };
 
-    if (isMatrix) {
-      const mx = draft.matrix;
-      const cols = Math.max(1, Math.round(mx.cols));
-      const rows = Math.max(1, Math.round(mx.rows));
-      const cellW = Math.max(4, (contentW - mx.gap_x_mm * scale * (cols - 1)) / cols);
-      const cellH =
-        mx.cell_h_mm > 0
-          ? mx.cell_h_mm * scale
-          : Math.max(4, (contentH - mx.origin_y_mm * scale - mx.gap_y_mm * scale * (rows - 1)) / rows);
-      const gapX = mx.gap_x_mm * scale;
-      const gapY = mx.gap_y_mm * scale;
+    draft.elements.forEach((element) => viewport.add(buildElementNode(element, true)));
+  }, [
+    draft.elements,
+    draft.page,
+    selectedElement,
+    tool,
+    fit.scale,
+    fit.tx,
+    fit.ty,
+    page.w,
+    page.h,
+    size.w,
+    size.h,
+  ]);
 
-      const cellOrigin = (r: number, c: number) => ({
-        x: contentX + c * (cellW + gapX),
-        y: contentY + mx.origin_y_mm * scale + r * (cellH + gapY),
-      });
-
-      // 网格辅助线：可单独关闭，仅影响编辑器
-      if (mx.show_grid) {
-        for (let r = 0; r < rows; r += 1) {
-          for (let c = 0; c < cols; c += 1) {
-            const o = cellOrigin(r, c);
-            tree.add(
-              new Rect({
-                x: o.x,
-                y: o.y,
-                width: cellW,
-                height: cellH,
-                fill: r === 0 && c === 0 ? 'rgba(15,118,110,0.06)' : 'rgba(15,118,110,0.015)',
-                stroke: '#d7e0da',
-                strokeWidth: 1,
-                dashPattern: [3, 3],
-              }),
-            );
-          }
-        }
-      }
-
-      const matrixW = cols * cellW + (cols - 1) * gapX;
-      const matrixH = rows * cellH + (rows - 1) * gapY;
-      const matrixSelected = selection?.type === 'matrix';
-
-      // 矩阵外轮廓：整块可点击选中
-      const outline = new Rect({
-        x: contentX,
-        y: contentY + mx.origin_y_mm * scale,
-        width: matrixW,
-        height: matrixH,
-        fill: 'rgba(0,0,0,0.001)',
-        stroke: matrixSelected ? '#0f766e' : '#9aa8a0',
-        strokeWidth: matrixSelected ? 2 : 1,
-        dashPattern: matrixSelected ? undefined : [6, 4],
-      });
-      outline.on('tap', () => setSelection({ type: 'matrix' }));
-      tree.add(outline);
-
-      // 单元格边框：可单独关闭，并同步影响 PDF 输出
-      if (mx.show_border) {
-        for (let r = 0; r < rows; r += 1) {
-          for (let c = 0; c < cols; c += 1) {
-            const o = cellOrigin(r, c);
-            tree.add(
-              new Rect({
-                x: o.x,
-                y: o.y,
-                width: cellW,
-                height: cellH,
-                stroke: '#c3cdc6',
-                strokeWidth: 1,
-              }),
-            );
-          }
-        }
-      }
-
-      // 第一格可编辑，其余格作为预览
-      const first = cellOrigin(0, 0);
-      cellElements.forEach((element) => tree.add(buildElement(element, first.x, first.y, true)));
-      for (let r = 0; r < rows; r += 1) {
-        for (let c = 0; c < cols; c += 1) {
-          if (r === 0 && c === 0) continue;
-          const o = cellOrigin(r, c);
-          cellElements.forEach((element) => tree.add(buildElement(element, o.x, o.y, false)));
-        }
-      }
-
-      pageElements.forEach((element) => tree.add(buildElement(element, contentX, contentY, true)));
-    } else {
-      draft.elements.forEach((element) => tree.add(buildElement(element, contentX, contentY, true)));
-    }
-  }, [draft, selection, size, scale, origin.x, origin.y, page.w, page.h, loading, isMatrix]);
+  // 缩放 / 平移只改变视口变换，不重建场景
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    viewport.x = translateX;
+    viewport.y = translateY;
+    viewport.scale = scale;
+  }, [translateX, translateY, scale]);
 
   // ------------------------------------------------------------------
-  // 操作
+  // 视图操作
   // ------------------------------------------------------------------
-  const updateElement = (id: string, patch: Partial<TemplateElement>) => {
-    setDraft((prev) => ({
+  const zoomAt = (cx: number, cy: number, factor: number) => {
+    setView((prev) => {
+      const oldScale = fit.scale * prev.zoom;
+      const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.zoom * factor));
+      const nextScale = fit.scale * nextZoom;
+      const k = nextScale / oldScale;
+      const oldTx = fit.tx + prev.panX;
+      const oldTy = fit.ty + prev.panY;
+      return {
+        zoom: nextZoom,
+        panX: cx - (cx - oldTx) * k - fit.tx,
+        panY: cy - (cy - oldTy) * k - fit.ty,
+      };
+    });
+  };
+
+  const resetView = () => setView({ zoom: 1, panX: 0, panY: 0 });
+
+  const handleCanvasPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (tool !== 'hand' && event.button !== 1) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: view.panX,
+      panY: view.panY,
+    };
+    event.preventDefault();
+  };
+
+  const handleCanvasPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = panDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setView((prev) => ({
       ...prev,
-      elements: prev.elements.map((element) => (element.id === id ? { ...element, ...patch } : element)),
+      panX: drag.panX + (event.clientX - drag.startX),
+      panY: drag.panY + (event.clientY - drag.startY),
     }));
   };
 
-  const updateMatrix = (patch: Partial<MatrixSetup>) => {
-    setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, ...patch } }));
+  const handleCanvasPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (panDragRef.current?.pointerId === event.pointerId) {
+      panDragRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // 草稿操作
+  // ------------------------------------------------------------------
+  const patchElement = (id: string, patch: Partial<TemplateElement>) => {
+    setDraft((prev) => ({ ...prev, elements: updateElement(prev.elements, id, patch) }));
+  };
+
+  const patchMatrix = (patch: Partial<MatrixSetup>) => {
+    if (!matrixTarget) return;
+    setDraft((prev) => {
+      const located = findElement(prev.elements, matrixTarget.id);
+      if (!located) return prev;
+      const next = { ...DEFAULT_MATRIX, ...(located.element.matrix ?? {}), ...patch };
+      if (next.rows !== undefined) next.rows = Math.max(1, Math.round(next.rows));
+      if (next.cols !== undefined) next.cols = Math.max(1, Math.round(next.cols));
+      return {
+        ...prev,
+        elements: updateElement(prev.elements, located.element.id, { matrix: next }),
+      };
+    });
   };
 
   const updatePage = (patch: Partial<PageSetup>) => {
     setDraft((prev) => ({ ...prev, page: { ...prev.page, ...patch } }));
   };
 
+  const removeSelectedElement = () => {
+    if (selection.type !== 'element') return;
+    const id = selection.id;
+    const parent = findElement(draft.elements, id)?.parent ?? null;
+    setDraft((prev) => ({ ...prev, elements: removeElement(prev.elements, id) }));
+    setSelection(parent ? { type: 'element', id: parent.id } : { type: 'page' });
+    setEditRequestId(null);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key === 'Backspace' || event.key === 'Delete') {
+        if (selection.type === 'element') {
+          event.preventDefault();
+          const parent = findElement(draft.elements, selection.id)?.parent ?? null;
+          setDraft((prev) => ({ ...prev, elements: removeElement(prev.elements, selection.id) }));
+          setSelection(parent ? { type: 'element', id: parent.id } : { type: 'page' });
+        }
+      } else if (event.key === 'Escape') {
+        setSelection({ type: 'page' });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selection, draft.elements]);
+
+  /** 新元素尺寸与落点：容器内则相对容器，否则相对页面。 */
+  const placementFor = (
+    type: ElementType,
+    parent: TemplateElement | null,
+    siblings: number,
+  ): { x: number; y: number; w: number; h: number } => {
+    if (parent?.type === 'matrix') {
+      const mx = { ...DEFAULT_MATRIX, ...(parent.matrix ?? {}) };
+      const cols = Math.max(1, Math.round(mx.cols));
+      const rows = Math.max(1, Math.round(mx.rows));
+      const cellW = parent.w_mm / cols;
+      const cellH = parent.h_mm / rows;
+      const w = Math.max(6, cellW - 6);
+      const h = type === 'image' ? Math.max(10, cellH - 8) : type === 'line' ? 0.5 : 7;
+      return { x: 3, y: 3 + (siblings % 6) * 9, w, h };
+    }
+    if (parent?.type === 'rect') {
+      const w = Math.max(6, parent.w_mm - 6);
+      const h = type === 'image' ? Math.max(10, parent.h_mm - 8) : 7;
+      return { x: 3, y: 3 + (siblings % 6) * 9, w, h };
+    }
+    return { x: 8, y: 8 + (siblings % 6) * 4, w: 60, h: type === 'line' ? 0.5 : 8 };
+  };
+
   const addElement = (type: ElementType) => {
-    const pageLevel = isMatrix && insertTarget === 'page';
-    const element = defaultElement(type, columnNames[0] ?? '', pageLevel);
-    const index = draft.elements.length;
-    // 轻微错位，避免新元素完全重叠
-    element.x_mm = round1(6 + (index % 5) * 4);
-    element.y_mm = round1(6 + (index % 7) * 5);
-    setDraft((prev) => ({ ...prev, elements: [...prev.elements, element] }));
+    if (type === 'matrix') {
+      if (matrixElement) {
+        show('模板中已经存在矩阵，可直接在左侧结构树中编辑', 'error');
+        return;
+      }
+      const mx = { ...DEFAULT_MATRIX };
+      const element = createElement('matrix', {
+        x: 0,
+        y: 0,
+        w: content.w,
+        h: mx.rows * mx.cell_h_mm,
+      });
+      element.matrix = mx;
+      element.children = [];
+      setDraft((prev) => ({
+        ...prev,
+        kind: 'matrix',
+        elements: [...prev.elements, element],
+      }));
+      setSelection({ type: 'element', id: element.id });
+      setEditRequestId(null);
+      return;
+    }
+
+    let parent: TemplateElement | null = null;
+    if (insertTarget === 'container') {
+      parent = selectedElement && isContainer(selectedElement) ? selectedElement : null;
+    }
+    const siblings = parent ? parent.children.length : draft.elements.length;
+    const box = placementFor(type, parent, siblings);
+    const element = createElement(type, {
+      field: columnNames[0] ?? (type === 'image' ? '照片' : '姓名'),
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+    });
+    setDraft((prev) => ({
+      ...prev,
+      elements: appendChild(prev.elements, parent?.id ?? null, element),
+    }));
     setSelection({ type: 'element', id: element.id });
     setEditRequestId(null);
   };
 
-  const removeElement = (id: string) => {
-    setDraft((prev) => ({ ...prev, elements: prev.elements.filter((element) => element.id !== id) }));
-    if (selection?.type === 'element' && selection.id === id) setSelection({ type: 'page' });
+  const addChild = (parent: TemplateElement, type: ElementType) => {
+    const siblings = parent.children.length;
+    const box = placementFor(type, parent, siblings);
+    const element = createElement(type, {
+      field: columnNames[0] ?? (type === 'image' ? '照片' : '姓名'),
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+    });
+    setDraft((prev) => ({ ...prev, elements: appendChild(prev.elements, parent.id, element) }));
+    setSelection({ type: 'element', id: element.id });
+    setEditRequestId(null);
+  };
+
+  const toggleCollapsed = (id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const setAllCollapsed = (collapsedAll: boolean) => {
+    if (!collapsedAll) {
+      setCollapsed(new Set());
+      return;
+    }
+    const ids: string[] = [];
+    walkElements(draft.elements, (located) => {
+      if (isContainer(located.element)) ids.push(located.element.id);
+    });
+    setCollapsed(new Set(ids));
   };
 
   const refreshTemplates = async () => {
@@ -766,7 +1022,7 @@ export default function TemplatePage({
     kind: draft.kind,
     description: draft.description,
     page: draft.page,
-    matrix: draft.matrix,
+    matrix: matrixElement?.matrix ?? DEFAULT_MATRIX,
     elements: draft.elements,
     scope: draft.id ? draft.scope : scope,
     project_id: draft.id
@@ -824,7 +1080,7 @@ export default function TemplatePage({
     }
   };
 
-  const handleDelete = async () => {
+  const handleDeleteTemplate = async () => {
     if (!draft.id) {
       setDraft({ ...EMPTY_DRAFT, scope });
       setSelection({ type: 'page' });
@@ -883,27 +1139,73 @@ export default function TemplatePage({
     }
   };
 
-  const elementLabel = (element: TemplateElement): string => {
-    if (element.type === 'text') {
-      const text = element.text.replace(/\{\{([^}]*)\}\}/g, '$1').trim();
-      return text ? (text.length > 16 ? `${text.slice(0, 16)}…` : text) : '（空文本）';
-    }
-    return element.field || ELEMENT_LABELS[element.type];
+  const renderTreeRow = (element: TemplateElement, depth: number) => {
+    const hasChildren = element.children.length > 0;
+    const isCollapsed = collapsed.has(element.id);
+    const active = selection.type === 'element' && selection.id === element.id;
+    const meta =
+      element.type === 'matrix'
+        ? `${Math.max(1, Math.round(element.matrix?.rows ?? 0))}×${Math.max(1, Math.round(element.matrix?.cols ?? 0))}`
+        : element.type === 'field'
+          ? element.field || '未绑定'
+          : element.type === 'image'
+            ? element.field || '照片'
+            : hasChildren
+              ? `${element.children.length} 项`
+              : '';
+    return (
+      <div key={element.id} className="tpl-tree-node">
+        <div
+          role="treeitem"
+          aria-selected={active}
+          tabIndex={0}
+          className={`tpl-tree-row${active ? ' active' : ''}`}
+          style={{ paddingLeft: 6 + depth * 14 }}
+          onClick={() => {
+            setSelection({ type: 'element', id: element.id });
+            setEditRequestId(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              setSelection({ type: 'element', id: element.id });
+            }
+          }}
+          title={elementLabel(element)}
+        >
+          <button
+            type="button"
+            className={`tpl-tree-caret${hasChildren ? '' : ' empty'}`}
+            aria-label={isCollapsed ? '展开' : '收起'}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (hasChildren) toggleCollapsed(element.id);
+            }}
+          >
+            {hasChildren ? (isCollapsed ? '▸' : '▾') : '·'}
+          </button>
+          <span className="tpl-tree-icon">{elementIcon(element.type)}</span>
+          <span className="tpl-tree-label">{elementLabel(element)}</span>
+          {meta ? <span className="tpl-tree-meta">{meta}</span> : null}
+        </div>
+        {hasChildren && !isCollapsed
+          ? element.children.map((child) => renderTreeRow(child, depth + 1))
+          : null}
+      </div>
+    );
   };
 
-  const elementRow = (element: TemplateElement) => (
-    <button
-      key={element.id}
-      className={`tpl-tree-row depth-2 ${
-        selection?.type === 'element' && selection.id === element.id ? 'active' : ''
-      }`}
-      onClick={() => setSelection({ type: 'element', id: element.id })}
-      title={elementLabel(element)}
-    >
-      <span className="tpl-tree-icon">{ELEMENT_ICONS[element.type]}</span>
-      <span className="tpl-tree-label">{elementLabel(element)}</span>
-    </button>
-  );
+  const panelTitle =
+    selection.type === 'page'
+      ? '页面'
+      : selectedElement
+        ? ELEMENT_LABELS[selectedElement.type]
+        : '未选择';
+  const panelIcon = selection.type === 'page' ? '▤' : selectedElement ? elementIcon(selectedElement.type) : '·';
+  const breadcrumb =
+    selection.type === 'page'
+      ? ['页面']
+      : ['页面', ...selectedPath.map((element) => elementLabel(element))];
 
   if (loading) {
     return (
@@ -917,12 +1219,12 @@ export default function TemplatePage({
   }
 
   return (
-    <div className="page">
+    <div className="page tpl-page">
       <div className="page-header">
         <div>
           <h2 className="page-title">PDF 模板</h2>
           <p className="page-subtitle">
-            左侧为页面结构树，中间为画布，右侧编辑当前选中节点；顶部工具栏插入元素。
+            左侧为页面结构树，中间为 Leafer 画布，右侧编辑选中节点的属性。
           </p>
         </div>
         <div className="row-actions">
@@ -955,171 +1257,280 @@ export default function TemplatePage({
               引用到本项目
             </button>
           ) : null}
-          <button className="btn btn-danger" onClick={handleDelete}>
-            删除
+          <button className="btn btn-danger" onClick={handleDeleteTemplate}>
+            删除模板
           </button>
         </div>
       </div>
 
       <div className="tpl-shell">
-        {/* --------------- 顶部工具栏（WPS 式） --------------- */}
-        <div className="tpl-toolbar">
-          <div className="tpl-tool-group">
-            {(['text', 'field', 'image', 'line', 'rect'] as ElementType[]).map((type) => (
-              <button key={type} type="button" className="tpl-tool" onClick={() => addElement(type)}>
-                <span className="tpl-tool-icon">{ELEMENT_ICONS[type]}</span>
-                {ELEMENT_LABELS[type]}
-              </button>
-            ))}
-          </div>
-
-          {isMatrix ? (
-            <>
-              <span className="tpl-tool-sep" />
-              <div className="segmented compact">
-                <button
-                  className={insertTarget === 'cell' ? 'seg active' : 'seg'}
-                  onClick={() => setInsertTarget('cell')}
-                >
-                  插入单元格
-                </button>
-                <button
-                  className={insertTarget === 'page' ? 'seg active' : 'seg'}
-                  onClick={() => setInsertTarget('page')}
-                >
-                  插入整页
-                </button>
-              </div>
-              <label className="tpl-toggle">
-                <input
-                  type="checkbox"
-                  checked={draft.matrix.show_grid}
-                  onChange={(event) => updateMatrix({ show_grid: event.target.checked })}
-                />
-                网格
-              </label>
-              <label className="tpl-toggle">
-                <input
-                  type="checkbox"
-                  checked={draft.matrix.show_border}
-                  onChange={(event) => updateMatrix({ show_border: event.target.checked })}
-                />
-                边框
-              </label>
-            </>
-          ) : null}
-
+        {/* --------------- 文档栏 --------------- */}
+        <div className="tpl-docbar">
+          <span className="tpl-doc-badge">PDF</span>
+          <input
+            className="tpl-doc-name"
+            value={draft.name}
+            aria-label="模板名称"
+            onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+          />
+          <span className="tpl-doc-sub">
+            {isMatrix ? '矩阵分页' : '单页'} · {page.w}×{page.h} mm
+          </span>
           <div className="toolbar-fill" />
-
-          {selectedElement ? (
-            <button className="tpl-tool danger" onClick={() => removeElement(selectedElement.id)}>
-              删除元素
-            </button>
-          ) : null}
+          <button className="btn btn-sm" onClick={handlePreview} disabled={busy}>
+            预览
+          </button>
+          <button className="btn btn-sm" onClick={handleRender} disabled={busy || !draft.id}>
+            导出 PDF
+          </button>
           <button className="btn btn-sm btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? '保存中…' : '保存模板'}
           </button>
         </div>
 
+        {/* --------------- 功能区 --------------- */}
+        <div className="tpl-ribbon">
+          <div className="tpl-ribbon-group">
+            <span className="tpl-ribbon-label">插入</span>
+            <div className="tpl-ribbon-items">
+              {INSERT_TYPES.map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  className="tpl-tool"
+                  onClick={() => addElement(type)}
+                  title={`插入${ELEMENT_LABELS[type]}`}
+                >
+                  <span className="tpl-tool-icon">{elementIcon(type)}</span>
+                  {ELEMENT_LABELS[type]}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="tpl-tool"
+                onClick={() => addElement('matrix')}
+                disabled={Boolean(matrixElement)}
+                title={matrixElement ? '模板中已有矩阵' : '插入矩阵'}
+              >
+                <span className="tpl-tool-icon">{elementIcon('matrix')}</span>
+                矩阵
+              </button>
+            </div>
+          </div>
+
+          <span className="tpl-ribbon-sep" />
+
+          <div className="tpl-ribbon-group">
+            <span className="tpl-ribbon-label">插入位置</span>
+            <div className="tpl-ribbon-items">
+              <div className="segmented compact">
+                <button
+                  className={insertTarget === 'container' ? 'seg active' : 'seg'}
+                  onClick={() => setInsertTarget('container')}
+                  title="选中矩阵或矩形后，插入的元素成为其子元素"
+                >
+                  所选容器
+                </button>
+                <button
+                  className={insertTarget === 'page' ? 'seg active' : 'seg'}
+                  onClick={() => setInsertTarget('page')}
+                >
+                  页面顶层
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <span className="tpl-ribbon-sep" />
+
+          <div className="tpl-ribbon-group">
+            <span className="tpl-ribbon-label">矩阵</span>
+            <div className="tpl-ribbon-items">
+              <label className={`tpl-toggle${matrixTarget ? '' : ' disabled'}`}>
+                <input
+                  type="checkbox"
+                  checked={matrixConfig.show_grid}
+                  disabled={!matrixTarget}
+                  onChange={(event) => patchMatrix({ show_grid: event.target.checked })}
+                />
+                网格线
+              </label>
+              <label className={`tpl-toggle${matrixTarget ? '' : ' disabled'}`}>
+                <input
+                  type="checkbox"
+                  checked={matrixConfig.show_border}
+                  disabled={!matrixTarget}
+                  onChange={(event) => patchMatrix({ show_border: event.target.checked })}
+                />
+                外边框
+              </label>
+            </div>
+          </div>
+
+          <span className="tpl-ribbon-sep" />
+
+          <div className="tpl-ribbon-group">
+            <span className="tpl-ribbon-label">视图</span>
+            <div className="tpl-ribbon-items">
+              <div className="segmented compact">
+                <button
+                  className={tool === 'select' ? 'seg active' : 'seg'}
+                  onClick={() => setTool('select')}
+                  title="选择工具"
+                >
+                  ↗ 选择
+                </button>
+                <button
+                  className={tool === 'hand' ? 'seg active' : 'seg'}
+                  onClick={() => setTool('hand')}
+                  title="手型平移（或按住鼠标中键拖动）"
+                >
+                  ✋ 平移
+                </button>
+              </div>
+              <button type="button" className="tpl-tool" onClick={() => zoomAt(size.w / 2, size.h / 2, 1 / 1.2)}>
+                －
+              </button>
+              <button type="button" className="tpl-tool" onClick={() => zoomAt(size.w / 2, size.h / 2, 1.2)}>
+                ＋
+              </button>
+              <button type="button" className="tpl-tool" onClick={resetView}>
+                适应页面
+              </button>
+              <span className="tpl-zoom-readout">{Math.round(view.zoom * 100)}%</span>
+            </div>
+          </div>
+
+          <div className="toolbar-fill" />
+          {selection.type === 'element' ? (
+            <button className="tpl-tool danger" onClick={removeSelectedElement}>
+              删除选中元素
+            </button>
+          ) : null}
+        </div>
+
         <div className="tpl-main">
           {/* --------------- 左：页面结构树 --------------- */}
-          <aside className="tpl-tree card">
-            <div className="tpl-panel-head">页面结构</div>
-            <div className="tpl-tree-body">
-              <button
-                className={`tpl-tree-row ${selection?.type === 'page' ? 'active' : ''}`}
+          <aside className="tpl-tree" aria-label="页面结构">
+            <div className="tpl-panel-head">
+              页面结构
+              <div className="toolbar-fill" />
+              <button type="button" className="tpl-head-btn" onClick={() => setAllCollapsed(false)}>
+                展开
+              </button>
+              <button type="button" className="tpl-head-btn" onClick={() => setAllCollapsed(true)}>
+                收起
+              </button>
+            </div>
+            <div className="tpl-tree-body" role="tree">
+              <div
+                role="treeitem"
+                aria-selected={selection.type === 'page'}
+                tabIndex={0}
+                className={`tpl-tree-row page-row${selection.type === 'page' ? ' active' : ''}`}
                 onClick={() => setSelection({ type: 'page' })}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelection({ type: 'page' });
+                  }
+                }}
               >
+                <span className="tpl-tree-caret empty">·</span>
                 <span className="tpl-tree-icon">▤</span>
                 <span className="tpl-tree-label">页面</span>
                 <span className="tpl-tree-meta">
                   {draft.page.size} {draft.page.orientation === 'portrait' ? '纵' : '横'}
                 </span>
-              </button>
+              </div>
 
-              {isMatrix ? (
-                <>
-                  <div className="tpl-tree-group">
-                    <span className="tpl-tree-group-label">整页元素</span>
-                    {pageElements.length === 0 ? (
-                      <span className="tpl-tree-empty">空</span>
-                    ) : (
-                      pageElements.map(elementRow)
-                    )}
-                  </div>
-
-                  <button
-                    className={`tpl-tree-row depth-1 ${selection?.type === 'matrix' ? 'active' : ''}`}
-                    onClick={() => setSelection({ type: 'matrix' })}
-                  >
-                    <span className="tpl-tree-icon">▦</span>
-                    <span className="tpl-tree-label">矩阵</span>
-                    <span className="tpl-tree-meta">
-                      {Math.max(1, Math.round(draft.matrix.rows))}×
-                      {Math.max(1, Math.round(draft.matrix.cols))}
-                    </span>
-                  </button>
-
-                  <div className="tpl-tree-group">
-                    <span className="tpl-tree-group-label">单元格元素</span>
-                    {cellElements.length === 0 ? (
-                      <span className="tpl-tree-empty">空</span>
-                    ) : (
-                      cellElements.map(elementRow)
-                    )}
-                  </div>
-                </>
+              {draft.elements.length === 0 ? (
+                <div className="tpl-tree-empty">还没有元素，使用上方工具栏插入。</div>
               ) : (
-                <div className="tpl-tree-group">
-                  <span className="tpl-tree-group-label">页面元素</span>
-                  {cellElements.length === 0 ? (
-                    <span className="tpl-tree-empty">空</span>
-                  ) : (
-                    cellElements.map(elementRow)
-                  )}
-                </div>
+                draft.elements.map((element) => renderTreeRow(element, 0))
               )}
             </div>
-            <p className="panel-hint">点击任意节点，在右侧编辑其属性。</p>
+            <div className="tpl-tree-foot">
+              矩阵的子元素会复制到每个单元格；选中容器后插入的元素会成为其子元素。
+            </div>
           </aside>
 
           {/* --------------- 中：画布 --------------- */}
           <section className="tpl-canvas-area">
-            <div className="flow-canvas-toolbar">
-              <span className="detail-meta">
-                纸张 {page.w}×{page.h} mm · 缩放 {scale.toFixed(2)}×
+            <div className="tpl-canvas-bar">
+              <span className="tpl-canvas-path">
+                {selection.type === 'page'
+                  ? '页面'
+                  : selectedElement
+                    ? `页面 / ${selectedPath.map((element) => elementLabel(element)).join(' / ')}`
+                    : '页面'}
               </span>
+              <div className="toolbar-fill" />
               <span className="detail-meta">
-                {isMatrix ? '点击矩阵外轮廓选中矩阵，蓝色格为可编辑单元格' : '拖动元素调整位置，双击可编辑'}
+                {tool === 'hand' ? '手型：拖动画布' : 'Ctrl + 滚轮缩放 · 滚轮平移'}
               </span>
             </div>
-            <div className="tpl-canvas" ref={hostRef} />
+            <div
+              className={`tpl-canvas${tool === 'hand' ? ' hand' : ''}`}
+              ref={hostRef}
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerUp={handleCanvasPointerUp}
+              onPointerCancel={handleCanvasPointerUp}
+            />
+            <div className="tpl-statusbar">
+              <span>
+                纸张 {page.w}×{page.h} mm · 页边距 {draft.page.margin_mm.left}/{draft.page.margin_mm.top}/
+                {draft.page.margin_mm.right}/{draft.page.margin_mm.bottom}
+              </span>
+              <div className="toolbar-fill" />
+              <span className="tpl-zoom-readout">{Math.round(view.zoom * 100)}%</span>
+              <button type="button" className="tpl-status-btn" onClick={() => zoomAt(size.w / 2, size.h / 2, 1 / 1.2)}>
+                －
+              </button>
+              <button type="button" className="tpl-status-btn" onClick={() => zoomAt(size.w / 2, size.h / 2, 1.2)}>
+                ＋
+              </button>
+              <button type="button" className="tpl-status-btn" onClick={resetView}>
+                适应
+              </button>
+            </div>
           </section>
 
           {/* --------------- 右：属性面板 --------------- */}
-          <aside className="tpl-props card">
-            {selection?.type === 'page' ? (
+          <aside className="tpl-props" aria-label="属性">
+            <div className="tpl-props-head">
+              <div className="tpl-props-title">
+                <span className="tpl-tree-icon">{panelIcon}</span>
+                {panelTitle}
+              </div>
+              <div className="tpl-breadcrumb">{breadcrumb.join(' / ')}</div>
+            </div>
+
+            {selection.type === 'page' ? (
               <PagePanel
                 draft={draft}
                 datasets={datasets}
                 datasetId={datasetId}
                 busy={busy}
+                hasMatrix={Boolean(matrixElement)}
                 onDataset={setDatasetId}
                 onDraft={setDraft}
                 onPage={updatePage}
                 onPreview={handlePreview}
                 onRender={handleRender}
               />
-            ) : selection?.type === 'matrix' ? (
-              <MatrixPanel matrix={draft.matrix} onChange={updateMatrix} />
             ) : selectedElement ? (
               <ElementEditor
                 element={selectedElement}
+                parentType={selectedLocated?.parent?.type ?? null}
                 kind={draft.kind}
                 columns={columnNames}
                 autoEdit={editRequestId === selectedElement.id}
-                onChange={(patch) => updateElement(selectedElement.id, patch)}
-                onRemove={() => removeElement(selectedElement.id)}
+                onChange={(patch) => patchElement(selectedElement.id, patch)}
+                onMatrixChange={patchMatrix}
+                onRemove={removeSelectedElement}
+                onAddChild={(type) => addChild(selectedElement, type)}
               />
             ) : (
               <EmptyState text="在左侧结构树或画布中选择节点" />
@@ -1138,13 +1549,7 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     kind: template.kind === 'matrix' ? 'matrix' : 'single',
     description: template.description,
     page: template.page,
-    matrix: {
-      ...DEFAULT_MATRIX,
-      ...(template.matrix ?? {}),
-      show_grid: template.matrix?.show_grid ?? true,
-      show_border: template.matrix?.show_border ?? true,
-    },
-    elements: template.elements,
+    elements: normalizeTemplate(template),
     scope: template.scope === 'project' ? 'project' : 'global',
   };
 }
@@ -1158,6 +1563,7 @@ interface PagePanelProps {
   datasets: Dataset[];
   datasetId: string;
   busy: boolean;
+  hasMatrix: boolean;
   onDataset: (id: string) => void;
   onDraft: (updater: (prev: TemplateDraft) => TemplateDraft) => void;
   onPage: (patch: Partial<PageSetup>) => void;
@@ -1165,256 +1571,310 @@ interface PagePanelProps {
   onRender: () => void;
 }
 
-function PagePanel({ draft, datasets, datasetId, busy, onDataset, onDraft, onPage, onPreview, onRender }: PagePanelProps) {
+function PagePanel({
+  draft,
+  datasets,
+  datasetId,
+  busy,
+  hasMatrix,
+  onDataset,
+  onDraft,
+  onPage,
+  onPreview,
+  onRender,
+}: PagePanelProps) {
   return (
-    <>
-      <div className="tpl-panel-head">
-        <span className="tpl-tree-icon">▤</span> 页面
+    <div className="tpl-prop-body">
+      <div className="tpl-section">
+        <div className="tpl-section-title">文档</div>
+        <label className="field">
+          <span className="field-label">模板类型</span>
+          <select
+            value={draft.kind}
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, kind: event.target.value as 'single' | 'matrix' }))
+            }
+          >
+            <option value="single">单人单页（每行数据一页）</option>
+            <option value="matrix">矩阵分页（每页铺满多行数据）</option>
+          </select>
+        </label>
+        <label className="field">
+          <span className="field-label">说明</span>
+          <input
+            type="text"
+            value={draft.description}
+            placeholder="模板用途、适用考试等"
+            onChange={(event) => onDraft((prev) => ({ ...prev, description: event.target.value }))}
+          />
+        </label>
+        {draft.kind === 'matrix' && !hasMatrix ? (
+          <p className="panel-hint warn">矩阵分页需要插入一个「矩阵」元素，数据才会按单元格铺排。</p>
+        ) : null}
       </div>
 
-      <label className="field">
-        <span className="field-label">模板名称</span>
-        <input
-          type="text"
-          value={draft.name}
-          onChange={(event) => onDraft((prev) => ({ ...prev, name: event.target.value }))}
-        />
-      </label>
-      <label className="field">
-        <span className="field-label">模板类型</span>
-        <select
-          value={draft.kind}
-          onChange={(event) =>
-            onDraft((prev) => ({ ...prev, kind: event.target.value as 'single' | 'matrix' }))
-          }
-        >
-          <option value="single">单人单页（每行数据一页）</option>
-          <option value="matrix">矩阵（每页铺满多行数据）</option>
-        </select>
-      </label>
-      <label className="field">
-        <span className="field-label">说明</span>
-        <input
-          type="text"
-          value={draft.description}
-          onChange={(event) => onDraft((prev) => ({ ...prev, description: event.target.value }))}
-        />
-      </label>
+      <div className="tpl-section">
+        <div className="tpl-section-title">纸张</div>
+        <div className="grid-2">
+          <label className="field">
+            <span className="field-label">纸张</span>
+            <select
+              value={draft.page.size}
+              onChange={(event) => onPage({ size: event.target.value as PageSetup['size'] })}
+            >
+              {(['A4', 'A3', 'A5', 'Letter'] as const).map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-label">方向</span>
+            <select
+              value={draft.page.orientation}
+              onChange={(event) => onPage({ orientation: event.target.value as PageSetup['orientation'] })}
+            >
+              <option value="portrait">纵向</option>
+              <option value="landscape">横向</option>
+            </select>
+          </label>
+        </div>
+        <div className="grid-4">
+          {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
+            <label key={side} className="field">
+              <span className="field-label">
+                {side === 'top' ? '上' : side === 'right' ? '右' : side === 'bottom' ? '下' : '左'}边距
+              </span>
+              <input
+                type="number"
+                step={0.5}
+                value={draft.page.margin_mm[side]}
+                onChange={(event) =>
+                  onPage({
+                    margin_mm: { ...draft.page.margin_mm, [side]: Number(event.target.value) || 0 },
+                  })
+                }
+              />
+            </label>
+          ))}
+        </div>
+      </div>
 
-      <hr className="divider" />
-      <div className="grid-2">
+      <div className="tpl-section">
+        <div className="tpl-section-title">预览与导出</div>
         <label className="field">
-          <span className="field-label">纸张</span>
-          <select
-            value={draft.page.size}
-            onChange={(event) => onPage({ size: event.target.value as PageSetup['size'] })}
-          >
-            {(['A4', 'A3', 'A5', 'Letter'] as const).map((item) => (
-              <option key={item} value={item}>
-                {item}
+          <span className="field-label">预览数据源</span>
+          <select value={datasetId} onChange={(event) => onDataset(event.target.value)}>
+            <option value="">选择数据集…</option>
+            {datasets.map((dataset) => (
+              <option key={dataset.id} value={dataset.id}>
+                {dataset.name}（{dataset.row_count} 行）
               </option>
             ))}
           </select>
         </label>
-        <label className="field">
-          <span className="field-label">方向</span>
-          <select
-            value={draft.page.orientation}
-            onChange={(event) => onPage({ orientation: event.target.value as PageSetup['orientation'] })}
-          >
-            <option value="portrait">纵向</option>
-            <option value="landscape">横向</option>
-          </select>
-        </label>
+        <div className="row-actions">
+          <button className="btn" onClick={onPreview} disabled={busy}>
+            预览第 1 页
+          </button>
+          <button className="btn btn-primary" onClick={onRender} disabled={busy}>
+            导出完整 PDF
+          </button>
+        </div>
       </div>
-      <div className="grid-4">
-        {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
-          <label key={side} className="field">
-            <span className="field-label">
-              {side === 'top' ? '上' : side === 'right' ? '右' : side === 'bottom' ? '下' : '左'}边距
-            </span>
-            <input
-              type="number"
-              step={0.5}
-              value={draft.page.margin_mm[side]}
-              onChange={(event) =>
-                onPage({
-                  margin_mm: { ...draft.page.margin_mm, [side]: Number(event.target.value) || 0 },
-                })
-              }
-            />
-          </label>
-        ))}
-      </div>
-
-      <hr className="divider" />
-      <label className="field">
-        <span className="field-label">预览数据源</span>
-        <select value={datasetId} onChange={(event) => onDataset(event.target.value)}>
-          <option value="">选择数据集…</option>
-          {datasets.map((dataset) => (
-            <option key={dataset.id} value={dataset.id}>
-              {dataset.name}（{dataset.row_count} 行）
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="row-actions">
-        <button className="btn" onClick={onPreview} disabled={busy}>
-          预览第 1 页
-        </button>
-        <button className="btn btn-primary" onClick={onRender} disabled={busy}>
-          导出完整 PDF
-        </button>
-      </div>
-    </>
+    </div>
   );
 }
 
 // --------------------------------------------------------------------
-// 右侧：矩阵属性
-// --------------------------------------------------------------------
-
-function MatrixPanel({ matrix, onChange }: { matrix: MatrixSetup; onChange: (patch: Partial<MatrixSetup>) => void }) {
-  return (
-    <>
-      <div className="tpl-panel-head">
-        <span className="tpl-tree-icon">▦</span> 矩阵
-      </div>
-      <p className="panel-hint">矩阵内部按行列自动划分网格，单元格大小由行数与间距推算。</p>
-      <div className="grid-2">
-        <NumberField label="行数" value={matrix.rows} onChange={(value) => onChange({ rows: value })} />
-        <NumberField label="列数" value={matrix.cols} onChange={(value) => onChange({ cols: value })} />
-        <NumberField
-          label="水平间距(mm)"
-          value={matrix.gap_x_mm}
-          step={0.5}
-          onChange={(value) => onChange({ gap_x_mm: value })}
-        />
-        <NumberField
-          label="垂直间距(mm)"
-          value={matrix.gap_y_mm}
-          step={0.5}
-          onChange={(value) => onChange({ gap_y_mm: value })}
-        />
-        <NumberField
-          label="单元格高(mm)"
-          value={matrix.cell_h_mm}
-          step={1}
-          onChange={(value) => onChange({ cell_h_mm: value })}
-        />
-        <NumberField
-          label="网格顶部偏移(mm)"
-          value={matrix.origin_y_mm ?? 0}
-          step={1}
-          onChange={(value) => onChange({ origin_y_mm: value })}
-        />
-      </div>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={matrix.show_grid}
-          onChange={(event) => onChange({ show_grid: event.target.checked })}
-        />
-        显示网格
-      </label>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={matrix.show_border}
-          onChange={(event) => onChange({ show_border: event.target.checked })}
-        />
-        显示边框（同时输出到 PDF）
-      </label>
-      <p className="panel-hint">
-        每页可容纳{' '}
-        {Math.max(1, Math.round(matrix.rows)) * Math.max(1, Math.round(matrix.cols))} 条数据
-      </p>
-    </>
-  );
-}
-
-// --------------------------------------------------------------------
-// 元素属性编辑器
+// 右侧：元素属性
 // --------------------------------------------------------------------
 
 interface ElementEditorProps {
   element: TemplateElement;
+  parentType: ElementType | null;
   kind: 'single' | 'matrix';
   columns: string[];
   autoEdit?: boolean;
   onChange: (patch: Partial<TemplateElement>) => void;
+  onMatrixChange: (patch: Partial<MatrixSetup>) => void;
   onRemove: () => void;
+  onAddChild: (type: ElementType) => void;
 }
 
-function ElementEditor({ element, kind, columns, autoEdit, onChange, onRemove }: ElementEditorProps) {
+function ElementEditor({
+  element,
+  parentType,
+  kind,
+  columns,
+  autoEdit,
+  onChange,
+  onMatrixChange,
+  onRemove,
+  onAddChild,
+}: ElementEditorProps) {
+  const isMatrix = element.type === 'matrix';
+  const matrix = { ...DEFAULT_MATRIX, ...(element.matrix ?? {}) };
+  const rows = Math.max(1, Math.round(matrix.rows));
+  const cols = Math.max(1, Math.round(matrix.cols));
+  const geometryLabel = parentType === 'matrix' ? '相对单元格' : parentType === 'rect' ? '相对父元素' : '页面坐标';
   const numeric: [string, keyof TemplateElement, number][] = [
     ['X (mm)', 'x_mm', 0.5],
     ['Y (mm)', 'y_mm', 0.5],
     ['宽 (mm)', 'w_mm', 0.5],
     ['高 (mm)', 'h_mm', 0.5],
   ];
+
+  const setRows = (value: number) => {
+    const nextRows = Math.max(1, Math.round(value));
+    onMatrixChange({ rows: nextRows, cell_h_mm: Math.max(4, element.h_mm / nextRows) });
+    onChange({ h_mm: round1(Math.max(4, element.h_mm / nextRows) * nextRows) });
+  };
+
+  const setCellHeight = (value: number) => {
+    const cellH = Math.max(4, value);
+    onMatrixChange({ cell_h_mm: cellH });
+    onChange({ h_mm: round1(cellH * rows) });
+  };
+
   return (
-    <>
-      <div className="tpl-panel-head">
-        <span className="tpl-tree-icon">{ELEMENT_ICONS[element.type]}</span>
-        {ELEMENT_LABELS[element.type]}
-        <span className="tpl-tree-meta mono">{element.page_level ? '整页' : '单元格'}</span>
+    <div className="tpl-prop-body">
+      <div className="tpl-section">
+        <div className="tpl-section-title">位置与尺寸</div>
+        <p className="panel-hint">{geometryLabel}</p>
+        <div className="grid-2">
+          {numeric.map(([label, key, step]) => (
+            <NumberField
+              key={key}
+              label={label}
+              step={step}
+              value={Number(element[key] ?? 0)}
+              onChange={(value) => onChange({ [key]: value } as Partial<TemplateElement>)}
+            />
+          ))}
+        </div>
       </div>
 
-      <div className="grid-2">
-        {numeric.map(([label, key, step]) => (
-          <NumberField
-            key={key}
-            label={label}
-            step={step}
-            value={Number(element[key] ?? 0)}
-            onChange={(value) => onChange({ [key]: value } as Partial<TemplateElement>)}
-          />
-        ))}
-      </div>
-
-      {element.type === 'text' || element.type === 'field' ? (
-        <div className="field">
-          <span className="field-label">文本内容</span>
-          <TokenEditor
-            mode="template"
-            multiline
-            fields={columns}
-            value={element.text}
-            autoEdit={autoEdit}
-            placeholder="输入文本，并用 {{字段名}} 插入字段"
-            onChange={(text) => onChange({ text })}
-          />
-          <span className="field-hint">
-            双击胶囊或按 Backspace 可编辑原始 <span className="mono">{'{{字段}}'}</span> 语法
-          </span>
+      {isMatrix ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">矩阵</div>
+          <div className="grid-2">
+            <NumberField label="行数" value={rows} onChange={setRows} />
+            <NumberField label="列数" value={cols} onChange={(value) => onMatrixChange({ cols: Math.max(1, Math.round(value)) })} />
+            <NumberField label="单元格高 (mm)" value={matrix.cell_h_mm} step={1} onChange={setCellHeight} />
+            <NumberField label="顶部留白 (mm)" value={matrix.origin_y_mm ?? 0} step={1} onChange={(value) => onMatrixChange({ origin_y_mm: value })} />
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={matrix.show_grid}
+              onChange={(event) => onMatrixChange({ show_grid: event.target.checked })}
+            />
+            显示网格线（仅内部分隔线）
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={matrix.show_border}
+              onChange={(event) => onMatrixChange({ show_border: event.target.checked })}
+            />
+            显示外边框（同时输出到 PDF）
+          </label>
+          <p className="panel-hint">
+            每个单元格 {round1(element.w_mm / cols)}×{round1(element.h_mm / rows)} mm，共 {rows * cols} 条数据/页。
+            内部添加的元素会复制到所有单元格。
+          </p>
+          <div className="tpl-mini-actions">
+            <span>在此矩阵内插入</span>
+            {(['field', 'text', 'image'] as ElementType[]).map((type) => (
+              <button key={type} type="button" className="btn btn-sm" onClick={() => onAddChild(type)}>
+                ＋{ELEMENT_LABELS[type]}
+              </button>
+            ))}
+          </div>
         </div>
       ) : null}
 
-      {element.type === 'field' || element.type === 'image' ? (
-        <label className="field">
-          <span className="field-label">绑定字段</span>
-          <input
-            type="text"
-            list="template-field-options"
-            value={element.field}
-            onChange={(event) => onChange({ field: event.target.value })}
-          />
-          <datalist id="template-field-options">
-            {columns.map((column) => (
-              <option key={column} value={column} />
+      {element.type === 'rect' ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">容器</div>
+          <p className="panel-hint">矩形可作为标题框等容器，内部元素随矩形一起移动。</p>
+          <div className="tpl-mini-actions">
+            <span>在此矩形内插入</span>
+            {(['text', 'field', 'image'] as ElementType[]).map((type) => (
+              <button key={type} type="button" className="btn btn-sm" onClick={() => onAddChild(type)}>
+                ＋{ELEMENT_LABELS[type]}
+              </button>
             ))}
-          </datalist>
-        </label>
+          </div>
+        </div>
       ) : null}
 
-      {element.type !== 'line' && element.type !== 'image' ? (
-        <>
+      {element.type === 'text' || element.type === 'field' ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">内容</div>
+          <div className="field">
+            <span className="field-label">文本内容</span>
+            <TokenEditor
+              mode="template"
+              multiline
+              fields={columns}
+              value={element.text}
+              autoEdit={autoEdit}
+              placeholder="输入文本，并用 {{字段名}} 插入字段"
+              onChange={(text) => onChange({ text })}
+            />
+            <span className="field-hint">
+              双击胶囊或按 Backspace 可编辑原始 <span className="mono">{'{{字段}}'}</span> 语法
+            </span>
+          </div>
+          {element.type === 'field' ? (
+            <label className="field">
+              <span className="field-label">绑定字段</span>
+              <input
+                type="text"
+                list="template-field-options"
+                value={element.field}
+                onChange={(event) => onChange({ field: event.target.value })}
+              />
+              <datalist id="template-field-options">
+                {columns.map((column) => (
+                  <option key={column} value={column} />
+                ))}
+              </datalist>
+            </label>
+          ) : null}
+        </div>
+      ) : null}
+
+      {element.type === 'image' ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">图片</div>
+          <label className="field">
+            <span className="field-label">绑定字段</span>
+            <input
+              type="text"
+              list="template-field-options"
+              value={element.field}
+              onChange={(event) => onChange({ field: event.target.value })}
+            />
+            <datalist id="template-field-options">
+              {columns.map((column) => (
+                <option key={column} value={column} />
+              ))}
+            </datalist>
+          </label>
+        </div>
+      ) : null}
+
+      {element.type !== 'line' && element.type !== 'image' && !isMatrix ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">文字</div>
           <div className="grid-2">
             <NumberField
-              label="字号(pt)"
-              step={1}
+              label="字号 (pt)"
+              step={0.5}
               value={element.font_size}
               onChange={(value) => onChange({ font_size: value })}
             />
@@ -1431,57 +1891,68 @@ function ElementEditor({ element, kind, columns, autoEdit, onChange, onRemove }:
             </label>
           </div>
           <label className="checkbox-row">
-            <input type="checkbox" checked={element.bold} onChange={(event) => onChange({ bold: event.target.checked })} />
+            <input
+              type="checkbox"
+              checked={element.bold}
+              onChange={(event) => onChange({ bold: event.target.checked })}
+            />
             加粗
           </label>
-        </>
+        </div>
       ) : null}
 
-      <div className="grid-2">
-        <label className="field">
-          <span className="field-label">字体/边框颜色</span>
-          <input type="color" value={toHex(element.color)} onChange={(event) => onChange({ color: event.target.value })} />
-        </label>
-        <label className="field">
-          <span className="field-label">填充色</span>
-          <div className="color-row">
-            <input type="color" value={toHex(element.fill)} onChange={(event) => onChange({ fill: event.target.value })} />
-            <button type="button" className="btn btn-sm" onClick={() => onChange({ fill: '' })}>
-              清除
-            </button>
+      {!isMatrix ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">外观</div>
+          <div className="grid-2">
+            <label className="field">
+              <span className="field-label">{element.type === 'line' ? '线条颜色' : '文字/边框颜色'}</span>
+              <input type="color" value={toHex(element.color)} onChange={(event) => onChange({ color: event.target.value })} />
+            </label>
+            <label className="field">
+              <span className="field-label">填充色</span>
+              <div className="color-row">
+                <input type="color" value={toHex(element.fill)} onChange={(event) => onChange({ fill: event.target.value })} />
+                <button type="button" className="btn btn-sm" onClick={() => onChange({ fill: '' })}>
+                  清除
+                </button>
+              </div>
+            </label>
           </div>
-        </label>
-      </div>
-
-      <label className="checkbox-row">
-        <input type="checkbox" checked={element.border} onChange={(event) => onChange({ border: event.target.checked })} />
-        显示边框
-      </label>
-
-      <NumberField
-        label="圆角(mm)"
-        step={0.5}
-        value={element.border_radius_mm}
-        onChange={(value) => onChange({ border_radius_mm: value })}
-      />
-
-      {kind === 'matrix' ? (
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={element.page_level}
-            onChange={(event) => onChange({ page_level: event.target.checked })}
-          />
-          整页元素（每页只画一次，如标题）
-        </label>
+          {element.type !== 'line' ? (
+            <>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={element.border}
+                  onChange={(event) => onChange({ border: event.target.checked })}
+                />
+                显示边框
+              </label>
+              <NumberField
+                label="圆角 (mm)"
+                step={0.5}
+                value={element.border_radius_mm}
+                onChange={(value) => onChange({ border_radius_mm: value })}
+              />
+            </>
+          ) : null}
+        </div>
       ) : null}
 
-      <div className="row-actions">
+      {kind === 'matrix' && element.type === 'matrix' ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">分页</div>
+          <p className="panel-hint">矩阵模板按单元格铺满数据；矩阵本身作为普通元素参与页面布局。</p>
+        </div>
+      ) : null}
+
+      <div className="tpl-prop-foot">
         <button className="btn btn-sm btn-danger" onClick={onRemove}>
           删除元素
         </button>
       </div>
-    </>
+    </div>
   );
 }
 

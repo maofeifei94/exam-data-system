@@ -265,7 +265,7 @@ export interface MatrixSetup {
 
 export interface TemplateElement {
   id: string;
-  type: 'text' | 'field' | 'image' | 'line' | 'rect';
+  type: 'text' | 'field' | 'image' | 'line' | 'rect' | 'matrix';
   x_mm: number;
   y_mm: number;
   w_mm: number;
@@ -279,8 +279,12 @@ export interface TemplateElement {
   fill: string;
   border: boolean;
   border_radius_mm: number;
-  /** 矩阵模板中：true 表示该元素属于整页（每页只画一次），坐标相对内容区左上角 */
-  page_level: boolean;
+  /** 子元素：坐标相对父元素左上角；矩阵的子元素会复制到每个单元格 */
+  children: TemplateElement[];
+  /** type=matrix 时的网格配置 */
+  matrix?: MatrixSetup;
+  /** 兼容旧模板：整页元素标记，新结构不再使用 */
+  page_level?: boolean;
 }
 
 export interface PdfTemplate {

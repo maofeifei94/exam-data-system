@@ -411,6 +411,20 @@ pub struct MatrixSetup {
     #[serde(default = "default_true")]
     pub show_border: bool,
 }
+impl Default for MatrixSetup {
+    fn default() -> Self {
+        Self {
+            rows: default_matrix_rows(),
+            cols: default_matrix_cols(),
+            gap_x_mm: 0.0,
+            gap_y_mm: 0.0,
+            cell_h_mm: default_cell_h(),
+            origin_y_mm: 0.0,
+            show_grid: true,
+            show_border: true,
+        }
+    }
+}
 fn default_true() -> bool {
     true
 }
@@ -458,9 +472,40 @@ pub struct TemplateElement {
     pub border: bool,
     #[serde(default)]
     pub border_radius_mm: f32,
-    /// 矩阵模板中：true 表示该元素属于整页（每页只画一次），坐标相对内容区左上角
+    /// 子元素：坐标相对父元素左上角；矩阵的子元素会被复制到每个单元格
+    #[serde(default)]
+    pub children: Vec<TemplateElement>,
+    /// type = "matrix" 时的网格配置
+    #[serde(default)]
+    pub matrix: Option<MatrixSetup>,
+    /// 兼容旧模板：true 表示整页元素（每页只画一次）
     #[serde(default)]
     pub page_level: bool,
+}
+
+impl TemplateElement {
+    fn empty(id: &str, etype: &str) -> Self {
+        TemplateElement {
+            id: id.to_string(),
+            etype: etype.to_string(),
+            x_mm: 0.0,
+            y_mm: 0.0,
+            w_mm: 0.0,
+            h_mm: 0.0,
+            text: String::new(),
+            field: String::new(),
+            font_size: default_font_size(),
+            bold: false,
+            align: default_align(),
+            color: default_color(),
+            fill: String::new(),
+            border: false,
+            border_radius_mm: 0.0,
+            children: Vec::new(),
+            matrix: None,
+            page_level: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,6 +532,60 @@ impl Default for TemplateBody {
             matrix: default_matrix(),
             elements: Vec::new(),
         }
+    }
+}
+
+impl TemplateBody {
+    /// 把旧版「扁平元素 + 页面级矩阵」模板迁移为嵌套元素结构：
+    /// 页面元素保持在根，单元格元素挂到新建的 matrix 元素下。
+    pub fn normalize(&mut self, kind: &str) {
+        if self.elements.iter().any(|e| e.etype == "matrix") {
+            return;
+        }
+        if kind != "matrix" {
+            return;
+        }
+        let (pw, ph) = match self.page.size.as_str() {
+            "A3" => (297.0, 420.0),
+            "A5" => (148.0, 210.0),
+            "Letter" => (215.9, 279.4),
+            _ => (210.0, 297.0),
+        };
+        let page_w = if self.page.orientation == "landscape" { ph } else { pw };
+        let content_w = (page_w - self.page.margin_mm.left - self.page.margin_mm.right).max(10.0);
+        let mx = self.matrix.clone();
+        let cols = mx.cols.max(1) as f32;
+        let rows = mx.rows.max(1) as f32;
+        let gap_x = mx.gap_x_mm.max(0.0);
+        let gap_y = mx.gap_y_mm.max(0.0);
+        let cell_w = ((content_w - gap_x * (cols - 1.0)) / cols).max(1.0);
+        let cell_h = if mx.cell_h_mm > 0.0 { mx.cell_h_mm } else { 30.0 };
+        let matrix_w = cell_w * cols + gap_x * (cols - 1.0);
+        let matrix_h = cell_h * rows + gap_y * (rows - 1.0);
+
+        let old = std::mem::take(&mut self.elements);
+        let mut page_elements = Vec::new();
+        let mut cell_elements = Vec::new();
+        for mut el in old {
+            let was_page_level = el.page_level;
+            el.page_level = false;
+            el.children.clear();
+            if was_page_level {
+                page_elements.push(el);
+            } else {
+                cell_elements.push(el);
+            }
+        }
+
+        let mut matrix_el = TemplateElement::empty("matrix", "matrix");
+        matrix_el.x_mm = 0.0;
+        matrix_el.y_mm = mx.origin_y_mm;
+        matrix_el.w_mm = matrix_w;
+        matrix_el.h_mm = matrix_h;
+        matrix_el.matrix = Some(mx);
+        matrix_el.children = cell_elements;
+        page_elements.push(matrix_el);
+        self.elements = page_elements;
     }
 }
 

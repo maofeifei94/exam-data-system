@@ -181,24 +181,6 @@ fn draw_rect(
     layer.add_rect(Rect::new(Mm(llx), Mm(lly), Mm(urx), Mm(ury)).with_mode(mode));
 }
 
-/// 矩阵单元格边框：只描边不填充。
-fn draw_cell_border(
-    layer: &PdfLayerReference,
-    x: f32,
-    y_top: f32,
-    w: f32,
-    h: f32,
-    page_h: f32,
-) {
-    let llx = x;
-    let ury = page_h - y_top;
-    let lly = ury - h;
-    let urx = llx + w;
-    layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-    layer.set_outline_thickness(0.3);
-    layer.add_rect(Rect::new(Mm(llx), Mm(lly), Mm(urx), Mm(ury)).with_mode(PaintMode::Stroke));
-}
-
 fn draw_image(
     doc: &PdfDocumentReference,
     layer: &PdfLayerReference,
@@ -244,6 +226,120 @@ fn draw_image(
     }
 }
 
+fn draw_matrix_frame(
+    layer: &PdfLayerReference,
+    mx: &MatrixSetup,
+    origin: &Origin,
+    w: f32,
+    h: f32,
+    cols: i64,
+    rows: i64,
+    page_h: f32,
+) {
+    let cell_w = w / cols as f32;
+    let cell_h = h / rows as f32;
+    // 边框：整个矩阵的外轮廓
+    if mx.show_border {
+        let llx = origin.x;
+        let ury = page_h - origin.y_top;
+        let lly = ury - h;
+        let urx = llx + w;
+        layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+        layer.set_outline_thickness(0.35);
+        layer.add_rect(Rect::new(Mm(llx), Mm(lly), Mm(urx), Mm(ury)).with_mode(PaintMode::Stroke));
+    }
+    // 网格：仅内部的分隔线，单元格之间无间隔
+    if mx.show_grid {
+        layer.set_outline_color(Color::Rgb(Rgb::new(0.45, 0.45, 0.45, None)));
+        layer.set_outline_thickness(0.22);
+        for i in 1..cols {
+            let x = origin.x + cell_w * i as f32;
+            layer.add_line(Line {
+                points: vec![
+                    (Point::new(Mm(x), Mm(page_h - origin.y_top)), false),
+                    (Point::new(Mm(x), Mm(page_h - origin.y_top - h)), false),
+                ],
+                is_closed: false,
+            });
+        }
+        for j in 1..rows {
+            let y = page_h - (origin.y_top + cell_h * j as f32);
+            layer.add_line(Line {
+                points: vec![
+                    (Point::new(Mm(origin.x), Mm(y)), false),
+                    (Point::new(Mm(origin.x + w), Mm(y)), false),
+                ],
+                is_closed: false,
+            });
+        }
+    }
+}
+
+fn draw_element(
+    doc: &PdfDocumentReference,
+    layer: &PdfLayerReference,
+    font: &IndirectFontRef,
+    el: &TemplateElement,
+    ctx: &Ctx,
+    origin: &Origin,
+    page_h: f32,
+    photo_dir: Option<&str>,
+) {
+    if el.etype == "matrix" {
+        let mx = el.matrix.clone().unwrap_or_default();
+        let cols = mx.cols.max(1);
+        let rows = mx.rows.max(1);
+        let matrix_origin = Origin { x: origin.x + el.x_mm, y_top: origin.y_top + el.y_mm };
+        draw_matrix_frame(layer, &mx, &matrix_origin, el.w_mm, el.h_mm, cols, rows, page_h);
+        let cell_w = el.w_mm / cols as f32;
+        let cell_h = el.h_mm / rows as f32;
+        for r in 0..rows {
+            for c in 0..cols {
+                let cell_origin = Origin {
+                    x: matrix_origin.x + c as f32 * cell_w,
+                    y_top: matrix_origin.y_top + r as f32 * cell_h,
+                };
+                draw_elements(doc, layer, font, &el.children, ctx, &cell_origin, page_h, photo_dir);
+            }
+        }
+        return;
+    }
+
+    match el.etype.as_str() {
+        "rect" => draw_rect(layer, el, origin, page_h),
+        "line" => {
+            layer.set_outline_color(color_of(&el.color).unwrap_or(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))));
+            layer.set_outline_thickness(0.4);
+            let y = page_h - (origin.y_top + el.y_mm);
+            layer.add_line(Line {
+                points: vec![
+                    (Point::new(Mm(origin.x + el.x_mm), Mm(y)), false),
+                    (Point::new(Mm(origin.x + el.x_mm + el.w_mm), Mm(y)), false),
+                ],
+                is_closed: false,
+            });
+        }
+        "image" => {
+            let raw = ctx.value(&el.field);
+            draw_image(doc, layer, el, origin, page_h, resolve_photo(&raw, photo_dir));
+        }
+        _ => {
+            let text = if el.text.trim().is_empty() {
+                ctx.value(&el.field).to_string()
+            } else {
+                interpolate(&el.text, ctx)
+            };
+            draw_text(layer, font, &text, el, origin, page_h);
+        }
+    }
+
+    // 子元素相对父元素左上角继续绘制
+    if !el.children.is_empty() {
+        let child_origin = Origin { x: origin.x + el.x_mm, y_top: origin.y_top + el.y_mm };
+        draw_elements(doc, layer, font, &el.children, ctx, &child_origin, page_h, photo_dir);
+    }
+}
+
 fn draw_elements(
     doc: &PdfDocumentReference,
     layer: &PdfLayerReference,
@@ -255,33 +351,7 @@ fn draw_elements(
     photo_dir: Option<&str>,
 ) {
     for el in elements {
-        match el.etype.as_str() {
-            "rect" => draw_rect(layer, el, origin, page_h),
-            "line" => {
-                layer.set_outline_color(color_of(&el.color).unwrap_or(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))));
-                layer.set_outline_thickness(0.4);
-                let y = page_h - (origin.y_top + el.y_mm);
-                layer.add_line(Line {
-                    points: vec![
-                        (Point::new(Mm(origin.x + el.x_mm), Mm(y)), false),
-                        (Point::new(Mm(origin.x + el.x_mm + el.w_mm), Mm(y)), false),
-                    ],
-                    is_closed: false,
-                });
-            }
-            "image" => {
-                let raw = ctx.value(&el.field);
-                draw_image(doc, layer, el, origin, page_h, resolve_photo(&raw, photo_dir));
-            }
-            _ => {
-                let text = if el.text.trim().is_empty() {
-                    ctx.value(&el.field).to_string()
-                } else {
-                    interpolate(&el.text, ctx)
-                };
-                draw_text(layer, font, &text, el, origin, page_h);
-            }
-        }
+        draw_element(doc, layer, font, el, ctx, origin, page_h, photo_dir);
     }
 }
 
@@ -344,8 +414,6 @@ pub fn render_pdf(
     let m = &body.page.margin_mm;
     let content_x = m.left;
     let content_y_top = m.top;
-    let content_w = (page_w - m.left - m.right).max(10.0);
-    let content_h = (page_h - m.top - m.bottom).max(10.0);
 
     let (doc, first_page, first_layer) = PdfDocument::new("考务数据导出", Mm(page_w), Mm(page_h), "Layer 1");
     let font = doc
@@ -356,17 +424,12 @@ pub fn render_pdf(
     let total_rows = rows.len() as i64;
 
     if kind == "matrix" {
-        let mx: &MatrixSetup = &body.matrix;
-        let cols = mx.cols.max(1);
-        let grid_rows = mx.rows.max(1);
-        let cell_w = ((content_w - mx.gap_x_mm * (cols as f32 - 1.0)) / cols as f32).max(1.0);
-        let cell_h = if mx.cell_h_mm > 0.0 {
-            mx.cell_h_mm
-        } else {
-            ((content_h - mx.origin_y_mm - mx.gap_y_mm * (grid_rows as f32 - 1.0)) / grid_rows as f32)
-                .max(1.0)
-        };
-        let per_page = (cols * grid_rows) as i64;
+        let matrix_el = body.elements.iter().find(|e| e.etype == "matrix");
+        let (cols, grid_rows) = matrix_el
+            .and_then(|e| e.matrix.as_ref())
+            .map(|m| (m.cols.max(1), m.rows.max(1)))
+            .unwrap_or((1, 1));
+        let per_page = cols * grid_rows;
         let pages = if total_rows == 0 {
             1
         } else {
@@ -387,7 +450,6 @@ pub fn render_pdf(
             let first = (page - 1) * per_page;
             let on_page = (total_rows - first).clamp(0, per_page);
 
-            // 页面级元素（标题等）
             let page_ctx = Ctx {
                 row: &[],
                 index: &index,
@@ -398,35 +460,40 @@ pub fn render_pdf(
                 count: on_page,
             };
             let page_origin = Origin { x: content_x, y_top: content_y_top };
-            let page_level: Vec<TemplateElement> =
-                body.elements.iter().filter(|e| e.page_level).cloned().collect();
-            draw_elements(&doc, &layer, &font, &page_level, &page_ctx, &page_origin, page_h, photo_dir.as_deref());
 
-            // 单元格
-            for k in 0..on_page {
-                let row_no = first + k; // 0-based
-                let row = &rows[row_no as usize];
-                let cx = k % cols;
-                let cy = k / cols;
-                let origin = Origin {
-                    x: content_x + cx as f32 * (cell_w + mx.gap_x_mm),
-                    y_top: content_y_top + mx.origin_y_mm + cy as f32 * (cell_h + mx.gap_y_mm),
-                };
-                let ctx = Ctx {
-                    row,
-                    index: &index,
-                    index_no: k + 1,
-                    no: row_no + 1,
-                    page,
-                    pages,
-                    count: on_page,
-                };
-                if mx.show_border {
-                    draw_cell_border(&layer, origin.x, origin.y_top, cell_w, cell_h, page_h);
+            // 页面级元素：标题、标题框等（矩阵本身单独处理）
+            for el in body.elements.iter().filter(|e| e.etype != "matrix") {
+                draw_element(&doc, &layer, &font, el, &page_ctx, &page_origin, page_h, photo_dir.as_deref());
+            }
+
+            if let Some(el) = matrix_el {
+                let mx = el.matrix.clone().unwrap_or_default();
+                let matrix_origin = Origin { x: content_x + el.x_mm, y_top: content_y_top + el.y_mm };
+                draw_matrix_frame(&layer, &mx, &matrix_origin, el.w_mm, el.h_mm, cols, grid_rows, page_h);
+                let cell_w = el.w_mm / cols as f32;
+                let cell_h = el.h_mm / grid_rows as f32;
+
+                // 每条数据填入一个单元格，子元素被复制到所有格子
+                for k in 0..on_page {
+                    let row_no = first + k;
+                    let row = &rows[row_no as usize];
+                    let cx = k % cols;
+                    let cy = k / cols;
+                    let origin = Origin {
+                        x: matrix_origin.x + cx as f32 * cell_w,
+                        y_top: matrix_origin.y_top + cy as f32 * cell_h,
+                    };
+                    let ctx = Ctx {
+                        row,
+                        index: &index,
+                        index_no: k + 1,
+                        no: row_no + 1,
+                        page,
+                        pages,
+                        count: on_page,
+                    };
+                    draw_elements(&doc, &layer, &font, &el.children, &ctx, &origin, page_h, photo_dir.as_deref());
                 }
-                let cell_level: Vec<TemplateElement> =
-                    body.elements.iter().filter(|e| !e.page_level).cloned().collect();
-                draw_elements(&doc, &layer, &font, &cell_level, &ctx, &origin, page_h, photo_dir.as_deref());
             }
         }
     } else {

@@ -19,12 +19,14 @@ const TPL_COLS: &str = "id, name, kind, description, template, scope, project_id
 
 fn row_to_template(r: &rusqlite::Row<'_>) -> rusqlite::Result<(PdfTemplate, String)> {
     let raw: String = r.get(4)?;
-    let body: TemplateBody = serde_json::from_str(&raw).unwrap_or_default();
+    let kind: String = r.get(2)?;
+    let mut body: TemplateBody = serde_json::from_str(&raw).unwrap_or_default();
+    body.normalize(&kind);
     Ok((
         PdfTemplate {
             id: r.get(0)?,
             name: r.get(1)?,
-            kind: r.get(2)?,
+            kind,
             description: r.get(3)?,
             page: body.page,
             matrix: body.matrix,
@@ -83,11 +85,13 @@ pub async fn get_one(
 }
 
 fn body_from_input(input: &PdfTemplateInput) -> TemplateBody {
-    TemplateBody {
+    let mut body = TemplateBody {
         page: input.page.clone(),
         matrix: input.matrix.clone(),
         elements: input.elements.clone(),
-    }
+    };
+    body.normalize(&input.kind);
+    body
 }
 
 fn resolve_scope(scope: Option<&str>, project_id: &str) -> String {
@@ -224,7 +228,8 @@ pub async fn render_saved(
 ) -> AppResult<Response<Body>> {
     let conn = state.lock()?;
     let (t, raw) = fetch_template(&conn, &id)?;
-    let body: TemplateBody = serde_json::from_str(&raw).unwrap_or_default();
+    let mut body: TemplateBody = serde_json::from_str(&raw).unwrap_or_default();
+    body.normalize(&t.kind);
     let _ = store::get_dataset(&conn, &input.dataset_id)?;
     let opts = RenderOpts {
         limit: input.limit,
