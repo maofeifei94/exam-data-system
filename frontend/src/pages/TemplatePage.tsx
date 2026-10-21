@@ -32,6 +32,8 @@ const PAD = 22;
 
 type ElementType = TemplateElement['type'];
 
+type Selection = { type: 'page' } | { type: 'matrix' } | { type: 'element'; id: string } | null;
+
 interface TemplateDraft {
   id: string | null;
   name: string;
@@ -56,6 +58,8 @@ const DEFAULT_MATRIX: MatrixSetup = {
   gap_y_mm: 2,
   cell_h_mm: 42,
   origin_y_mm: 0,
+  show_grid: true,
+  show_border: true,
 };
 
 const EMPTY_DRAFT: TemplateDraft = {
@@ -67,6 +71,22 @@ const EMPTY_DRAFT: TemplateDraft = {
   matrix: DEFAULT_MATRIX,
   elements: [],
   scope: 'global',
+};
+
+const ELEMENT_LABELS: Record<ElementType, string> = {
+  text: '文本',
+  field: '字段',
+  image: '图片',
+  line: '线条',
+  rect: '矩形',
+};
+
+const ELEMENT_ICONS: Record<ElementType, string> = {
+  text: 'T',
+  field: '⌗',
+  image: '▣',
+  line: '╱',
+  rect: '▭',
 };
 
 function defaultElement(type: ElementType, field: string, pageLevel: boolean): TemplateElement {
@@ -276,7 +296,6 @@ function saveBlob(blob: Blob, filename: string) {
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;
-  document.body.appendChild(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
@@ -304,7 +323,9 @@ export default function TemplatePage({
   const [scope, setScope] = useState<'project' | 'global'>(initialScope);
 
   const [draft, setDraft] = useState<TemplateDraft>(EMPTY_DRAFT);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection>({ type: 'page' });
+  /** 插入元素时的落点：矩阵模板可选择插入单元格或整页 */
+  const [insertTarget, setInsertTarget] = useState<'cell' | 'page'>('cell');
   /** 画布中双击元素后，让属性面板的 Token 编辑器立即进入编辑态 */
   const [editRequestId, setEditRequestId] = useState<string | null>(null);
   const [size, setSize] = useState({ w: 620, h: 740 });
@@ -326,7 +347,18 @@ export default function TemplatePage({
     [size.w, page.w, scale, page.h, size.h],
   );
 
-  const selected = draft.elements.find((element) => element.id === selectedId) ?? null;
+  const isMatrix = draft.kind === 'matrix';
+  const selectedElement =
+    selection?.type === 'element'
+      ? draft.elements.find((element) => element.id === selection.id) ?? null
+      : null;
+
+  const cellElements = isMatrix
+    ? draft.elements.filter((element) => !element.page_level)
+    : draft.elements;
+  const pageElements = isMatrix
+    ? draft.elements.filter((element) => element.page_level)
+    : [];
 
   const columnNames = useMemo(() => {
     const names = new Set<string>();
@@ -378,7 +410,7 @@ export default function TemplatePage({
         const preferred =
           (initialTemplateId && list.find((item) => item.id === initialTemplateId)) || list[0];
         setDraft(preferred ? toDraft(preferred) : { ...EMPTY_DRAFT, scope });
-        setSelectedId(null);
+        setSelection({ type: 'page' });
       } catch (err) {
         show(err instanceof Error ? err.message : '加载模板列表失败', 'error');
       }
@@ -431,21 +463,22 @@ export default function TemplatePage({
 
     const background = new Rect({ x: 0, y: 0, width: size.w, height: size.h, fill: '#eef2f7' });
     background.hittable = true;
-    background.on('tap', () => setSelectedId(null));
+    background.on('tap', () => setSelection({ type: 'page' }));
     tree.add(background);
 
     // 纸张
-    tree.add(
-      new Rect({
-        x: origin.x,
-        y: origin.y,
-        width: page.w * scale,
-        height: page.h * scale,
-        fill: '#ffffff',
-        stroke: '#cbd5e1',
-        strokeWidth: 1,
-      }),
-    );
+    const paper = new Rect({
+      x: origin.x,
+      y: origin.y,
+      width: page.w * scale,
+      height: page.h * scale,
+      fill: '#ffffff',
+      stroke: '#cbd5e1',
+      strokeWidth: 1,
+    });
+    paper.hittable = true;
+    paper.on('tap', () => setSelection({ type: 'page' }));
+    tree.add(paper);
 
     const m = draft.page.margin_mm;
     const contentX = origin.x + m.left * scale;
@@ -453,7 +486,6 @@ export default function TemplatePage({
     const contentW = Math.max(10, (page.w - m.left - m.right) * scale);
     const contentH = Math.max(10, (page.h - m.top - m.bottom) * scale);
 
-    // 内容区虚线框
     tree.add(
       new Rect({
         x: contentX,
@@ -466,47 +498,7 @@ export default function TemplatePage({
       }),
     );
 
-    const isMatrix = draft.kind === 'matrix';
-    const mx = draft.matrix;
-    const cols = Math.max(1, Math.round(mx.cols));
-    const rows = Math.max(1, Math.round(mx.rows));
-    const cellW = Math.max(4, (contentW - mx.gap_x_mm * scale * (cols - 1)) / cols);
-    const cellH =
-      mx.cell_h_mm > 0
-        ? mx.cell_h_mm * scale
-        : Math.max(4, (contentH - mx.origin_y_mm * scale - mx.gap_y_mm * scale * (rows - 1)) / rows);
-
-    const cellOrigin = (r: number, c: number) => ({
-      x: contentX + c * (cellW + mx.gap_x_mm * scale),
-      y: contentY + mx.origin_y_mm * scale + r * (cellH + mx.gap_y_mm * scale),
-    });
-
-    let cellLevelOrigin = { x: contentX, y: contentY };
-    let pageLevelOrigin = { x: contentX, y: contentY };
-
-    if (isMatrix) {
-      for (let r = 0; r < rows; r += 1) {
-        for (let c = 0; c < cols; c += 1) {
-          const o = cellOrigin(r, c);
-          const first = r === 0 && c === 0;
-          tree.add(
-            new Rect({
-              x: o.x,
-              y: o.y,
-              width: cellW,
-              height: cellH,
-              fill: first ? '#eff6ff' : '#f8fafc',
-              stroke: first ? '#93c5fd' : '#e2e8f0',
-              strokeWidth: 1,
-              dashPattern: first ? undefined : [3, 3],
-            }),
-          );
-        }
-      }
-      cellLevelOrigin = cellOrigin(0, 0);
-    }
-
-    const isPageLevel = (element: TemplateElement) => isMatrix && element.page_level;
+    const isElementSelected = (id: string) => selection?.type === 'element' && selection.id === id;
 
     const buildElement = (
       element: TemplateElement,
@@ -520,6 +512,7 @@ export default function TemplatePage({
       const h = Math.max(2, element.h_mm * scale);
       const fs = Math.max(6, element.font_size * MM_PER_PT * scale);
       const radius = Math.max(0, element.border_radius_mm * scale);
+      const selected = isElementSelected(element.id);
       const children = [
         new Rect({ x: 0, y: 0, width: w, height: h, fill: 'rgba(0,0,0,0.001)', hittable: true }),
       ];
@@ -538,7 +531,7 @@ export default function TemplatePage({
           }),
         );
       } else if (element.type === 'line') {
-        children.push(new Rect({ x: 0, y: 0, width: w, height: h, fill: element.color || '#000000' }));
+        children.push(new Rect({ x: 0, y: 0, width: w, height: Math.max(1, h), fill: element.color || '#000000' }));
       } else if (element.type === 'image') {
         children.push(
           new Rect({ x: 0, y: 0, width: w, height: h, fill: element.fill || '#f1f5f9', stroke: '#cbd5e1', strokeWidth: 1 }),
@@ -546,7 +539,7 @@ export default function TemplatePage({
             x: 0,
             y: h / 2 - fs / 2,
             width: w,
-            text: `🖼 ${element.field || '照片'}`,
+            text: `▣ ${element.field || '照片'}`,
             fontSize: Math.min(fs, 12),
             fill: '#94a3b8',
             textAlign: 'center',
@@ -574,9 +567,9 @@ export default function TemplatePage({
             y: 0,
             width: w,
             height: h,
-            stroke: selectedId === element.id ? '#2563eb' : '#94a3b8',
-            strokeWidth: selectedId === element.id ? 2 : 1,
-            dashPattern: selectedId === element.id ? undefined : [4, 3],
+            stroke: selected ? '#0f766e' : '#94a3b8',
+            strokeWidth: selected ? 2 : 1,
+            dashPattern: selected ? undefined : [4, 3],
           }),
         );
       }
@@ -593,11 +586,11 @@ export default function TemplatePage({
 
       if (interactive) {
         group.on('tap', () => {
-          setSelectedId(element.id);
+          setSelection({ type: 'element', id: element.id });
           setEditRequestId(null);
         });
         group.on('double_tap', () => {
-          setSelectedId(element.id);
+          setSelection({ type: 'element', id: element.id });
           setEditRequestId(element.id);
         });
         group.on('drag.end', () => {
@@ -611,19 +604,90 @@ export default function TemplatePage({
           }));
         });
       } else {
-        group.opacity = 0.45;
+        group.opacity = 0.4;
       }
 
       return group;
     };
 
-    const cellElements = draft.elements.filter((element) => !isPageLevel(element));
-    const pageElements = draft.elements.filter((element) => isPageLevel(element));
-
     if (isMatrix) {
-      // 首格：可交互编辑
-      cellElements.forEach((element) => tree.add(buildElement(element, cellLevelOrigin.x, cellLevelOrigin.y, true)));
-      // 其余格：半透明预览
+      const mx = draft.matrix;
+      const cols = Math.max(1, Math.round(mx.cols));
+      const rows = Math.max(1, Math.round(mx.rows));
+      const cellW = Math.max(4, (contentW - mx.gap_x_mm * scale * (cols - 1)) / cols);
+      const cellH =
+        mx.cell_h_mm > 0
+          ? mx.cell_h_mm * scale
+          : Math.max(4, (contentH - mx.origin_y_mm * scale - mx.gap_y_mm * scale * (rows - 1)) / rows);
+      const gapX = mx.gap_x_mm * scale;
+      const gapY = mx.gap_y_mm * scale;
+
+      const cellOrigin = (r: number, c: number) => ({
+        x: contentX + c * (cellW + gapX),
+        y: contentY + mx.origin_y_mm * scale + r * (cellH + gapY),
+      });
+
+      // 网格辅助线：可单独关闭，仅影响编辑器
+      if (mx.show_grid) {
+        for (let r = 0; r < rows; r += 1) {
+          for (let c = 0; c < cols; c += 1) {
+            const o = cellOrigin(r, c);
+            tree.add(
+              new Rect({
+                x: o.x,
+                y: o.y,
+                width: cellW,
+                height: cellH,
+                fill: r === 0 && c === 0 ? 'rgba(15,118,110,0.06)' : 'rgba(15,118,110,0.015)',
+                stroke: '#d7e0da',
+                strokeWidth: 1,
+                dashPattern: [3, 3],
+              }),
+            );
+          }
+        }
+      }
+
+      const matrixW = cols * cellW + (cols - 1) * gapX;
+      const matrixH = rows * cellH + (rows - 1) * gapY;
+      const matrixSelected = selection?.type === 'matrix';
+
+      // 矩阵外轮廓：整块可点击选中
+      const outline = new Rect({
+        x: contentX,
+        y: contentY + mx.origin_y_mm * scale,
+        width: matrixW,
+        height: matrixH,
+        fill: 'rgba(0,0,0,0.001)',
+        stroke: matrixSelected ? '#0f766e' : '#9aa8a0',
+        strokeWidth: matrixSelected ? 2 : 1,
+        dashPattern: matrixSelected ? undefined : [6, 4],
+      });
+      outline.on('tap', () => setSelection({ type: 'matrix' }));
+      tree.add(outline);
+
+      // 单元格边框：可单独关闭，并同步影响 PDF 输出
+      if (mx.show_border) {
+        for (let r = 0; r < rows; r += 1) {
+          for (let c = 0; c < cols; c += 1) {
+            const o = cellOrigin(r, c);
+            tree.add(
+              new Rect({
+                x: o.x,
+                y: o.y,
+                width: cellW,
+                height: cellH,
+                stroke: '#c3cdc6',
+                strokeWidth: 1,
+              }),
+            );
+          }
+        }
+      }
+
+      // 第一格可编辑，其余格作为预览
+      const first = cellOrigin(0, 0);
+      cellElements.forEach((element) => tree.add(buildElement(element, first.x, first.y, true)));
       for (let r = 0; r < rows; r += 1) {
         for (let c = 0; c < cols; c += 1) {
           if (r === 0 && c === 0) continue;
@@ -631,14 +695,12 @@ export default function TemplatePage({
           cellElements.forEach((element) => tree.add(buildElement(element, o.x, o.y, false)));
         }
       }
-    } else {
-      draft.elements.forEach((element) =>
-        tree.add(buildElement(element, cellLevelOrigin.x, cellLevelOrigin.y, true)),
-      );
-    }
 
-    pageElements.forEach((element) => tree.add(buildElement(element, pageLevelOrigin.x, pageLevelOrigin.y, true)));
-  }, [draft, selectedId, size, scale, origin.x, origin.y, page.w, page.h, loading]);
+      pageElements.forEach((element) => tree.add(buildElement(element, contentX, contentY, true)));
+    } else {
+      draft.elements.forEach((element) => tree.add(buildElement(element, contentX, contentY, true)));
+    }
+  }, [draft, selection, size, scale, origin.x, origin.y, page.w, page.h, loading, isMatrix]);
 
   // ------------------------------------------------------------------
   // 操作
@@ -650,16 +712,29 @@ export default function TemplatePage({
     }));
   };
 
+  const updateMatrix = (patch: Partial<MatrixSetup>) => {
+    setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, ...patch } }));
+  };
+
+  const updatePage = (patch: Partial<PageSetup>) => {
+    setDraft((prev) => ({ ...prev, page: { ...prev.page, ...patch } }));
+  };
+
   const addElement = (type: ElementType) => {
-    const pageLevel = draft.kind === 'matrix' && false;
+    const pageLevel = isMatrix && insertTarget === 'page';
     const element = defaultElement(type, columnNames[0] ?? '', pageLevel);
+    const index = draft.elements.length;
+    // 轻微错位，避免新元素完全重叠
+    element.x_mm = round1(6 + (index % 5) * 4);
+    element.y_mm = round1(6 + (index % 7) * 5);
     setDraft((prev) => ({ ...prev, elements: [...prev.elements, element] }));
-    setSelectedId(element.id);
+    setSelection({ type: 'element', id: element.id });
+    setEditRequestId(null);
   };
 
   const removeElement = (id: string) => {
     setDraft((prev) => ({ ...prev, elements: prev.elements.filter((element) => element.id !== id) }));
-    if (selectedId === id) setSelectedId(null);
+    if (selection?.type === 'element' && selection.id === id) setSelection({ type: 'page' });
   };
 
   const refreshTemplates = async () => {
@@ -677,13 +752,13 @@ export default function TemplatePage({
   const selectTemplate = (id: string) => {
     if (!id) {
       setDraft({ ...EMPTY_DRAFT, scope });
-      setSelectedId(null);
+      setSelection({ type: 'page' });
       return;
     }
     const template = templates.find((item) => item.id === id);
     if (!template) return;
     setDraft(toDraft(template));
-    setSelectedId(null);
+    setSelection({ type: 'page' });
   };
 
   const buildPayload = (): PdfTemplateInput => ({
@@ -752,7 +827,7 @@ export default function TemplatePage({
   const handleDelete = async () => {
     if (!draft.id) {
       setDraft({ ...EMPTY_DRAFT, scope });
-      setSelectedId(null);
+      setSelection({ type: 'page' });
       return;
     }
     if (!window.confirm(`确认删除模板「${draft.name}」？`)) return;
@@ -763,7 +838,7 @@ export default function TemplatePage({
       );
       setTemplates(list);
       setDraft(list.length > 0 ? toDraft(list[0]) : { ...EMPTY_DRAFT, scope });
-      setSelectedId(null);
+      setSelection({ type: 'page' });
       show('模板已删除', 'success');
     } catch (err) {
       show(err instanceof Error ? err.message : '删除模板失败', 'error');
@@ -808,6 +883,28 @@ export default function TemplatePage({
     }
   };
 
+  const elementLabel = (element: TemplateElement): string => {
+    if (element.type === 'text') {
+      const text = element.text.replace(/\{\{([^}]*)\}\}/g, '$1').trim();
+      return text ? (text.length > 16 ? `${text.slice(0, 16)}…` : text) : '（空文本）';
+    }
+    return element.field || ELEMENT_LABELS[element.type];
+  };
+
+  const elementRow = (element: TemplateElement) => (
+    <button
+      key={element.id}
+      className={`tpl-tree-row depth-2 ${
+        selection?.type === 'element' && selection.id === element.id ? 'active' : ''
+      }`}
+      onClick={() => setSelection({ type: 'element', id: element.id })}
+      title={elementLabel(element)}
+    >
+      <span className="tpl-tree-icon">{ELEMENT_ICONS[element.type]}</span>
+      <span className="tpl-tree-label">{elementLabel(element)}</span>
+    </button>
+  );
+
   if (loading) {
     return (
       <div className="page">
@@ -825,7 +922,7 @@ export default function TemplatePage({
         <div>
           <h2 className="page-title">PDF 模板</h2>
           <p className="page-subtitle">
-            以 PPT 式可交互画布插入参数化组件；模板可保存到全局库，其他考试项目引用后会立即复制一份本项目副本。
+            左侧为页面结构树，中间为画布，右侧编辑当前选中节点；顶部工具栏插入元素。
           </p>
         </div>
         <div className="row-actions">
@@ -853,9 +950,6 @@ export default function TemplatePage({
               </option>
             ))}
           </select>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? '保存中…' : '保存模板'}
-          </button>
           {scope === 'global' && draft.id ? (
             <button className="btn" onClick={handleDuplicate} disabled={!currentProjectId}>
               引用到本项目
@@ -867,217 +961,175 @@ export default function TemplatePage({
         </div>
       </div>
 
-      <div className="split-3">
-        {/* --------------- 模板设置 --------------- */}
-        <aside className="card flow-panel">
-          <h3 className="card-title">模板设置</h3>
-          <label className="field">
-            <span className="field-label">模板名称</span>
-            <input
-              type="text"
-              value={draft.name}
-              onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
-            />
-          </label>
-          <label className="field">
-            <span className="field-label">模板类型</span>
-            <select
-              value={draft.kind}
-              onChange={(event) =>
-                setDraft((prev) => ({ ...prev, kind: event.target.value as 'single' | 'matrix' }))
-              }
-            >
-              <option value="single">单人单页（每行数据一页）</option>
-              <option value="matrix">矩阵（每页铺满多行数据）</option>
-            </select>
-          </label>
-          <label className="field">
-            <span className="field-label">说明</span>
-            <input
-              type="text"
-              value={draft.description}
-              onChange={(event) => setDraft((prev) => ({ ...prev, description: event.target.value }))}
-            />
-          </label>
-
-          <hr className="divider" />
-          <h4 className="panel-subtitle">页面</h4>
-          <div className="grid-2">
-            <label className="field">
-              <span className="field-label">纸张</span>
-              <select
-                value={draft.page.size}
-                onChange={(event) =>
-                  setDraft((prev) => ({ ...prev, page: { ...prev.page, size: event.target.value as PageSetup['size'] } }))
-                }
-              >
-                {(['A4', 'A3', 'A5', 'Letter'] as const).map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              <span className="field-label">方向</span>
-              <select
-                value={draft.page.orientation}
-                onChange={(event) =>
-                  setDraft((prev) => ({
-                    ...prev,
-                    page: { ...prev.page, orientation: event.target.value as PageSetup['orientation'] },
-                  }))
-                }
-              >
-                <option value="portrait">纵向</option>
-                <option value="landscape">横向</option>
-              </select>
-            </label>
-          </div>
-          <div className="grid-4">
-            {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
-              <label key={side} className="field">
-                <span className="field-label">边距{side}</span>
-                <input
-                  type="number"
-                  step={0.5}
-                  value={draft.page.margin_mm[side]}
-                  onChange={(event) =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      page: {
-                        ...prev.page,
-                        margin_mm: { ...prev.page.margin_mm, [side]: Number(event.target.value) || 0 },
-                      },
-                    }))
-                  }
-                />
-              </label>
-            ))}
-          </div>
-
-          {draft.kind === 'matrix' ? (
-            <>
-              <hr className="divider" />
-              <h4 className="panel-subtitle">矩阵</h4>
-              <div className="grid-2">
-                <NumberField
-                  label="行数"
-                  value={draft.matrix.rows}
-                  onChange={(value) => setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, rows: value } }))}
-                />
-                <NumberField
-                  label="列数"
-                  value={draft.matrix.cols}
-                  onChange={(value) => setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, cols: value } }))}
-                />
-                <NumberField
-                  label="水平间距(mm)"
-                  value={draft.matrix.gap_x_mm}
-                  step={0.5}
-                  onChange={(value) => setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, gap_x_mm: value } }))}
-                />
-                <NumberField
-                  label="垂直间距(mm)"
-                  value={draft.matrix.gap_y_mm}
-                  step={0.5}
-                  onChange={(value) => setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, gap_y_mm: value } }))}
-                />
-                <NumberField
-                  label="单元格高(mm)"
-                  value={draft.matrix.cell_h_mm}
-                  step={1}
-                  onChange={(value) => setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, cell_h_mm: value } }))}
-                />
-                <NumberField
-                  label="网格顶部偏移(mm)"
-                  value={draft.matrix.origin_y_mm ?? 0}
-                  step={1}
-                  onChange={(value) => setDraft((prev) => ({ ...prev, matrix: { ...prev.matrix, origin_y_mm: value } }))}
-                />
-              </div>
-              <p className="panel-hint">每页可容纳 {Math.max(1, Math.round(draft.matrix.rows)) * Math.max(1, Math.round(draft.matrix.cols))} 条数据</p>
-            </>
-          ) : null}
-        </aside>
-
-        {/* --------------- 画布 --------------- */}
-        <section className="card flow-canvas-card">
-          <div className="flow-canvas-toolbar">
-            <span className="detail-meta">
-              纸张 {page.w}×{page.h} mm · 缩放 {scale.toFixed(2)}×
-            </span>
-            <span className="detail-meta">
-              {draft.kind === 'matrix' ? '蓝色格为可编辑单元格，其余为预览' : '拖动元素调整位置'}
-            </span>
-          </div>
-          <div className="flow-canvas" ref={hostRef} />
-        </section>
-
-        {/* --------------- 元素面板 --------------- */}
-        <aside className="card flow-panel flow-props">
-          <h3 className="card-title">模板元素</h3>
-          <div className="chip-row">
+      <div className="tpl-shell">
+        {/* --------------- 顶部工具栏（WPS 式） --------------- */}
+        <div className="tpl-toolbar">
+          <div className="tpl-tool-group">
             {(['text', 'field', 'image', 'line', 'rect'] as ElementType[]).map((type) => (
-              <button key={type} type="button" className="chip" onClick={() => addElement(type)}>
-                ＋ {ELEMENT_LABELS[type]}
+              <button key={type} type="button" className="tpl-tool" onClick={() => addElement(type)}>
+                <span className="tpl-tool-icon">{ELEMENT_ICONS[type]}</span>
+                {ELEMENT_LABELS[type]}
               </button>
             ))}
           </div>
-          <p className="panel-hint">
-            文本中用 {'{{字段名}}'} 插入数据，显示为彩色圆角胶囊；{'{{index}}'}、{'{{page}}'}、
-            {' {{count}}'} 为内置变量。
-          </p>
 
-          <hr className="divider" />
+          {isMatrix ? (
+            <>
+              <span className="tpl-tool-sep" />
+              <div className="segmented compact">
+                <button
+                  className={insertTarget === 'cell' ? 'seg active' : 'seg'}
+                  onClick={() => setInsertTarget('cell')}
+                >
+                  插入单元格
+                </button>
+                <button
+                  className={insertTarget === 'page' ? 'seg active' : 'seg'}
+                  onClick={() => setInsertTarget('page')}
+                >
+                  插入整页
+                </button>
+              </div>
+              <label className="tpl-toggle">
+                <input
+                  type="checkbox"
+                  checked={draft.matrix.show_grid}
+                  onChange={(event) => updateMatrix({ show_grid: event.target.checked })}
+                />
+                网格
+              </label>
+              <label className="tpl-toggle">
+                <input
+                  type="checkbox"
+                  checked={draft.matrix.show_border}
+                  onChange={(event) => updateMatrix({ show_border: event.target.checked })}
+                />
+                边框
+              </label>
+            </>
+          ) : null}
 
-          {selected ? (
-            <ElementEditor
-              element={selected}
-              kind={draft.kind}
-              columns={columnNames}
-              autoEdit={editRequestId === selected.id}
-              onChange={(patch) => updateElement(selected.id, patch)}
-              onRemove={() => removeElement(selected.id)}
-            />
-          ) : (
-            <EmptyState text="选中画布中的元素以编辑其属性" />
-          )}
+          <div className="toolbar-fill" />
 
-          <hr className="divider" />
-          <h4 className="panel-subtitle">导出</h4>
-          <label className="field">
-            <span className="field-label">数据来源</span>
-            <select value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>
-              <option value="">选择数据集…</option>
-              {datasets.map((dataset) => (
-                <option key={dataset.id} value={dataset.id}>
-                  {dataset.name}（{dataset.row_count} 行）
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="row-actions">
-            <button className="btn" onClick={handlePreview} disabled={busy}>
-              预览第 1 页
+          {selectedElement ? (
+            <button className="tpl-tool danger" onClick={() => removeElement(selectedElement.id)}>
+              删除元素
             </button>
-            <button className="btn btn-primary" onClick={handleRender} disabled={busy}>
-              导出完整 PDF
-            </button>
-          </div>
-        </aside>
+          ) : null}
+          <button className="btn btn-sm btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? '保存中…' : '保存模板'}
+          </button>
+        </div>
+
+        <div className="tpl-main">
+          {/* --------------- 左：页面结构树 --------------- */}
+          <aside className="tpl-tree card">
+            <div className="tpl-panel-head">页面结构</div>
+            <div className="tpl-tree-body">
+              <button
+                className={`tpl-tree-row ${selection?.type === 'page' ? 'active' : ''}`}
+                onClick={() => setSelection({ type: 'page' })}
+              >
+                <span className="tpl-tree-icon">▤</span>
+                <span className="tpl-tree-label">页面</span>
+                <span className="tpl-tree-meta">
+                  {draft.page.size} {draft.page.orientation === 'portrait' ? '纵' : '横'}
+                </span>
+              </button>
+
+              {isMatrix ? (
+                <>
+                  <div className="tpl-tree-group">
+                    <span className="tpl-tree-group-label">整页元素</span>
+                    {pageElements.length === 0 ? (
+                      <span className="tpl-tree-empty">空</span>
+                    ) : (
+                      pageElements.map(elementRow)
+                    )}
+                  </div>
+
+                  <button
+                    className={`tpl-tree-row depth-1 ${selection?.type === 'matrix' ? 'active' : ''}`}
+                    onClick={() => setSelection({ type: 'matrix' })}
+                  >
+                    <span className="tpl-tree-icon">▦</span>
+                    <span className="tpl-tree-label">矩阵</span>
+                    <span className="tpl-tree-meta">
+                      {Math.max(1, Math.round(draft.matrix.rows))}×
+                      {Math.max(1, Math.round(draft.matrix.cols))}
+                    </span>
+                  </button>
+
+                  <div className="tpl-tree-group">
+                    <span className="tpl-tree-group-label">单元格元素</span>
+                    {cellElements.length === 0 ? (
+                      <span className="tpl-tree-empty">空</span>
+                    ) : (
+                      cellElements.map(elementRow)
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="tpl-tree-group">
+                  <span className="tpl-tree-group-label">页面元素</span>
+                  {cellElements.length === 0 ? (
+                    <span className="tpl-tree-empty">空</span>
+                  ) : (
+                    cellElements.map(elementRow)
+                  )}
+                </div>
+              )}
+            </div>
+            <p className="panel-hint">点击任意节点，在右侧编辑其属性。</p>
+          </aside>
+
+          {/* --------------- 中：画布 --------------- */}
+          <section className="tpl-canvas-area">
+            <div className="flow-canvas-toolbar">
+              <span className="detail-meta">
+                纸张 {page.w}×{page.h} mm · 缩放 {scale.toFixed(2)}×
+              </span>
+              <span className="detail-meta">
+                {isMatrix ? '点击矩阵外轮廓选中矩阵，蓝色格为可编辑单元格' : '拖动元素调整位置，双击可编辑'}
+              </span>
+            </div>
+            <div className="tpl-canvas" ref={hostRef} />
+          </section>
+
+          {/* --------------- 右：属性面板 --------------- */}
+          <aside className="tpl-props card">
+            {selection?.type === 'page' ? (
+              <PagePanel
+                draft={draft}
+                datasets={datasets}
+                datasetId={datasetId}
+                busy={busy}
+                onDataset={setDatasetId}
+                onDraft={setDraft}
+                onPage={updatePage}
+                onPreview={handlePreview}
+                onRender={handleRender}
+              />
+            ) : selection?.type === 'matrix' ? (
+              <MatrixPanel matrix={draft.matrix} onChange={updateMatrix} />
+            ) : selectedElement ? (
+              <ElementEditor
+                element={selectedElement}
+                kind={draft.kind}
+                columns={columnNames}
+                autoEdit={editRequestId === selectedElement.id}
+                onChange={(patch) => updateElement(selectedElement.id, patch)}
+                onRemove={() => removeElement(selectedElement.id)}
+              />
+            ) : (
+              <EmptyState text="在左侧结构树或画布中选择节点" />
+            )}
+          </aside>
+        </div>
       </div>
     </div>
   );
 }
-
-const ELEMENT_LABELS: Record<ElementType, string> = {
-  text: '文本',
-  field: '字段',
-  image: '图片',
-  line: '线条',
-  rect: '矩形',
-};
 
 function toDraft(template: PdfTemplate): TemplateDraft {
   return {
@@ -1086,10 +1138,200 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     kind: template.kind === 'matrix' ? 'matrix' : 'single',
     description: template.description,
     page: template.page,
-    matrix: template.matrix,
+    matrix: {
+      ...DEFAULT_MATRIX,
+      ...(template.matrix ?? {}),
+      show_grid: template.matrix?.show_grid ?? true,
+      show_border: template.matrix?.show_border ?? true,
+    },
     elements: template.elements,
     scope: template.scope === 'project' ? 'project' : 'global',
   };
+}
+
+// --------------------------------------------------------------------
+// 右侧：页面属性
+// --------------------------------------------------------------------
+
+interface PagePanelProps {
+  draft: TemplateDraft;
+  datasets: Dataset[];
+  datasetId: string;
+  busy: boolean;
+  onDataset: (id: string) => void;
+  onDraft: (updater: (prev: TemplateDraft) => TemplateDraft) => void;
+  onPage: (patch: Partial<PageSetup>) => void;
+  onPreview: () => void;
+  onRender: () => void;
+}
+
+function PagePanel({ draft, datasets, datasetId, busy, onDataset, onDraft, onPage, onPreview, onRender }: PagePanelProps) {
+  return (
+    <>
+      <div className="tpl-panel-head">
+        <span className="tpl-tree-icon">▤</span> 页面
+      </div>
+
+      <label className="field">
+        <span className="field-label">模板名称</span>
+        <input
+          type="text"
+          value={draft.name}
+          onChange={(event) => onDraft((prev) => ({ ...prev, name: event.target.value }))}
+        />
+      </label>
+      <label className="field">
+        <span className="field-label">模板类型</span>
+        <select
+          value={draft.kind}
+          onChange={(event) =>
+            onDraft((prev) => ({ ...prev, kind: event.target.value as 'single' | 'matrix' }))
+          }
+        >
+          <option value="single">单人单页（每行数据一页）</option>
+          <option value="matrix">矩阵（每页铺满多行数据）</option>
+        </select>
+      </label>
+      <label className="field">
+        <span className="field-label">说明</span>
+        <input
+          type="text"
+          value={draft.description}
+          onChange={(event) => onDraft((prev) => ({ ...prev, description: event.target.value }))}
+        />
+      </label>
+
+      <hr className="divider" />
+      <div className="grid-2">
+        <label className="field">
+          <span className="field-label">纸张</span>
+          <select
+            value={draft.page.size}
+            onChange={(event) => onPage({ size: event.target.value as PageSetup['size'] })}
+          >
+            {(['A4', 'A3', 'A5', 'Letter'] as const).map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span className="field-label">方向</span>
+          <select
+            value={draft.page.orientation}
+            onChange={(event) => onPage({ orientation: event.target.value as PageSetup['orientation'] })}
+          >
+            <option value="portrait">纵向</option>
+            <option value="landscape">横向</option>
+          </select>
+        </label>
+      </div>
+      <div className="grid-4">
+        {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
+          <label key={side} className="field">
+            <span className="field-label">
+              {side === 'top' ? '上' : side === 'right' ? '右' : side === 'bottom' ? '下' : '左'}边距
+            </span>
+            <input
+              type="number"
+              step={0.5}
+              value={draft.page.margin_mm[side]}
+              onChange={(event) =>
+                onPage({
+                  margin_mm: { ...draft.page.margin_mm, [side]: Number(event.target.value) || 0 },
+                })
+              }
+            />
+          </label>
+        ))}
+      </div>
+
+      <hr className="divider" />
+      <label className="field">
+        <span className="field-label">预览数据源</span>
+        <select value={datasetId} onChange={(event) => onDataset(event.target.value)}>
+          <option value="">选择数据集…</option>
+          {datasets.map((dataset) => (
+            <option key={dataset.id} value={dataset.id}>
+              {dataset.name}（{dataset.row_count} 行）
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="row-actions">
+        <button className="btn" onClick={onPreview} disabled={busy}>
+          预览第 1 页
+        </button>
+        <button className="btn btn-primary" onClick={onRender} disabled={busy}>
+          导出完整 PDF
+        </button>
+      </div>
+    </>
+  );
+}
+
+// --------------------------------------------------------------------
+// 右侧：矩阵属性
+// --------------------------------------------------------------------
+
+function MatrixPanel({ matrix, onChange }: { matrix: MatrixSetup; onChange: (patch: Partial<MatrixSetup>) => void }) {
+  return (
+    <>
+      <div className="tpl-panel-head">
+        <span className="tpl-tree-icon">▦</span> 矩阵
+      </div>
+      <p className="panel-hint">矩阵内部按行列自动划分网格，单元格大小由行数与间距推算。</p>
+      <div className="grid-2">
+        <NumberField label="行数" value={matrix.rows} onChange={(value) => onChange({ rows: value })} />
+        <NumberField label="列数" value={matrix.cols} onChange={(value) => onChange({ cols: value })} />
+        <NumberField
+          label="水平间距(mm)"
+          value={matrix.gap_x_mm}
+          step={0.5}
+          onChange={(value) => onChange({ gap_x_mm: value })}
+        />
+        <NumberField
+          label="垂直间距(mm)"
+          value={matrix.gap_y_mm}
+          step={0.5}
+          onChange={(value) => onChange({ gap_y_mm: value })}
+        />
+        <NumberField
+          label="单元格高(mm)"
+          value={matrix.cell_h_mm}
+          step={1}
+          onChange={(value) => onChange({ cell_h_mm: value })}
+        />
+        <NumberField
+          label="网格顶部偏移(mm)"
+          value={matrix.origin_y_mm ?? 0}
+          step={1}
+          onChange={(value) => onChange({ origin_y_mm: value })}
+        />
+      </div>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={matrix.show_grid}
+          onChange={(event) => onChange({ show_grid: event.target.checked })}
+        />
+        显示网格
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={matrix.show_border}
+          onChange={(event) => onChange({ show_border: event.target.checked })}
+        />
+        显示边框（同时输出到 PDF）
+      </label>
+      <p className="panel-hint">
+        每页可容纳{' '}
+        {Math.max(1, Math.round(matrix.rows)) * Math.max(1, Math.round(matrix.cols))} 条数据
+      </p>
+    </>
+  );
 }
 
 // --------------------------------------------------------------------
@@ -1114,14 +1356,10 @@ function ElementEditor({ element, kind, columns, autoEdit, onChange, onRemove }:
   ];
   return (
     <>
-      <div className="step-head">
-        <span className="step-badge" style={{ background: '#2563eb' }}>
-          ▦
-        </span>
-        <div className="step-head-info">
-          <div className="step-head-title">{ELEMENT_LABELS[element.type]}</div>
-          <div className="detail-meta mono">{element.type}</div>
-        </div>
+      <div className="tpl-panel-head">
+        <span className="tpl-tree-icon">{ELEMENT_ICONS[element.type]}</span>
+        {ELEMENT_LABELS[element.type]}
+        <span className="tpl-tree-meta mono">{element.page_level ? '整页' : '单元格'}</span>
       </div>
 
       <div className="grid-2">

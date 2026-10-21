@@ -181,6 +181,24 @@ fn draw_rect(
     layer.add_rect(Rect::new(Mm(llx), Mm(lly), Mm(urx), Mm(ury)).with_mode(mode));
 }
 
+/// 矩阵单元格边框：只描边不填充。
+fn draw_cell_border(
+    layer: &PdfLayerReference,
+    x: f32,
+    y_top: f32,
+    w: f32,
+    h: f32,
+    page_h: f32,
+) {
+    let llx = x;
+    let ury = page_h - y_top;
+    let lly = ury - h;
+    let urx = llx + w;
+    layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+    layer.set_outline_thickness(0.3);
+    layer.add_rect(Rect::new(Mm(llx), Mm(lly), Mm(urx), Mm(ury)).with_mode(PaintMode::Stroke));
+}
+
 fn draw_image(
     doc: &PdfDocumentReference,
     layer: &PdfLayerReference,
@@ -403,6 +421,9 @@ pub fn render_pdf(
                     pages,
                     count: on_page,
                 };
+                if mx.show_border {
+                    draw_cell_border(&layer, origin.x, origin.y_top, cell_w, cell_h, page_h);
+                }
                 let cell_level: Vec<TemplateElement> =
                     body.elements.iter().filter(|e| !e.page_level).cloned().collect();
                 draw_elements(&doc, &layer, &font, &cell_level, &ctx, &origin, page_h, photo_dir.as_deref());

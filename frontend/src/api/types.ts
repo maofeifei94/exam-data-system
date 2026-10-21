@@ -257,6 +257,10 @@ export interface MatrixSetup {
   cell_h_mm: number;
   /** 矩阵网格距内容区顶部的偏移（用于给页面级标题留位置） */
   origin_y_mm: number;
+  /** 编辑器中是否显示网格辅助线 */
+  show_grid: boolean;
+  /** 是否显示 / 输出单元格边框 */
+  show_border: boolean;
 }
 
 export interface TemplateElement {

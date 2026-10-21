@@ -334,7 +334,16 @@ fn default_margin() -> Margins {
     Margins { top: 15.0, right: 12.0, bottom: 12.0, left: 12.0 }
 }
 fn default_matrix() -> MatrixSetup {
-    MatrixSetup { rows: 5, cols: 6, gap_x_mm: 2.0, gap_y_mm: 2.0, cell_h_mm: 42.0, origin_y_mm: 0.0 }
+    MatrixSetup {
+        rows: 5,
+        cols: 6,
+        gap_x_mm: 2.0,
+        gap_y_mm: 2.0,
+        cell_h_mm: 42.0,
+        origin_y_mm: 0.0,
+        show_grid: true,
+        show_border: true,
+    }
 }
 fn default_font_size() -> f32 {
     11.0
@@ -395,6 +404,15 @@ pub struct MatrixSetup {
     /// 矩阵网格距内容区顶部的偏移（用于给页面级标题留位置）
     #[serde(default)]
     pub origin_y_mm: f32,
+    /// 编辑器中是否显示网格辅助线（不影响 PDF 内容）
+    #[serde(default = "default_true")]
+    pub show_grid: bool,
+    /// 是否输出单元格边框（同时影响编辑器预览与 PDF）
+    #[serde(default = "default_true")]
+    pub show_border: bool,
+}
+fn default_true() -> bool {
+    true
 }
 fn default_matrix_rows() -> i64 {
     5

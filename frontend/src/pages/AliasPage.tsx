@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Button, Input, InputNumber, Modal, Select } from 'antd';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { DragEvent as ReactDragEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { Button, Input, Modal } from 'antd';
 import {
   createFieldGroup,
   createStandardField,
@@ -41,42 +43,25 @@ const DTYPE_LABELS: Record<string, string> = {
   image: '图片',
 };
 
-function dtypeText(field: StandardField): string {
-  const dtype = normalizeDtype(field.dtype);
-  const label = DTYPE_LABELS[dtype] ?? dtype;
-  if (PRECISION_DTYPES.includes(dtype)) {
-    return `${label}（${field.precision} 位小数）`;
-  }
-  return label;
-}
-
-interface FieldForm {
-  id: string | null;
-  name: string;
-  label: string;
-  dtype: ColumnDtype;
-  precision: number;
-  groupId: string;
-  description: string;
-}
-
-const EMPTY_FORM: FieldForm = {
-  id: null,
-  name: '',
-  label: '',
-  dtype: 'text',
-  precision: 2,
-  groupId: '',
-  description: '',
-};
-
 interface AliasCard {
   standard: string;
   aliases: AliasMapping[];
   field: StandardField | null;
 }
 
-type GroupKey = 'all' | 'ungrouped' | string;
+interface NewFieldDraft {
+  name: string;
+  dtype: ColumnDtype;
+  precision: number;
+  groupId: string;
+}
+
+const EMPTY_DRAFT: NewFieldDraft = {
+  name: '',
+  dtype: 'text',
+  precision: 2,
+  groupId: '',
+};
 
 export default function AliasPage() {
   const { show } = useToast();
@@ -87,12 +72,10 @@ export default function AliasPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  const [activeGroup, setActiveGroup] = useState<GroupKey>('all');
 
-  const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm] = useState<FieldForm>(EMPTY_FORM);
-  const [savingField, setSavingField] = useState(false);
+  const [newField, setNewField] = useState<NewFieldDraft | null>(null);
 
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [groupForm, setGroupForm] = useState<{ id: string | null; name: string }>({
@@ -100,6 +83,10 @@ export default function AliasPage() {
     name: '',
   });
   const [savingGroup, setSavingGroup] = useState(false);
+
+  // 拖拽分组
+  const [dragStandard, setDragStandard] = useState<string | null>(null);
+  const [dropGroup, setDropGroup] = useState<string | null>(null);
 
   const loadAll = async () => {
     setLoading(true);
@@ -112,10 +99,6 @@ export default function AliasPage() {
       setFields(fieldList);
       setAliases(aliasList);
       setGroups(groupList);
-      setActiveGroup((prev) => {
-        if (prev === 'all' || prev === 'ungrouped') return prev;
-        return groupList.some((group) => group.id === prev) ? prev : 'all';
-      });
     } catch (err) {
       show(err instanceof Error ? err.message : '加载字段别名失败', 'error');
     } finally {
@@ -155,37 +138,84 @@ export default function AliasPage() {
     return cards.filter(
       (card) =>
         card.standard.toLowerCase().includes(query) ||
-        card.field?.label.toLowerCase().includes(query) ||
         card.aliases.some((alias) => alias.alias.toLowerCase().includes(query)),
     );
   }, [cards, search]);
 
   const groupKeyOf = (card: AliasCard): string => card.field?.group_id || '';
 
-  /** 有字段的分组 + 未分组；空分组也显示，方便往里添加字段 */
+  /** 始终展示所有分组（含未分组、空分组），方便把卡片直接拖进目标分组。 */
   const sections = useMemo(() => {
     const buckets = new Map<string, AliasCard[]>();
     groups.forEach((group) => buckets.set(group.id, []));
     buckets.set('', []);
     for (const card of searchedCards) {
-      const key = groupKeyOf(card);
-      const list = buckets.get(key) ?? [];
-      list.push(card);
-      buckets.set(key, list);
+      const key = buckets.has(groupKeyOf(card)) ? groupKeyOf(card) : '';
+      buckets.get(key)!.push(card);
     }
-    return [...buckets.entries()].filter(([key]) => {
-      if (activeGroup === 'all') return true;
-      if (activeGroup === 'ungrouped') return key === '';
-      return key === activeGroup;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchedCards, groups, activeGroup]);
+    return [...buckets.entries()];
+  }, [searchedCards, groups]);
 
-  const countOf = (key: GroupKey): number => {
-    if (key === 'all') return cards.length;
-    if (key === 'ungrouped') return cards.filter((card) => !groupKeyOf(card)).length;
-    return cards.filter((card) => groupKeyOf(card) === key).length;
+  // ------------------------- 字段：保存与拖拽 -------------------------
+
+  const saveField = async (field: StandardField, patch: Partial<StandardField>) => {
+    const next = { ...field, ...patch };
+    setFields((prev) => prev.map((item) => (item.id === field.id ? next : item)));
+    try {
+      const saved = await updateStandardField(field.id, {
+        name: next.name,
+        label: next.name,
+        dtype: next.dtype,
+        precision: PRECISION_DTYPES.includes(normalizeDtype(next.dtype)) ? next.precision : 0,
+        group_id: next.group_id,
+        description: next.description,
+      });
+      setFields((prev) => prev.map((item) => (item.id === saved.id ? saved : item)));
+    } catch (err) {
+      setFields((prev) => prev.map((item) => (item.id === field.id ? field : item)));
+      show(err instanceof Error ? err.message : '保存字段失败', 'error');
+    }
   };
+
+  const commitName = (field: StandardField) => {
+    const raw = nameDrafts[field.id];
+    if (raw === undefined) return;
+    const value = raw.trim();
+    setNameDrafts((prev) => {
+      const next = { ...prev };
+      delete next[field.id];
+      return next;
+    });
+    if (!value || value === field.name) return;
+    saveField(field, { name: value });
+  };
+
+  const moveFieldToGroup = async (standard: string, groupId: string) => {
+    const card = cards.find((item) => item.standard === standard);
+    if (!card?.field || groupKeyOf(card) === groupId) return;
+    await saveField(card.field, { group_id: groupId });
+    show(`已移动到「${groupName(groupId)}」`, 'success');
+  };
+
+  const groupName = (id: string): string =>
+    id ? groups.find((group) => group.id === id)?.name ?? '未分组' : '未分组';
+
+  const handleDragStart = (event: ReactDragEvent, card: AliasCard) => {
+    if (!card.field) return;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', card.standard);
+    setDragStandard(card.standard);
+  };
+
+  const handleDrop = (event: ReactDragEvent, key: string) => {
+    event.preventDefault();
+    const standard = event.dataTransfer.getData('text/plain') || dragStandard;
+    setDropGroup(null);
+    setDragStandard(null);
+    if (standard) moveFieldToGroup(standard, key);
+  };
+
+  // ------------------------- 别名 -------------------------
 
   const addAlias = async (standard: string) => {
     const value = (drafts[standard] ?? '').trim();
@@ -212,61 +242,42 @@ export default function AliasPage() {
     }
   };
 
-  const openCreateField = () => {
-    setForm({
-      ...EMPTY_FORM,
-      groupId: activeGroup === 'all' || activeGroup === 'ungrouped' || search ? '' : activeGroup,
-    });
-    setModalOpen(true);
+  // ------------------------- 新增字段（卡片内联） -------------------------
+
+  const startNewField = () => {
+    setNewField({ ...EMPTY_DRAFT });
   };
 
-  const openEditField = (field: StandardField) => {
-    setForm({
-      id: field.id,
-      name: field.name,
-      label: field.label,
-      dtype: normalizeDtype(field.dtype),
-      precision: field.precision ?? 2,
-      groupId: field.group_id ?? '',
-      description: field.description,
-    });
-    setModalOpen(true);
-  };
-
-  const submitField = async () => {
-    if (!form.name.trim()) {
-      show('请填写标准名称', 'error');
+  const submitNewField = async () => {
+    if (!newField) return;
+    const name = newField.name.trim();
+    if (!name) {
+      show('请填写标准字段名称', 'error');
       return;
     }
-    setSavingField(true);
+    setBusy(true);
     try {
-      const payload = {
-        name: form.name.trim(),
-        label: form.label.trim() || form.name.trim(),
-        dtype: form.dtype,
-        precision: PRECISION_DTYPES.includes(form.dtype) ? Math.max(0, Math.min(10, form.precision)) : 0,
-        group_id: form.groupId,
-        description: form.description.trim(),
-      };
-      if (form.id) {
-        await updateStandardField(form.id, payload);
-        show('标准字段已更新', 'success');
-      } else {
-        await createStandardField(payload);
-        show('标准字段已创建', 'success');
-      }
-      setModalOpen(false);
-      await loadAll();
+      const created = await createStandardField({
+        name,
+        label: name,
+        dtype: newField.dtype,
+        precision: PRECISION_DTYPES.includes(newField.dtype) ? newField.precision : 0,
+        group_id: newField.groupId,
+        description: '',
+      });
+      setFields((prev) => [...prev, created]);
+      setNewField(null);
+      show(`已创建标准字段「${name}」`, 'success');
     } catch (err) {
-      show(err instanceof Error ? err.message : '保存失败', 'error');
+      show(err instanceof Error ? err.message : '创建失败', 'error');
     } finally {
-      setSavingField(false);
+      setBusy(false);
     }
   };
 
   const removeField = async (card: AliasCard) => {
     if (!card.field) return;
-    if (!window.confirm(`确认删除标准字段「${card.field.label}」？（其别名卡片会一并移除）`)) {
+    if (!window.confirm(`确认删除标准字段「${card.standard}」？（其别名卡片会一并移除）`)) {
       return;
     }
     try {
@@ -327,13 +338,23 @@ export default function AliasPage() {
     }
   };
 
+  const groupOptions = useMemo(
+    () => [
+      { value: '', label: '未分组' },
+      ...groups.map((group) => ({ value: group.id, label: group.name })),
+    ],
+    [groups],
+  );
+
+  const dtypeOptions = DTYPES.map((dtype) => ({ value: dtype, label: DTYPE_LABELS[dtype] }));
+
   return (
     <div className="page">
       <div className="page-header">
         <div>
           <h2 className="page-title">字段别名</h2>
           <p className="page-subtitle">
-            全局配置：标准字段按分组归档，别名用于把各来源表格的原始列名自动映射到标准字段。
+            全局配置：卡片可直接拖动到其它分组；点击卡片上的数据类型或分组即可修改。
           </p>
         </div>
         <div className="row-actions">
@@ -345,34 +366,20 @@ export default function AliasPage() {
             style={{ width: 240 }}
           />
           <Button onClick={openCreateGroup}>＋ 新建分组</Button>
-          <Button type="primary" onClick={openCreateField}>
+          <Button type="primary" onClick={startNewField}>
             ＋ 新增标准字段
           </Button>
         </div>
       </div>
 
       <div className="group-bar">
-        <button
-          className={`group-chip ${activeGroup === 'all' ? 'active' : ''}`}
-          onClick={() => setActiveGroup('all')}
-        >
-          全部 <span className="group-count">{countOf('all')}</span>
-        </button>
-        {groups.map((group) => (
-          <button
-            key={group.id}
-            className={`group-chip ${activeGroup === group.id ? 'active' : ''}`}
-            onClick={() => setActiveGroup(group.id)}
-          >
-            {group.name} <span className="group-count">{countOf(group.id)}</span>
-          </button>
+        <span className="group-bar-label">分组</span>
+        {sections.map(([key, list]) => (
+          <span key={key || 'ungrouped'} className="group-chip static">
+            {key ? groupName(key) : '未分组'} <span className="group-count">{list.length}</span>
+          </span>
         ))}
-        <button
-          className={`group-chip ${activeGroup === 'ungrouped' ? 'active' : ''}`}
-          onClick={() => setActiveGroup('ungrouped')}
-        >
-          未分组 <span className="group-count">{countOf('ungrouped')}</span>
-        </button>
+        <span className="group-bar-hint">拖动卡片到目标分组即可归档</span>
       </div>
 
       {loading ? (
@@ -380,7 +387,7 @@ export default function AliasPage() {
           <Spinner />
           <span className="table-state-text">加载中…</span>
         </div>
-      ) : searchedCards.length === 0 ? (
+      ) : searchedCards.length === 0 && !newField ? (
         <div className="page-fill">
           <EmptyState text={search ? '没有匹配的标准字段或别名' : '暂无标准字段'} />
         </div>
@@ -389,196 +396,237 @@ export default function AliasPage() {
           {sections.map(([key, list]) => {
             const group = groups.find((item) => item.id === key);
             return (
-              <section key={key || 'ungrouped'} className="alias-group-section">
+              <section
+                key={key || 'ungrouped'}
+                className={`alias-group-section ${dropGroup === key ? 'drop-active' : ''}`}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'move';
+                  if (dropGroup !== key) setDropGroup(key);
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                    setDropGroup((prev) => (prev === key ? null : prev));
+                  }
+                }}
+                onDrop={(event) => handleDrop(event, key)}
+              >
                 <div className="alias-group-head">
                   <span className="alias-group-name">{group ? group.name : '未分组'}</span>
                   <span className="alias-group-size">{list.length} 个字段</span>
-                  {group ? (
-                    <div className="row-actions">
-                      <button className="icon-btn" onClick={() => openRenameGroup(group)}>
-                        重命名
-                      </button>
-                      <button className="icon-btn danger" onClick={() => removeGroup(group)}>
-                        删除分组
-                      </button>
-                    </div>
-                  ) : null}
+                  <div className="row-actions">
+                    {group ? (
+                      <>
+                        <button className="icon-btn" onClick={() => openRenameGroup(group)}>
+                          重命名
+                        </button>
+                        <button className="icon-btn danger" onClick={() => removeGroup(group)}>
+                          删除分组
+                        </button>
+                      </>
+                    ) : null}
+                    <button className="icon-btn" onClick={() => setNewField({ ...EMPTY_DRAFT, groupId: key })}>
+                      ＋ 添加字段
+                    </button>
+                  </div>
                 </div>
 
-                {list.length === 0 ? (
-                  <p className="panel-hint">该分组暂无字段，可在「新增标准字段」时选择此分组。</p>
-                ) : (
-                  <div className="alias-grid">
-                    {list.map((card) => (
-                      <div key={card.standard} className="alias-card">
-                        <div className="alias-card-head">
-                          <div className="alias-card-info">
-                            <div className="alias-card-name">
-                              {card.standard}
-                              {card.field ? (
-                                <span
-                                  className={`alias-dtype ${
-                                    normalizeDtype(card.field.dtype) === 'integer' ? 'int' : ''
-                                  }`}
-                                >
-                                  {dtypeText(card.field)}
-                                </span>
-                              ) : (
-                                <span className="alias-dtype warn">未登记</span>
-                              )}
-                            </div>
-                            {card.field && card.field.label && card.field.label !== card.standard ? (
-                              <div className="alias-card-sub">{card.field.label}</div>
-                            ) : null}
-                          </div>
-                          {card.field ? (
-                            <div className="alias-card-actions">
-                              <button
-                                className="icon-btn"
-                                title="编辑标准字段"
-                                onClick={() => openEditField(card.field!)}
-                              >
-                                编辑
-                              </button>
-                              <button
-                                className="icon-btn danger"
-                                title="删除标准字段"
-                                onClick={() => removeField(card)}
-                              >
-                                删除
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
+                <div className="alias-grid">
+                  {newField && newField.groupId === key ? (
+                    <div className="alias-card alias-card-draft">
+                      <div className="alias-card-top">
+                        <Input
+                          autoFocus
+                          placeholder="标准字段名称"
+                          value={newField.name}
+                          onChange={(event) =>
+                            setNewField((prev) => (prev ? { ...prev, name: event.target.value } : prev))
+                          }
+                          onPressEnter={submitNewField}
+                        />
+                      </div>
+                      <div className="alias-card-meta">
+                        <InlineSelect
+                          value={newField.dtype}
+                          options={dtypeOptions}
+                          onChange={(value) =>
+                            setNewField((prev) => (prev ? { ...prev, dtype: value as ColumnDtype } : prev))
+                          }
+                        />
+                        {PRECISION_DTYPES.includes(newField.dtype) ? (
+                          <label className="alias-precision">
+                            小数位
+                            <input
+                              type="number"
+                              min={0}
+                              max={10}
+                              value={newField.precision}
+                              onChange={(event) =>
+                                setNewField((prev) =>
+                                  prev ? { ...prev, precision: Number(event.target.value) || 0 } : prev,
+                                )
+                              }
+                            />
+                          </label>
+                        ) : null}
+                        <InlineSelect
+                          value={newField.groupId}
+                          options={groupOptions}
+                          onChange={(value) =>
+                            setNewField((prev) => (prev ? { ...prev, groupId: value } : prev))
+                          }
+                        />
+                      </div>
+                      <div className="row-actions">
+                        <button className="btn btn-sm btn-primary" onClick={submitNewField} disabled={busy}>
+                          创建
+                        </button>
+                        <button className="btn btn-sm" onClick={() => setNewField(null)}>
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
 
-                        <div className="alias-chips">
-                          {card.aliases.length === 0 ? (
-                            <span className="alias-empty">暂无别名</span>
-                          ) : (
-                            card.aliases.map((alias) => (
-                              <span key={alias.id} className="alias-chip">
-                                {alias.alias}
-                                <button
-                                  className="alias-chip-remove"
-                                  title="删除该别名"
-                                  onClick={() => removeAlias(alias)}
-                                >
-                                  ✕
-                                </button>
-                              </span>
-                            ))
-                          )}
-                        </div>
-
-                        <div className="alias-add">
+                  {list.map((card) => (
+                    <div
+                      key={card.standard}
+                      className={`alias-card ${dragStandard === card.standard ? 'dragging' : ''}`}
+                      draggable={Boolean(card.field)}
+                      onDragStart={(event) => handleDragStart(event, card)}
+                      onDragEnd={() => {
+                        setDragStandard(null);
+                        setDropGroup(null);
+                      }}
+                    >
+                      <div className="alias-card-top">
+                        <span className="alias-drag" title="拖动到其它分组">
+                          ⠿
+                        </span>
+                        {card.field ? (
                           <input
-                            type="text"
-                            placeholder="添加别名，回车确认"
-                            value={drafts[card.standard] ?? ''}
+                            className="alias-name-input"
+                            value={nameDrafts[card.field.id] ?? card.field.name}
                             onChange={(event) =>
-                              setDrafts((prev) => ({ ...prev, [card.standard]: event.target.value }))
+                              setNameDrafts((prev) => ({ ...prev, [card.field!.id]: event.target.value }))
                             }
+                            onBlur={() => commitName(card.field!)}
                             onKeyDown={(event) => {
-                              if (event.key === 'Enter') addAlias(card.standard);
+                              if (event.key === 'Enter') event.currentTarget.blur();
+                              if (event.key === 'Escape') {
+                                setNameDrafts((prev) => {
+                                  const next = { ...prev };
+                                  delete next[card.field!.id];
+                                  return next;
+                                });
+                              }
                             }}
                           />
+                        ) : (
+                          <span className="alias-card-name">{card.standard}</span>
+                        )}
+                        {card.field ? (
                           <button
-                            className="btn btn-sm"
-                            disabled={busy || !(drafts[card.standard] ?? '').trim()}
-                            onClick={() => addAlias(card.standard)}
+                            className="icon-btn danger"
+                            title="删除标准字段"
+                            onClick={() => removeField(card)}
                           >
-                            添加
+                            删除
                           </button>
-                        </div>
+                        ) : null}
                       </div>
-                    ))}
-                  </div>
-                )}
+
+                      {card.field ? (
+                        <div className="alias-card-meta">
+                          <InlineSelect
+                            value={normalizeDtype(card.field.dtype)}
+                            options={dtypeOptions}
+                            onChange={(value) => saveField(card.field!, { dtype: value as ColumnDtype })}
+                          />
+                          {PRECISION_DTYPES.includes(normalizeDtype(card.field.dtype)) ? (
+                            <label className="alias-precision">
+                              小数位
+                              <input
+                                type="number"
+                                min={0}
+                                max={10}
+                                value={card.field.precision ?? 2}
+                                onChange={(event) =>
+                                  setFields((prev) =>
+                                    prev.map((item) =>
+                                      item.id === card.field!.id
+                                        ? { ...item, precision: Number(event.target.value) || 0 }
+                                        : item,
+                                    ),
+                                  )
+                                }
+                                onBlur={() => saveField(card.field!, { precision: card.field!.precision })}
+                              />
+                            </label>
+                          ) : null}
+                          <InlineSelect
+                            value={card.field.group_id ?? ''}
+                            options={groupOptions}
+                            onChange={(value) => saveField(card.field!, { group_id: value })}
+                          />
+                        </div>
+                      ) : (
+                        <div className="alias-card-meta">
+                          <span className="alias-dtype warn">未登记到标准字段</span>
+                        </div>
+                      )}
+
+                      <div className="alias-chips">
+                        {card.aliases.length === 0 ? (
+                          <span className="alias-empty">暂无别名</span>
+                        ) : (
+                          card.aliases.map((alias) => (
+                            <span key={alias.id} className="alias-chip">
+                              {alias.alias}
+                              <button
+                                className="alias-chip-remove"
+                                title="删除该别名"
+                                onClick={() => removeAlias(alias)}
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="alias-add">
+                        <input
+                          type="text"
+                          placeholder="添加别名，回车确认"
+                          value={drafts[card.standard] ?? ''}
+                          onChange={(event) =>
+                            setDrafts((prev) => ({ ...prev, [card.standard]: event.target.value }))
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') addAlias(card.standard);
+                          }}
+                        />
+                        <button
+                          className="btn btn-sm"
+                          disabled={busy || !(drafts[card.standard] ?? '').trim()}
+                          onClick={() => addAlias(card.standard)}
+                        >
+                          添加
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {list.length === 0 && !(newField && newField.groupId === key) ? (
+                    <p className="alias-drop-hint">拖动字段卡片到此处，或点击「添加字段」</p>
+                  ) : null}
+                </div>
               </section>
             );
           })}
         </div>
       )}
-
-      <Modal
-        open={modalOpen}
-        title={form.id ? '编辑标准字段' : '新增标准字段'}
-        onCancel={() => setModalOpen(false)}
-        onOk={submitField}
-        okText="保存"
-        cancelText="取消"
-        confirmLoading={savingField}
-        width={560}
-        destroyOnHidden
-      >
-        <div className="dialog-form">
-          <label className="form-row">
-            <span className="field-label">标准名称</span>
-            <Input
-              placeholder="例如：姓名"
-              value={form.name}
-              onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-            />
-          </label>
-          <label className="form-row">
-            <span className="field-label">显示标签</span>
-            <Input
-              placeholder="留空则与标准名称相同"
-              value={form.label}
-              onChange={(event) => setForm((prev) => ({ ...prev, label: event.target.value }))}
-            />
-          </label>
-
-          <div className="form-grid">
-            <label className="form-row">
-              <span className="field-label">数据类型</span>
-              <Select
-                value={form.dtype}
-                onChange={(value: ColumnDtype) => setForm((prev) => ({ ...prev, dtype: value }))}
-                options={DTYPES.map((dtype) => ({ value: dtype, label: DTYPE_LABELS[dtype] }))}
-              />
-            </label>
-            {PRECISION_DTYPES.includes(form.dtype) ? (
-              <label className="form-row">
-                <span className="field-label">精度（小数位）</span>
-                <InputNumber
-                  min={0}
-                  max={10}
-                  style={{ width: '100%' }}
-                  value={form.precision}
-                  onChange={(value) =>
-                    setForm((prev) => ({ ...prev, precision: value ?? 0 }))
-                  }
-                />
-              </label>
-            ) : null}
-          </div>
-          <p className="field-hint">
-            参考 Excel 数据类型：整数不保留小数；小数 / 百分比可单独设置精度。
-          </p>
-
-          <label className="form-row">
-            <span className="field-label">所属分组</span>
-            <Select
-              value={form.groupId}
-              onChange={(value) => setForm((prev) => ({ ...prev, groupId: value }))}
-              options={[
-                { value: '', label: '未分组' },
-                ...groups.map((group) => ({ value: group.id, label: group.name })),
-              ]}
-            />
-          </label>
-          <label className="form-row">
-            <span className="field-label">描述（可选）</span>
-            <Input
-              value={form.description}
-              onChange={(event) =>
-                setForm((prev) => ({ ...prev, description: event.target.value }))
-              }
-            />
-          </label>
-        </div>
-      </Modal>
 
       <Modal
         open={groupModalOpen}
@@ -606,6 +654,109 @@ export default function AliasPage() {
           </label>
         </div>
       </Modal>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------
+// 内联下拉：直接渲染在卡片内，避免弹层被容器裁剪或层级覆盖
+// --------------------------------------------------------------------
+
+interface InlineSelectProps {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  title?: string;
+}
+
+function InlineSelect({ value, options, onChange, title }: InlineSelectProps) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 148 });
+
+  // 用 fixed 定位渲染到 body，彻底避开滚动容器 / 卡片容器的裁剪
+  const place = () => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = Math.max(rect.width, 148);
+    const height = Math.min(246, options.length * 29 + 10);
+    const roomBelow = window.innerHeight - rect.bottom - 8;
+    const up = roomBelow < height && rect.top - 8 > height;
+    const left = Math.min(Math.max(rect.left, 8), window.innerWidth - width - 8);
+    setPos({
+      top: up ? rect.top - height - 5 : rect.bottom + 5,
+      left,
+      width,
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    place();
+    // 打开时若落点被视口底部截断，翻转向上
+  }, [open, options.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (popRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onViewportChange = () => place();
+    document.addEventListener('mousedown', onDocClick);
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    };
+  }, [open, options.length]);
+
+  const current = options.find((option) => option.value === value);
+
+  return (
+    <div className="alias-select">
+      <button
+        type="button"
+        ref={triggerRef}
+        className="alias-select-trigger"
+        title={title}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span>{current?.label ?? '未选择'}</span>
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={popRef}
+              className="alias-select-pop portal"
+              role="listbox"
+              style={{ top: pos.top, left: pos.left, minWidth: pos.width }}
+            >
+              {options.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`alias-select-item ${option.value === value ? 'active' : ''}`}
+                  onClick={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

@@ -210,6 +210,7 @@ export default function ProjectFlowPage() {
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [validateResult, setValidateResult] = useState<FlowValidateResult | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
+  const hoverTimer = useRef<number | null>(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -278,6 +279,30 @@ export default function ProjectFlowPage() {
     validateResult?.steps.forEach((flow) => map.set(flow.step_index, flow));
     return map;
   }, [validateResult]);
+
+  // hover 留出缓冲时间：指针从节点移到外侧加号、或移入下拉菜单时，不会立即丢失 hover 状态。
+  const showNodeHover = (id: string) => {
+    if (hoverTimer.current !== null) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    setHoverId(id);
+  };
+
+  const hideNodeHover = () => {
+    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(() => {
+      hoverTimer.current = null;
+      setHoverId(null);
+    }, 240);
+  };
+
+  useEffect(
+    () => () => {
+      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+    },
+    [],
+  );
 
   const validateErrors = validateResult?.errors ?? [];
 
@@ -944,7 +969,7 @@ export default function ProjectFlowPage() {
                 const flow = flowByStep.get(index);
                 const stepErrors = flow?.errors ?? [];
                 const inBranch = !isMainStep(step, draft.steps);
-                const isHover = hoverId === step.id;
+                const showAdd = hoverId === step.id || isSelected;
                 const flowTip = flow
                   ? `输入字段（${flow.input_fields.length}）：${
                       flow.input_fields.join('、') || '无'
@@ -956,10 +981,10 @@ export default function ProjectFlowPage() {
                 return (
                   <div
                     key={step.id}
-                    className="uml-node-wrap"
+                    className={`uml-node-wrap ${showAdd ? 'is-hover' : ''}`}
                     style={{ left: p.x, top: p.y, width: NODE_W, height: NODE_H }}
-                    onMouseEnter={() => setHoverId(step.id)}
-                    onMouseLeave={() => setHoverId(null)}
+                    onMouseEnter={() => showNodeHover(step.id)}
+                    onMouseLeave={hideNodeHover}
                   >
                     <Dropdown
                       trigger={['contextMenu']}
@@ -1016,67 +1041,63 @@ export default function ProjectFlowPage() {
                       </div>
                     </Dropdown>
 
-                    {isHover ? (
-                      <>
-                        <Dropdown
-                          trigger={['click']}
-                          menu={{
-                            items: insertMenu('before'),
-                            onClick: ({ key }) => {
-                              const type = key.split(':')[1];
-                              if (type) insertRelative(step, type, 'before');
-                            },
-                          }}
-                        >
-                          <button
-                            type="button"
-                            className="node-add before"
-                            title="在此节点前插入步骤"
-                            onPointerDown={(event) => event.stopPropagation()}
-                          >
-                            +
-                          </button>
-                        </Dropdown>
-                        <Dropdown
-                          trigger={['click']}
-                          menu={{
-                            items: insertMenu('after'),
-                            onClick: ({ key }) => {
-                              const type = key.split(':')[1];
-                              if (type) insertRelative(step, type, 'after');
-                            },
-                          }}
-                        >
-                          <button
-                            type="button"
-                            className="node-add after"
-                            title="在此节点后插入步骤"
-                            onPointerDown={(event) => event.stopPropagation()}
-                          >
-                            +
-                          </button>
-                        </Dropdown>
-                        <Dropdown
-                          trigger={['click']}
-                          menu={{
-                            items: insertMenu('branch'),
-                            onClick: ({ key }) => {
-                              const type = key.split(':')[1];
-                              if (type) insertRelative(step, type, 'branch');
-                            },
-                          }}
-                        >
-                          <button
-                            type="button"
-                            className="node-add branch"
-                            title="从该节点添加分支步骤"
-                            onPointerDown={(event) => event.stopPropagation()}
-                          >
-                            ⑂
-                          </button>
-                        </Dropdown>
-                      </>
-                    ) : null}
+                    <Dropdown
+                      trigger={['click']}
+                      menu={{
+                        items: insertMenu('before'),
+                        onClick: ({ key }) => {
+                          const type = key.split(':')[1];
+                          if (type) insertRelative(step, type, 'before');
+                        },
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="node-add before"
+                        title="在此节点前插入步骤"
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        +
+                      </button>
+                    </Dropdown>
+                    <Dropdown
+                      trigger={['click']}
+                      menu={{
+                        items: insertMenu('after'),
+                        onClick: ({ key }) => {
+                          const type = key.split(':')[1];
+                          if (type) insertRelative(step, type, 'after');
+                        },
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="node-add after"
+                        title="在此节点后插入步骤"
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        +
+                      </button>
+                    </Dropdown>
+                    <Dropdown
+                      trigger={['click']}
+                      menu={{
+                        items: insertMenu('branch'),
+                        onClick: ({ key }) => {
+                          const type = key.split(':')[1];
+                          if (type) insertRelative(step, type, 'branch');
+                        },
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="node-add branch"
+                        title="从该节点添加分支步骤"
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        ⑂
+                      </button>
+                    </Dropdown>
                   </div>
                 );
               })}
@@ -1294,7 +1315,10 @@ export default function ProjectFlowPage() {
               index={selectedIndex}
               def={operatorMap.get(selectedStep.operator)}
               columns={availableColumns}
-              flowFields={flowByStep.get(selectedIndex)?.input_fields}
+              flowFields={
+                flowByStep.get(selectedIndex)?.input_fields ??
+                (requiredFields.length ? requiredFields : undefined)
+              }
               onRename={(label) => updateStep(selectedStep.id, { label })}
               onToggle={(enabled) => updateStep(selectedStep.id, { enabled })}
               onParam={(key, value) => updateStepParam(selectedStep.id, key, value)}
@@ -1539,6 +1563,9 @@ function ParamControl({ param, value, columns, fields, onChange }: ParamControlP
   }
 
   const isColumn = param.type === 'column';
+  // 列参数只允许选择当前步骤真实可用的字段：
+  // 「必需字段校验」声明的字段 + 前序「计算新字段 / 排名」产出的新字段。
+  const columnPool = fields && fields.length > 0 ? fields : columns;
   return (
     <label className="field">
       {label}
@@ -1551,7 +1578,7 @@ function ParamControl({ param, value, columns, fields, onChange }: ParamControlP
       />
       {isColumn ? (
         <datalist id={`${param.key}-columns`}>
-          {columns.map((column) => (
+          {columnPool.map((column) => (
             <option key={column} value={column} />
           ))}
         </datalist>

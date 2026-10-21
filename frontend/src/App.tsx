@@ -252,7 +252,6 @@ function Workbench() {
   const connected = useBackendStatus();
   const { mode, toggle: toggleTheme } = useThemeMode();
 
-  const [tabs, setTabs] = useState<ViewKey[]>(['files']);
   const [active, setActive] = useState<ViewKey>('files');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
 
@@ -264,20 +263,7 @@ function Workbench() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
 
-  const openView = (view: ViewKey) => {
-    setTabs((prev) => (prev.includes(view) ? prev : [...prev, view]));
-    setActive(view);
-  };
-
-  const closeTab = (view: ViewKey) => {
-    setTabs((prev) => {
-      const next = prev.filter((tab) => tab !== view);
-      if (view === active) {
-        setActive(next[next.length - 1] ?? 'files');
-      }
-      return next.length ? next : ['files'];
-    });
-  };
+  const openView = (view: ViewKey) => setActive(view);
 
   const renderView = (view: ViewKey) => {
     switch (view) {
@@ -363,32 +349,6 @@ function Workbench() {
         </aside>
 
         <section className="editor">
-          <div className="tabbar">
-            {tabs.map((view) => {
-              const meta = VIEWS[view];
-              return (
-                <div
-                  key={view}
-                  className={`tab ${active === view ? 'active' : ''}`}
-                  onClick={() => setActive(view)}
-                >
-                  <Icon name={meta.icon} size={14} />
-                  <span className="tab-label">{meta.label}</span>
-                  <button
-                    className="tab-close"
-                    title="关闭"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closeTab(view);
-                    }}
-                  >
-                    <Icon name="close" size={12} />
-                  </button>
-                </div>
-              );
-            })}
-            <div className="tabbar-fill" />
-          </div>
           <div className="editor-content">
             <div className="editor-scroll">{renderView(active)}</div>
           </div>
