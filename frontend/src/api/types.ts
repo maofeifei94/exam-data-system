@@ -174,6 +174,10 @@ export interface FlowStep {
   params: Record<string, any>;
   /** 流程图节点在画布上的坐标；缺省时前端自动排布 */
   pos?: StepPos;
+  /** 可视分支组标识；为空表示主链步骤 */
+  branch?: string;
+  /** 该分支挂载在哪个步骤之后（步骤 id） */
+  branch_of?: string;
 }
 
 export interface Flow {
@@ -225,9 +229,18 @@ export interface FlowRun {
   message?: string | null;
 }
 
+export interface StepFlow {
+  step_index: number;
+  input_fields: string[];
+  output_fields: string[];
+  errors: string[];
+}
+
 export interface FlowValidateResult {
   ok: boolean;
   errors: { step_index: number; message: string }[];
+  /** 每一步的数据流快照（进入/离开该步骤时的字段集合） */
+  steps: StepFlow[];
 }
 
 export interface PageSetup {

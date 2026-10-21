@@ -290,6 +290,38 @@ pub async fn apply_mapping(
     if store::unique_names(&names) != names {
         return Err(AppError::bad_request("映射后会产成重名字段，请检查"));
     }
+
+    // 数据导入约定：只保留流程「必要字段校验」声明的字段，其余原始列连同数据删除。
+    let keep_fields: Vec<String> = input
+        .keep_fields
+        .iter()
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+    if !keep_fields.is_empty() {
+        let missing: Vec<String> = keep_fields
+            .iter()
+            .filter(|f| !columns.iter().any(|c| &c.name == *f))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(AppError::bad_request(format!(
+                "必要字段在导入数据中不存在：{}",
+                missing.join("、")
+            )));
+        }
+        let mut kept: Vec<DatasetColumn> = Vec::new();
+        let mut keep_indices: Vec<usize> = Vec::new();
+        for (idx, column) in columns.iter().enumerate() {
+            if keep_fields.contains(&column.name) {
+                keep_indices.push(idx);
+                kept.push(column.clone());
+            }
+        }
+        store::retain_columns(&conn, &id, &kept, &keep_indices)?;
+        columns = kept;
+    }
+
     store::set_columns(&conn, &id, &columns)?;
     conn.execute(
         "UPDATE datasets SET updated_at = ?1 WHERE id = ?2",

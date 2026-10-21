@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Button, Input, InputNumber, Modal, Select } from 'antd';
 import {
   createFieldGroup,
   createStandardField,
@@ -15,8 +16,6 @@ import {
 import type { AliasMapping, ColumnDtype, FieldGroup, StandardField } from '../api/types';
 import { PRECISION_DTYPES, normalizeDtype } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
-import { Field } from '../components/Field';
-import { Modal } from '../components/Modal';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 
@@ -338,19 +337,17 @@ export default function AliasPage() {
           </p>
         </div>
         <div className="row-actions">
-          <input
-            className="search-box"
-            type="search"
+          <Input.Search
+            allowClear
             placeholder="搜索标准名称或别名"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
+            style={{ width: 240 }}
           />
-          <button className="btn" onClick={openCreateGroup}>
-            ＋ 新建分组
-          </button>
-          <button className="btn btn-primary" onClick={openCreateField}>
+          <Button onClick={openCreateGroup}>＋ 新建分组</Button>
+          <Button type="primary" onClick={openCreateField}>
             ＋ 新增标准字段
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -506,125 +503,108 @@ export default function AliasPage() {
       <Modal
         open={modalOpen}
         title={form.id ? '编辑标准字段' : '新增标准字段'}
-        onClose={() => setModalOpen(false)}
+        onCancel={() => setModalOpen(false)}
+        onOk={submitField}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={savingField}
         width={560}
-        footer={
-          <>
-            <button className="btn" onClick={() => setModalOpen(false)}>
-              取消
-            </button>
-            <button className="btn btn-primary" onClick={submitField} disabled={savingField}>
-              {savingField ? '保存中…' : '保存'}
-            </button>
-          </>
-        }
+        destroyOnHidden
       >
-        <Field label="标准名称" htmlFor="sf-name">
-          <input
-            id="sf-name"
-            type="text"
-            placeholder="例如：姓名"
-            value={form.name}
-            onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-          />
-        </Field>
-        <Field label="显示标签" htmlFor="sf-label">
-          <input
-            id="sf-label"
-            type="text"
-            placeholder="留空则与标准名称相同"
-            value={form.label}
-            onChange={(event) => setForm((prev) => ({ ...prev, label: event.target.value }))}
-          />
-        </Field>
+        <div className="dialog-form">
+          <label className="form-row">
+            <span className="field-label">标准名称</span>
+            <Input
+              placeholder="例如：姓名"
+              value={form.name}
+              onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+            />
+          </label>
+          <label className="form-row">
+            <span className="field-label">显示标签</span>
+            <Input
+              placeholder="留空则与标准名称相同"
+              value={form.label}
+              onChange={(event) => setForm((prev) => ({ ...prev, label: event.target.value }))}
+            />
+          </label>
 
-        <div className="form-grid">
-          <Field label="数据类型" htmlFor="sf-dtype">
-            <select
-              id="sf-dtype"
-              value={form.dtype}
+          <div className="form-grid">
+            <label className="form-row">
+              <span className="field-label">数据类型</span>
+              <Select
+                value={form.dtype}
+                onChange={(value: ColumnDtype) => setForm((prev) => ({ ...prev, dtype: value }))}
+                options={DTYPES.map((dtype) => ({ value: dtype, label: DTYPE_LABELS[dtype] }))}
+              />
+            </label>
+            {PRECISION_DTYPES.includes(form.dtype) ? (
+              <label className="form-row">
+                <span className="field-label">精度（小数位）</span>
+                <InputNumber
+                  min={0}
+                  max={10}
+                  style={{ width: '100%' }}
+                  value={form.precision}
+                  onChange={(value) =>
+                    setForm((prev) => ({ ...prev, precision: value ?? 0 }))
+                  }
+                />
+              </label>
+            ) : null}
+          </div>
+          <p className="field-hint">
+            参考 Excel 数据类型：整数不保留小数；小数 / 百分比可单独设置精度。
+          </p>
+
+          <label className="form-row">
+            <span className="field-label">所属分组</span>
+            <Select
+              value={form.groupId}
+              onChange={(value) => setForm((prev) => ({ ...prev, groupId: value }))}
+              options={[
+                { value: '', label: '未分组' },
+                ...groups.map((group) => ({ value: group.id, label: group.name })),
+              ]}
+            />
+          </label>
+          <label className="form-row">
+            <span className="field-label">描述（可选）</span>
+            <Input
+              value={form.description}
               onChange={(event) =>
-                setForm((prev) => ({ ...prev, dtype: event.target.value as ColumnDtype }))
-              }
-            >
-              {DTYPES.map((dtype) => (
-                <option key={dtype} value={dtype}>
-                  {DTYPE_LABELS[dtype]}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="精度（小数位）" htmlFor="sf-precision">
-            <input
-              id="sf-precision"
-              type="number"
-              min={0}
-              max={10}
-              disabled={!PRECISION_DTYPES.includes(form.dtype)}
-              value={form.precision}
-              onChange={(event) =>
-                setForm((prev) => ({ ...prev, precision: Number(event.target.value) || 0 }))
+                setForm((prev) => ({ ...prev, description: event.target.value }))
               }
             />
-          </Field>
+          </label>
         </div>
-        <p className="field-hint" style={{ marginTop: -6 }}>
-          参考 Excel 数据类型：整数不保留小数；小数 / 百分比可单独设置精度。
-        </p>
-
-        <Field label="所属分组" htmlFor="sf-group">
-          <select
-            id="sf-group"
-            value={form.groupId}
-            onChange={(event) => setForm((prev) => ({ ...prev, groupId: event.target.value }))}
-          >
-            <option value="">未分组</option>
-            {groups.map((group) => (
-              <option key={group.id} value={group.id}>
-                {group.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="描述（可选）" htmlFor="sf-desc">
-          <input
-            id="sf-desc"
-            type="text"
-            value={form.description}
-            onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
-          />
-        </Field>
       </Modal>
 
       <Modal
         open={groupModalOpen}
         title={groupForm.id ? '重命名分组' : '新建分组'}
-        onClose={() => setGroupModalOpen(false)}
+        onCancel={() => setGroupModalOpen(false)}
+        onOk={submitGroup}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={savingGroup}
         width={420}
-        footer={
-          <>
-            <button className="btn" onClick={() => setGroupModalOpen(false)}>
-              取消
-            </button>
-            <button className="btn btn-primary" onClick={submitGroup} disabled={savingGroup}>
-              {savingGroup ? '保存中…' : '保存'}
-            </button>
-          </>
-        }
+        destroyOnHidden
       >
-        <Field label="分组名称" htmlFor="sf-group-name">
-          <input
-            id="sf-group-name"
-            type="text"
-            autoFocus
-            placeholder="例如：考生信息 / 成绩 / 考务"
-            value={groupForm.name}
-            onChange={(event) => setGroupForm((prev) => ({ ...prev, name: event.target.value }))}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') submitGroup();
-            }}
-          />
-        </Field>
+        <div className="dialog-form">
+          <label className="form-row">
+            <span className="field-label">分组名称</span>
+            <Input
+              autoFocus
+              placeholder="例如：考生信息 / 成绩 / 考务"
+              value={groupForm.name}
+              onChange={(event) =>
+                setGroupForm((prev) => ({ ...prev, name: event.target.value }))
+              }
+              onPressEnter={submitGroup}
+            />
+          </label>
+        </div>
       </Modal>
     </div>
   );

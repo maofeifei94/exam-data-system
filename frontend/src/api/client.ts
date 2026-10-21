@@ -252,10 +252,11 @@ export function applyMapping(
   id: string,
   mappings: { from: string; to: string }[],
   persistAliases: boolean,
+  keepFields: string[] = [],
 ): Promise<Dataset> {
   return request<Dataset>(`/api/datasets/${id}/apply_mapping`, {
     method: 'POST',
-    body: JSON.stringify({ mappings, persist_aliases: persistAliases }),
+    body: JSON.stringify({ mappings, persist_aliases: persistAliases, keep_fields: keepFields }),
   });
 }
 

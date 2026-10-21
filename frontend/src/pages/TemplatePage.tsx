@@ -22,8 +22,10 @@ import type {
 } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
 import { Spinner } from '../components/Spinner';
+import { TokenEditor } from '../components/TokenEditor';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import { fieldColor, hexToRgba, splitTemplateTokens } from '../lib/tokens';
 
 const MM_PER_PT = 0.352778;
 const PAD = 22;
@@ -115,6 +117,160 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** 近似文本宽度：中文按 1 个字号，ASCII 按 0.55，其他按 0.85。 */
+function measureTextWidth(text: string, fontSize: number): number {
+  let units = 0;
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0x2e80) units += 1;
+    else if (code < 0x80) units += 0.55;
+    else units += 0.85;
+  }
+  return units * fontSize;
+}
+
+interface RichItem {
+  kind: 'text' | 'field' | 'builtin';
+  text: string;
+  x: number;
+  w: number;
+  y: number;
+}
+
+/**
+ * 把模板文本渲染为“字段胶囊 + 文本”的可视化内容。
+ * 展示态不出现 `{{}}`，字段以有颜色的圆角矩形封装。
+ */
+function buildRichContent(
+  content: string,
+  width: number,
+  height: number,
+  fontSize: number,
+  element: TemplateElement,
+): Array<Rect | Text> {
+  const lineHeight = fontSize * 1.45;
+  const pad = Math.max(1, fontSize * 0.15);
+  const items: RichItem[] = [];
+  let cursorX = 0;
+  let cursorY = 0;
+  let run = '';
+  let runX = 0;
+
+  const flush = () => {
+    if (!run) return;
+    items.push({ kind: 'text', text: run, x: runX, w: measureTextWidth(run, fontSize), y: cursorY });
+    run = '';
+  };
+
+  for (const token of splitTemplateTokens(content)) {
+    if (token.kind === 'text') {
+      const lines = token.text.split('\n');
+      lines.forEach((line, lineIndex) => {
+        if (lineIndex > 0) {
+          flush();
+          cursorX = 0;
+          cursorY += lineHeight;
+        }
+        for (const ch of line) {
+          const charWidth = measureTextWidth(ch, fontSize);
+          if (cursorX + charWidth > width - pad * 2 && cursorX > 0) {
+            flush();
+            cursorX = 0;
+            cursorY += lineHeight;
+          }
+          if (!run) runX = cursorX;
+          run += ch;
+          cursorX += charWidth;
+        }
+      });
+      continue;
+    }
+
+    flush();
+    const label = token.field || '空字段';
+    const pillFontSize = Math.max(6, fontSize * 0.82);
+    const pillWidth = measureTextWidth(label, pillFontSize) + pillFontSize * 1.25;
+    if (cursorX + pillWidth > width - pad * 2 && cursorX > 0) {
+      cursorX = 0;
+      cursorY += lineHeight;
+    }
+    items.push({ kind: token.kind, text: label, x: cursorX, w: pillWidth, y: cursorY });
+    cursorX += pillWidth + pillFontSize * 0.28;
+  }
+  flush();
+
+  if (items.length === 0) return [];
+
+  const lineWidths = new Map<number, number>();
+  for (const item of items) {
+    lineWidths.set(item.y, Math.max(lineWidths.get(item.y) ?? 0, item.x + item.w));
+  }
+  const contentHeight = Math.max(...items.map((item) => item.y)) + lineHeight;
+  const top = Math.max(0, (height - contentHeight) / 2);
+  const output: Array<Rect | Text> = [];
+
+  for (const item of items) {
+    const lineWidth = lineWidths.get(item.y) ?? item.w;
+    const alignOffset =
+      element.align === 'center'
+        ? (width - lineWidth) / 2
+        : element.align === 'right'
+          ? width - lineWidth
+          : 0;
+    const x = alignOffset + item.x + pad;
+    const y = top + item.y;
+
+    if (item.kind === 'text') {
+      output.push(
+        new Text({
+          x,
+          y,
+          width: item.w + 2,
+          height: lineHeight,
+          text: item.text,
+          fontSize,
+          fill: element.color || '#000000',
+          fontWeight: element.bold ? 'bold' : 'normal',
+          textWrap: 'none',
+        }),
+      );
+      continue;
+    }
+
+    const color = item.kind === 'builtin' ? '#64748b' : fieldColor(item.text);
+    const pillHeight = lineHeight * 0.82;
+    const pillY = y + (lineHeight - pillHeight) / 2;
+    const pillFontSize = Math.max(6, fontSize * 0.82);
+    output.push(
+      new Rect({
+        x,
+        y: pillY,
+        width: item.w,
+        height: pillHeight,
+        fill: hexToRgba(color, 0.13),
+        stroke: hexToRgba(color, 0.4),
+        strokeWidth: 1,
+        cornerRadius: Math.max(3, pillHeight * 0.32),
+      }),
+      new Text({
+        x,
+        y: pillY,
+        width: item.w,
+        height: pillHeight,
+        text: item.text,
+        fontSize: pillFontSize,
+        fill: color,
+        fontWeight: 'bold',
+        textAlign: 'center',
+        verticalAlign: 'middle',
+        textWrap: 'none',
+      }),
+    );
+  }
+
+  return output;
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -149,6 +305,8 @@ export default function TemplatePage({
 
   const [draft, setDraft] = useState<TemplateDraft>(EMPTY_DRAFT);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** 画布中双击元素后，让属性面板的 Token 编辑器立即进入编辑态 */
+  const [editRequestId, setEditRequestId] = useState<string | null>(null);
   const [size, setSize] = useState({ w: 620, h: 740 });
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -401,22 +559,12 @@ export default function TemplatePage({
         if (element.border) {
           children.push(new Rect({ x: 0, y: 0, width: w, height: h, stroke: element.color, strokeWidth: 1, cornerRadius: radius }));
         }
-        const content = element.text.trim() ? element.text : element.field ? `{${element.field}}` : '';
-        children.push(
-          new Text({
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-            text: content || '（空）',
-            fontSize: fs,
-            fontWeight: element.bold ? 'bold' : 'normal',
-            fill: element.color || '#000000',
-            textAlign: element.align,
-            verticalAlign: 'middle',
-            textWrap: 'break',
-          }),
-        );
+        const content = element.text.trim()
+          ? element.text
+          : element.field
+            ? `{{${element.field}}}`
+            : '';
+        children.push(...buildRichContent(content || '（空）', w, h, fs, element));
       }
 
       if (interactive) {
@@ -444,7 +592,14 @@ export default function TemplatePage({
       });
 
       if (interactive) {
-        group.on('tap', () => setSelectedId(element.id));
+        group.on('tap', () => {
+          setSelectedId(element.id);
+          setEditRequestId(null);
+        });
+        group.on('double_tap', () => {
+          setSelectedId(element.id);
+          setEditRequestId(element.id);
+        });
         group.on('drag.end', () => {
           const nx = ((group.x ?? gx) - ox) / scale;
           const ny = ((group.y ?? gy) - oy) / scale;
@@ -870,7 +1025,8 @@ export default function TemplatePage({
             ))}
           </div>
           <p className="panel-hint">
-            文本中可用 {'{字段名}'} 插入数据；{'{{index}}'}、{'{{page}}'}、{'{{count}}'} 为内置变量。
+            文本中用 {'{{字段名}}'} 插入数据，显示为彩色圆角胶囊；{'{{index}}'}、{'{{page}}'}、
+            {' {{count}}'} 为内置变量。
           </p>
 
           <hr className="divider" />
@@ -880,6 +1036,7 @@ export default function TemplatePage({
               element={selected}
               kind={draft.kind}
               columns={columnNames}
+              autoEdit={editRequestId === selected.id}
               onChange={(patch) => updateElement(selected.id, patch)}
               onRemove={() => removeElement(selected.id)}
             />
@@ -943,11 +1100,12 @@ interface ElementEditorProps {
   element: TemplateElement;
   kind: 'single' | 'matrix';
   columns: string[];
+  autoEdit?: boolean;
   onChange: (patch: Partial<TemplateElement>) => void;
   onRemove: () => void;
 }
 
-function ElementEditor({ element, kind, columns, onChange, onRemove }: ElementEditorProps) {
+function ElementEditor({ element, kind, columns, autoEdit, onChange, onRemove }: ElementEditorProps) {
   const numeric: [string, keyof TemplateElement, number][] = [
     ['X (mm)', 'x_mm', 0.5],
     ['Y (mm)', 'y_mm', 0.5],
@@ -979,15 +1137,21 @@ function ElementEditor({ element, kind, columns, onChange, onRemove }: ElementEd
       </div>
 
       {element.type === 'text' || element.type === 'field' ? (
-        <label className="field">
+        <div className="field">
           <span className="field-label">文本内容</span>
-          <textarea
-            rows={2}
+          <TokenEditor
+            mode="template"
+            multiline
+            fields={columns}
             value={element.text}
-            placeholder="支持 {字段名} 占位符；留空则直接显示字段值"
-            onChange={(event) => onChange({ text: event.target.value })}
+            autoEdit={autoEdit}
+            placeholder="输入文本，并用 {{字段名}} 插入字段"
+            onChange={(text) => onChange({ text })}
           />
-        </label>
+          <span className="field-hint">
+            双击胶囊或按 Backspace 可编辑原始 <span className="mono">{'{{字段}}'}</span> 语法
+          </span>
+        </div>
       ) : null}
 
       {element.type === 'field' || element.type === 'image' ? (

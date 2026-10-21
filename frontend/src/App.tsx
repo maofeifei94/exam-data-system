@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { Button, Select } from 'antd';
 import { getHealth } from './api/client';
 import { ProjectProvider, useProject } from './context/ProjectContext';
 import { desktop } from './lib/native';
+import { ThemeProvider, useThemeMode } from './theme';
 import ProjectFilesPage from './pages/ProjectFilesPage';
 import ProjectFlowPage from './pages/ProjectFlowPage';
 import ImportPage from './pages/ImportPage';
@@ -152,6 +154,7 @@ function MenuBar({
 }) {
   const api = desktop();
   const { projects, currentProject, selectProject } = useProject();
+  const { mode, toggle: toggleTheme } = useThemeMode();
   const [open, setOpen] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
 
@@ -188,6 +191,8 @@ function MenuBar({
     全局配置: [
       { label: '字段别名管理', onClick: () => onOpenView('alias') },
       { label: 'PDF 模板库', onClick: () => onOpenView('templates') },
+      { separator: true, label: '' },
+      { label: mode === 'dark' ? '切换到浅色模式' : '切换到深色模式', onClick: toggleTheme },
     ],
     帮助: [{ label: '考试数据处理系统 v0.1.0', disabled: true }],
   };
@@ -245,6 +250,7 @@ function Workbench() {
   const api = desktop();
   const { projects, currentProject, currentProjectId, selectProject, loading } = useProject();
   const connected = useBackendStatus();
+  const { mode, toggle: toggleTheme } = useThemeMode();
 
   const [tabs, setTabs] = useState<ViewKey[]>(['files']);
   const [active, setActive] = useState<ViewKey>('files');
@@ -304,19 +310,18 @@ function Workbench() {
       <div className="toolbar">
         <label className="toolbar-select">
           <span className="toolbar-label">当前项目</span>
-          <select
+          <Select
+            size="small"
+            style={{ width: 220 }}
             value={currentProjectId}
-            onChange={(event) => selectProject(event.target.value)}
+            onChange={(value) => selectProject(value)}
             disabled={loading}
-          >
-            {projects.length === 0 ? <option value="">（暂无项目）</option> : null}
-            <option value="">全部数据（不限定项目）</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
+            options={[
+              ...(projects.length === 0 ? [{ value: '', label: '（暂无项目）' }] : []),
+              { value: '', label: '全部数据（不限定项目）' },
+              ...projects.map((project) => ({ value: project.id, label: project.name })),
+            ]}
+          />
         </label>
         {currentProject?.folder ? (
           <button
@@ -331,9 +336,12 @@ function Workbench() {
           <span className="toolbar-path muted">未指定项目文件夹</span>
         )}
         <div className="toolbar-fill" />
-        <button className="btn btn-sm" onClick={() => setNewProjectOpen(true)}>
+        <Button size="small" onClick={toggleTheme}>
+          {mode === 'dark' ? '浅色模式' : '深色模式'}
+        </Button>
+        <Button size="small" type="primary" onClick={() => setNewProjectOpen(true)}>
           ＋ 新建项目
-        </button>
+        </Button>
       </div>
 
       <div className="workbench">
@@ -404,8 +412,10 @@ function Workbench() {
 
 export default function App() {
   return (
-    <ProjectProvider>
-      <Workbench />
-    </ProjectProvider>
+    <ThemeProvider>
+      <ProjectProvider>
+        <Workbench />
+      </ProjectProvider>
+    </ThemeProvider>
   );
 }

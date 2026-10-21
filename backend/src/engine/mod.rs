@@ -13,7 +13,7 @@ pub mod operators;
 use crate::db::{new_id, now};
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DatasetColumn, FlowStep, RunLogEntry, RunResult, ValidateError, ValidateResult,
+    DatasetColumn, FlowStep, RunLogEntry, RunResult, StepFlow, ValidateError, ValidateResult,
 };
 use crate::store;
 use rusqlite::Connection;
@@ -862,123 +862,226 @@ fn load_flow(conn: &Connection, flow_id: &str) -> AppResult<(String, Vec<FlowSte
 }
 
 /// 静态校验：不执行 SQL，只根据字段名推演每一步是否可行。
+///
+/// 数据流模型：流程中所有「必需字段校验」步骤声明的字段并集被视为输入字段全集，
+/// 未声明的字段按用户约定视为不存在；没有必需字段声明时才退回数据集实际列。
+/// 每一步都会输出进入/离开时的字段快照，前端据此即时提示流程是否合理。
 pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult {
-    let mut cols: Vec<String> = columns.to_vec();
     let mut errors: Vec<ValidateError> = Vec::new();
-    let q = |j: i64, m: String| ValidateError { step_index: j, message: m };
+    let mut flows: Vec<StepFlow> = Vec::new();
+
+    // 1. 收集必要字段，构建数据流起点
+    let mut declared: Vec<String> = Vec::new();
+    for step in steps {
+        if step.operator != "require_fields" {
+            continue;
+        }
+        let p = if step.params.is_null() {
+            Value::Object(Default::default())
+        } else {
+            step.params.clone()
+        };
+        for field in list_param(&p, "fields") {
+            if !declared.contains(&field) {
+                declared.push(field);
+            }
+        }
+    }
+    let mut cols: Vec<String> = if declared.is_empty() {
+        columns.to_vec()
+    } else {
+        declared
+    };
 
     for (idx, step) in steps.iter().enumerate() {
         let i = idx as i64;
+        let input_fields = cols.clone();
+        let mut step_errors: Vec<String> = Vec::new();
+
         if !step.enabled {
+            flows.push(StepFlow {
+                step_index: i,
+                input_fields,
+                output_fields: cols.clone(),
+                errors: step_errors,
+            });
             continue;
         }
-        let p = if step.params.is_null() { Value::Object(Default::default()) } else { step.params.clone() };
+
+        let p = if step.params.is_null() {
+            Value::Object(Default::default())
+        } else {
+            step.params.clone()
+        };
+
         match step.operator.as_str() {
             "require_fields" => {
                 let fields = list_param(&p, "fields");
                 if fields.is_empty() {
-                    errors.push(q(i, "必需字段列表为空".into()));
+                    step_errors.push("必需字段列表为空".into());
                 }
-                let missing: Vec<String> =
-                    fields.iter().filter(|f| !cols.contains(f)).cloned().collect();
+                let missing: Vec<String> = fields
+                    .iter()
+                    .filter(|f| !cols.contains(f))
+                    .cloned()
+                    .collect();
                 if !missing.is_empty() {
-                    errors.push(q(i, format!("缺少必要字段：{}", missing.join("、"))));
+                    step_errors.push(format!("缺少必要字段：{}", missing.join("、")));
+                }
+                if !bool_param(&p, "allow_extra", true) {
+                    let extra: Vec<String> = cols
+                        .iter()
+                        .filter(|c| !fields.contains(c))
+                        .cloned()
+                        .collect();
+                    if !extra.is_empty() {
+                        step_errors.push(format!("存在未声明字段：{}", extra.join("、")));
+                    }
                 }
             }
             "unique_check" | "dedupe" => {
                 for c in list_param(&p, "columns") {
                     if !cols.contains(&c) {
-                        errors.push(q(i, format!("字段 [{c}] 不存在")));
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                if step.operator == "dedupe" {
+                    let order_by = str_param(&p, "order_by");
+                    if !order_by.is_empty() && !cols.contains(&order_by) {
+                        step_errors.push(format!("字段 [{order_by}] 不存在"));
                     }
                 }
             }
-            "map_columns" => { /* 依赖全局别名表，运行时再校验 */ }
+            "map_columns" => {
+                // 全局别名表只在运行时可见，这里仅推演显式写出的映射。
+                if let Some(arr) = p.get("mappings").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        let from = item
+                            .get("from")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let to = item
+                            .get("to")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if from.is_empty() || to.is_empty() || from == to {
+                            continue;
+                        }
+                        if let Some(pos) = cols.iter().position(|c| c == &from) {
+                            if cols.iter().any(|c| c == &to) {
+                                step_errors.push(format!("映射目标字段 [{to}] 已存在"));
+                            } else {
+                                cols[pos] = to;
+                            }
+                        }
+                    }
+                }
+            }
             "rename" => {
                 let from = str_param(&p, "from");
                 let to = str_param(&p, "to");
-                if !cols.contains(&from) {
-                    errors.push(q(i, format!("字段 [{from}] 不存在")));
-                }
-                if cols.contains(&to) && to != from {
-                    errors.push(q(i, format!("字段 [{to}] 已存在")));
-                }
-                if let Some(pos) = cols.iter().position(|c| c == &from) {
+                if from.is_empty() || to.is_empty() {
+                    step_errors.push("原字段与新字段名都不能为空".into());
+                } else if !cols.contains(&from) {
+                    step_errors.push(format!("字段 [{from}] 不存在"));
+                } else if cols.contains(&to) {
+                    step_errors.push(format!("字段 [{to}] 已存在"));
+                } else if let Some(pos) = cols.iter().position(|c| c == &from) {
                     cols[pos] = to;
                 }
             }
             "select" => {
                 let keep = list_param(&p, "columns");
+                if keep.is_empty() {
+                    step_errors.push("保留字段列表为空".into());
+                }
                 for c in &keep {
                     if !cols.contains(c) {
-                        errors.push(q(i, format!("字段 [{c}] 不存在")));
+                        step_errors.push(format!("字段 [{c}] 不存在"));
                     }
                 }
                 if !keep.is_empty() {
                     cols = keep;
                 }
             }
-            "cast" => {
+            "cast" | "fill_null" => {
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
-                    errors.push(q(i, format!("字段 [{c}] 不存在")));
-                }
-            }
-            "fill_null" => {
-                let c = str_param(&p, "column");
-                if !cols.contains(&c) {
-                    errors.push(q(i, format!("字段 [{c}] 不存在")));
+                    step_errors.push(format!("字段 [{c}] 不存在"));
                 }
             }
             "compute" => {
                 let out = str_param(&p, "out");
                 let raw = str_param(&p, "expr");
-                if cols.contains(&out) {
-                    errors.push(q(i, format!("字段 [{out}] 已存在")));
-                }
-                if let Err(e) = expr::compile(&raw, &cols) {
-                    errors.push(q(i, e));
-                } else if !out.is_empty() {
+                if out.is_empty() {
+                    step_errors.push("新字段名不能为空".into());
+                } else if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else if let Err(e) = expr::compile(&raw, &cols) {
+                    step_errors.push(e);
+                } else {
                     cols.push(out);
                 }
             }
             "rank" => {
                 let by = str_param(&p, "by");
                 if !cols.contains(&by) {
-                    errors.push(q(i, format!("字段 [{by}] 不存在")));
+                    step_errors.push(format!("字段 [{by}] 不存在"));
                 }
                 let out = {
                     let o = str_param(&p, "out");
                     if o.is_empty() { "排名".to_string() } else { o }
                 };
                 if cols.contains(&out) {
-                    errors.push(q(i, format!("字段 [{out}] 已存在")));
+                    step_errors.push(format!("字段 [{out}] 已存在"));
                 } else {
                     cols.push(out);
                 }
                 for c in list_param(&p, "partition_by") {
                     if !cols.contains(&c) {
-                        errors.push(q(i, format!("分组字段 [{c}] 不存在")));
+                        step_errors.push(format!("分组字段 [{c}] 不存在"));
                     }
                 }
             }
             "filter" => {
                 let raw = str_param(&p, "expr");
                 if raw.is_empty() {
-                    errors.push(q(i, "筛选条件不能为空".into()));
+                    step_errors.push("筛选条件不能为空".into());
                 } else if let Err(e) = expr::compile(&raw, &cols) {
-                    errors.push(q(i, e));
+                    step_errors.push(e);
                 }
             }
             "sort" => {
                 let by = str_param(&p, "by");
                 if !cols.contains(&by) {
-                    errors.push(q(i, format!("字段 [{by}] 不存在")));
+                    step_errors.push(format!("字段 [{by}] 不存在"));
                 }
             }
-            "limit" => {}
-            "output" => {}
-            other => errors.push(q(i, format!("不支持的操作符: {other}"))),
+            "limit" | "output" => {}
+            other => step_errors.push(format!("不支持的操作符: {other}")),
         }
+
+        for message in &step_errors {
+            errors.push(ValidateError {
+                step_index: i,
+                message: message.clone(),
+            });
+        }
+        flows.push(StepFlow {
+            step_index: i,
+            input_fields,
+            output_fields: cols.clone(),
+            errors: step_errors,
+        });
     }
-    ValidateResult { ok: errors.is_empty(), errors }
+
+    ValidateResult {
+        ok: errors.is_empty(),
+        errors,
+        steps: flows,
+    }
 }

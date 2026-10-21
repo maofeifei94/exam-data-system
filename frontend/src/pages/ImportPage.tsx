@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Button, Input, InputNumber, Select, Switch } from 'antd';
 import {
   applyMapping,
   getDatasetRows,
   importDataset,
+  listFlows,
   listStandardFields,
 } from '../api/client';
 import type { ColumnSuggestion, Dataset, ImportResult, RowPage, StandardField } from '../api/types';
 import { DataTable } from '../components/DataTable';
-import { Field } from '../components/Field';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
@@ -40,6 +41,7 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
   const [headerRow, setHeaderRow] = useState(1);
 
   const [standardFields, setStandardFields] = useState<StandardField[]>([]);
+  const [requiredFields, setRequiredFields] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [mappings, setMappings] = useState<Record<string, string>>({});
@@ -48,6 +50,37 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
   const [applying, setApplying] = useState(false);
   const [appliedDataset, setAppliedDataset] = useState<Dataset | null>(null);
   const [appliedRows, setAppliedRows] = useState<RowPage | null>(null);
+
+  // 数据导入只保留流程「必要字段校验」声明的字段，其余原始列在应用映射时删除。
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!currentProjectId) {
+        if (active) setRequiredFields([]);
+        return;
+      }
+      try {
+        const flows = await listFlows({ projectId: currentProjectId });
+        const names: string[] = [];
+        for (const flow of flows) {
+          for (const step of flow.steps) {
+            if (!step.enabled || step.operator !== 'require_fields') continue;
+            const fields = Array.isArray(step.params?.fields) ? step.params.fields : [];
+            for (const field of fields) {
+              const name = String(field).trim();
+              if (name && !names.includes(name)) names.push(name);
+            }
+          }
+        }
+        if (active) setRequiredFields(names);
+      } catch {
+        if (active) setRequiredFields([]);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [currentProjectId]);
 
   const handleImport = async () => {
     if (!file) {
@@ -86,7 +119,12 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
       const payload = Object.entries(mappings)
         .filter(([, to]) => to !== KEEP_ORIGINAL)
         .map(([from, to]) => ({ from, to }));
-      const dataset = await applyMapping(result.dataset.id, payload, persistAliases);
+      const dataset = await applyMapping(
+        result.dataset.id,
+        payload,
+        persistAliases,
+        requiredFields,
+      );
       setAppliedDataset(dataset);
       setAppliedRows(await getDatasetRows(dataset.id, 0, 100));
       show('映射已应用', 'success');
@@ -106,39 +144,41 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
 
       <section className="card">
         <h3 className="card-title">第一步 · 选择文件</h3>
-        <Field label="Excel / CSV 文件" htmlFor="import-file">
+        <label className="field">
+          <span className="field-label">Excel / CSV 文件</span>
           <input
-            id="import-file"
             type="file"
             accept=".xlsx,.xls,.csv"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
-        </Field>
-        <Field label="数据集名称（可选）" htmlFor="import-name">
-          <input
-            id="import-name"
-            type="text"
+        </label>
+        <label className="field">
+          <span className="field-label">数据集名称（可选）</span>
+          <Input
             placeholder="留空则使用文件名"
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
-        </Field>
-        <Field label="表头行号" htmlFor="import-header-row">
-          <input
-            id="import-header-row"
-            type="number"
+        </label>
+        <label className="field">
+          <span className="field-label">表头行号</span>
+          <InputNumber
             min={1}
+            style={{ width: 140 }}
             value={headerRow}
-            onChange={(event) => setHeaderRow(Number(event.target.value) || 1)}
+            onChange={(value) => setHeaderRow(Number(value) || 1)}
           />
-        </Field>
+        </label>
         <p className="panel-hint">
           导入的数据集将归属：
           {currentProject ? `考试项目「${currentProject.name}」` : '未归属（可在顶部先选择考试项目）'}
+          {requiredFields.length > 0
+            ? `；应用映射后只保留流程声明的 ${requiredFields.length} 个必要字段，其余原始列与数据会被删除。`
+            : ''}
         </p>
-        <button className="btn btn-primary" onClick={handleImport} disabled={importing}>
-          {importing ? '导入中…' : '开始导入'}
-        </button>
+        <Button type="primary" loading={importing} onClick={handleImport}>
+          开始导入
+        </Button>
       </section>
 
       {importing ? (
@@ -178,24 +218,28 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
                     <tr key={suggestion.source} className={index % 2 === 1 ? 'even' : undefined}>
                       <td>{suggestion.source}</td>
                       <td>
-                        <select
+                        <Select
+                          style={{ width: '100%', minWidth: 220 }}
                           value={mappings[suggestion.source] ?? KEEP_ORIGINAL}
-                          onChange={(event) =>
+                          onChange={(value) =>
                             setMappings((prev) => ({
                               ...prev,
-                              [suggestion.source]: event.target.value,
+                              [suggestion.source]: value,
                             }))
                           }
-                        >
-                          <option value={KEEP_ORIGINAL}>
-                            保持原名（{suggestion.source}）
-                          </option>
-                          {standardFields.map((field) => (
-                            <option key={field.id} value={field.name}>
-                              {field.label}（{field.name}）
-                            </option>
-                          ))}
-                        </select>
+                          options={[
+                            {
+                              value: KEEP_ORIGINAL,
+                              label: `保持原名（${suggestion.source}）`,
+                            },
+                            ...standardFields.map((field) => ({
+                              value: field.name,
+                              label: `${field.label}（${field.name}）${
+                                requiredFields.includes(field.name) ? ' · 必要' : ''
+                              }`,
+                            })),
+                          ]}
+                        />
                       </td>
                       <td>
                         <span className={badge.className}>{badge.text}</span>
@@ -207,17 +251,31 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
             </table>
 
             <label className="checkbox-row">
-              <input
-                type="checkbox"
+              <Switch
+                size="small"
                 checked={persistAliases}
-                onChange={(event) => setPersistAliases(event.target.checked)}
+                onChange={setPersistAliases}
+                style={{ marginRight: 8 }}
               />
               保存为新别名
             </label>
 
-            <button className="btn btn-primary" onClick={handleApply} disabled={applying}>
-              {applying ? '应用中…' : '应用映射'}
-            </button>
+            {requiredFields.length > 0 ? (
+              <div className="required-fields-note">
+                <span className="field-label">仅保留必要字段：</span>
+                <div className="chip-row">
+                  {requiredFields.map((field) => (
+                    <span key={field} className="token-chip">
+                      {field}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <Button type="primary" loading={applying} onClick={handleApply}>
+              应用映射
+            </Button>
           </section>
         </>
       ) : null}

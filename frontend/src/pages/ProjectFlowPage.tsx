@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { Dropdown } from 'antd';
+import type { MenuProps } from 'antd';
 import {
   createFlow,
   duplicatePdfTemplate,
@@ -18,17 +20,20 @@ import type {
   Dataset,
   ExamProject,
   FlowStep,
+  FlowValidateResult,
   OperatorDef,
   OperatorParam,
   PdfTemplate,
   RunResult,
   StandardField,
+  StepFlow,
 } from '../api/types';
 import { DialogWindow } from '../components/DialogWindow';
 import { EmptyState } from '../components/EmptyState';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import { TokenEditor } from '../components/TokenEditor';
 import ImportPage from './ImportPage';
 import TemplatePage from './TemplatePage';
 
@@ -39,11 +44,11 @@ const GAP_Y = 74;
 const PAD = 32;
 
 const GROUP_COLORS: Record<string, string> = {
-  校验: '#d97706',
-  字段: '#2563eb',
-  计算: '#16a34a',
+  校验: '#b45309',
+  字段: '#0e7490',
+  计算: '#0f766e',
   行: '#7c3aed',
-  输出: '#0f172a',
+  输出: '#334155',
 };
 
 function groupColor(group: string | undefined): string {
@@ -91,9 +96,68 @@ interface FlowDraft {
   steps: FlowStep[];
 }
 
-function stepPosition(step: FlowStep, index: number): Point {
-  if (step.pos) return { x: step.pos.x, y: step.pos.y };
-  return { x: 110, y: PAD + NODE_H + GAP_Y + index * (NODE_H + GAP_Y) };
+/** 主链步骤：没有挂载父节点，或父节点已被删除。 */
+function isMainStep(step: FlowStep, steps: FlowStep[]): boolean {
+  return !step.branch_of || !steps.some((item) => item.id === step.branch_of);
+}
+
+/**
+ * 统一计算节点坐标与 PDF 锚点位置。
+ * 主链纵向排列；分支挂载在父节点右侧，同一父节点的分支按数组顺序纵向排成一条支链。
+ */
+function computeLayout(steps: FlowStep[]): { positions: Map<string, Point>; pdfPos: Point } {
+  const positions = new Map<string, Point>();
+  const mainSteps = steps.filter((step) => isMainStep(step, steps));
+
+  mainSteps.forEach((step, index) => {
+    positions.set(
+      step.id,
+      step.pos
+        ? { x: step.pos.x, y: step.pos.y }
+        : { x: 110, y: PAD + NODE_H + GAP_Y + index * (NODE_H + GAP_Y) },
+    );
+  });
+
+  const lastMain = mainSteps[mainSteps.length - 1];
+  const lastPos = lastMain ? positions.get(lastMain.id) : null;
+  const pdfPos: Point = {
+    x: 110,
+    y: lastPos ? lastPos.y + NODE_H + GAP_Y : PAD + NODE_H + GAP_Y,
+  };
+
+  let pending = steps.filter((step) => !positions.has(step.id));
+  let guard = 0;
+  while (pending.length > 0 && guard < steps.length) {
+    guard += 1;
+    const next: FlowStep[] = [];
+    for (const step of pending) {
+      const parentPos = step.branch_of ? positions.get(step.branch_of) : null;
+      if (!parentPos) {
+        next.push(step);
+        continue;
+      }
+      const placedSiblings = steps.filter(
+        (item) => item.branch_of === step.branch_of && positions.has(item.id),
+      ).length;
+      positions.set(
+        step.id,
+        step.pos
+          ? { x: step.pos.x, y: step.pos.y }
+          : {
+              x: parentPos.x + NODE_W + 150,
+              y: parentPos.y + placedSiblings * (NODE_H + 30),
+            },
+      );
+    }
+    pending = next;
+  }
+
+  // 极端情况下（父节点形成环）把剩余节点放在画布右侧，保证可见。
+  pending.forEach((step, index) => {
+    positions.set(step.id, { x: 110 + NODE_W + 150, y: PAD + index * (NODE_H + 30) });
+  });
+
+  return { positions, pdfPos };
 }
 
 function edgePath(from: Point, to: Point): string {
@@ -104,6 +168,16 @@ function edgePath(from: Point, to: Point): string {
   const dir = y2 >= y1 ? 1 : -1;
   const bend = Math.min(60, Math.max(24, Math.abs(y2 - y1) / 2));
   return `M ${x1} ${y1} C ${x1} ${y1 + dir * bend}, ${x2} ${y2 - dir * bend}, ${x2} ${y2}`;
+}
+
+/** 从父节点右侧连到分支节点左侧，用于横向分支。 */
+function branchEdgePath(from: Point, to: Point): string {
+  const x1 = from.x + NODE_W;
+  const y1 = from.y + NODE_H / 2;
+  const x2 = to.x;
+  const y2 = to.y + NODE_H / 2;
+  const bend = Math.max(30, Math.abs(x2 - x1) / 2);
+  return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
 }
 
 function saveBlob(blob: Blob, filename: string) {
@@ -134,7 +208,8 @@ export default function ProjectFlowPage() {
   const [draft, setDraft] = useState<FlowDraft>({ id: null, name: '', description: '', steps: [] });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
-  const [validateErrors, setValidateErrors] = useState<{ step_index: number; message: string }[]>([]);
+  const [validateResult, setValidateResult] = useState<FlowValidateResult | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -160,6 +235,7 @@ export default function ProjectFlowPage() {
   }, [operators]);
 
   const selectedStep = draft.steps.find((step) => step.id === selectedId) ?? null;
+  const selectedIndex = selectedStep ? draft.steps.findIndex((step) => step.id === selectedStep.id) : -1;
   const isImportSelected = selectedId === 'anchor:import';
   const isPdfSelected = selectedId === 'anchor:pdf';
 
@@ -177,26 +253,70 @@ export default function ProjectFlowPage() {
     return [...names];
   }, [runDataset, standardFields]);
 
-  const pdfPos = useMemo<Point>(() => {
-    const last = draft.steps.length
-      ? stepPosition(draft.steps[draft.steps.length - 1], draft.steps.length - 1)
-      : null;
-    return {
-      x: 110,
-      y: last ? last.y + NODE_H + GAP_Y : PAD + NODE_H + GAP_Y,
-    };
+  // 必要字段：流程中所有「必需字段校验」声明的字段，作为数据流推演的起点。
+  const requiredFields = useMemo(() => {
+    const names: string[] = [];
+    draft.steps.forEach((step) => {
+      if (!step.enabled || step.operator !== 'require_fields') return;
+      const fields = Array.isArray(step.params?.fields) ? step.params.fields : [];
+      fields.forEach((field) => {
+        const name = String(field).trim();
+        if (name && !names.includes(name)) names.push(name);
+      });
+    });
+    return names;
   }, [draft.steps]);
+
+  const startFields = requiredFields.length
+    ? requiredFields
+    : runDataset?.columns.map((column) => column.name) ?? [];
+  const lastStepFlow = validateResult?.steps?.[validateResult.steps.length - 1];
+  const endFields = lastStepFlow?.output_fields ?? startFields;
+
+  const flowByStep = useMemo(() => {
+    const map = new Map<number, StepFlow>();
+    validateResult?.steps.forEach((flow) => map.set(flow.step_index, flow));
+    return map;
+  }, [validateResult]);
+
+  const validateErrors = validateResult?.errors ?? [];
+
+  // 任一环节增删改后立即重新推演数据流，保持流程图上的字段快照实时更新。
+  useEffect(() => {
+    if (!currentProjectId) return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const base = requiredFields.length
+          ? requiredFields
+          : (runDataset?.columns.map((column) => column.name) ?? []);
+        const result = await validateFlow(draft.steps, base);
+        if (active) setValidateResult(result);
+      } catch {
+        // 校验失败时保留上一次结果，不打断编辑
+      }
+    }, 350);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.steps, requiredFields, runDataset, currentProjectId]);
+
+  const layout = useMemo(() => computeLayout(draft.steps), [draft.steps]);
+  const { positions, pdfPos } = layout;
 
   const canvasSizeComputed = useMemo(() => {
     let maxX = canvasSize.w;
     let maxY = pdfPos.y + NODE_H + PAD;
-    draft.steps.forEach((step, index) => {
-      const p = stepPosition(step, index);
+    draft.steps.forEach((step) => {
+      const p = positions.get(step.id);
+      if (!p) return;
       maxX = Math.max(maxX, p.x + NODE_W + PAD);
       maxY = Math.max(maxY, p.y + NODE_H + PAD);
     });
     return { w: maxX, h: maxY };
-  }, [draft.steps, canvasSize.w, pdfPos]);
+  }, [draft.steps, canvasSize.w, pdfPos, positions]);
 
   // ------------------------------------------------------------------
   // 加载基础数据与项目流程
@@ -243,7 +363,7 @@ export default function ProjectFlowPage() {
         }
         setSelectedId(null);
         setRunResult(null);
-        setValidateErrors([]);
+        setValidateResult(null);
       } catch (err) {
         show(err instanceof Error ? err.message : '加载流程数据失败', 'error');
       } finally {
@@ -270,7 +390,7 @@ export default function ProjectFlowPage() {
   // ------------------------------------------------------------------
   // 草稿操作
   // ------------------------------------------------------------------
-  const addStep = (type: string, index?: number, pos?: Point) => {
+  const addStep = (type: string, index?: number, pos?: Point, extra?: Partial<FlowStep>) => {
     const def = operatorMap.get(type);
     const step: FlowStep = {
       id: newStepId(),
@@ -279,6 +399,7 @@ export default function ProjectFlowPage() {
       enabled: true,
       params: defaultParamsFor(def),
       pos,
+      ...extra,
     };
     setDraft((prev) => {
       const next = [...prev.steps];
@@ -287,6 +408,25 @@ export default function ProjectFlowPage() {
       return { ...prev, steps: next };
     });
     setSelectedId(step.id);
+  };
+
+  /** 载入某个节点的「前 / 后 / 分支」插入位置。 */
+  const insertRelative = (step: FlowStep, type: string, mode: 'before' | 'after' | 'branch') => {
+    const index = draft.steps.findIndex((item) => item.id === step.id);
+    if (index < 0) {
+      addStep(type);
+      return;
+    }
+    if (mode === 'branch') {
+      addStep(type, index + 1, undefined, {
+        branch_of: step.id,
+        branch: `branch_${step.id}`,
+      });
+      return;
+    }
+    // 在分支节点内部前后插入时，继续留在同一条支链。
+    const extra = step.branch_of ? { branch_of: step.branch_of, branch: step.branch } : undefined;
+    addStep(type, mode === 'before' ? index : index + 1, undefined, extra);
   };
 
   const updateStep = (id: string, patch: Partial<FlowStep>) => {
@@ -332,12 +472,12 @@ export default function ProjectFlowPage() {
     show('已按顺序重新排版', 'success');
   };
 
-  const startDrag = (event: ReactPointerEvent<HTMLDivElement>, step: FlowStep, index: number) => {
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>, step: FlowStep) => {
     event.preventDefault();
     setSelectedId(step.id);
     const startX = event.clientX;
     const startY = event.clientY;
-    const origin = stepPosition(step, index);
+    const origin = positions.get(step.id) ?? { x: 110, y: PAD };
 
     const onMove = (ev: PointerEvent) => {
       const nx = origin.x + (ev.clientX - startX);
@@ -371,8 +511,8 @@ export default function ProjectFlowPage() {
     const dropY = event.clientY - rect.top + host.scrollTop;
     let index = draft.steps.length;
     for (let i = 0; i < draft.steps.length; i += 1) {
-      const p = stepPosition(draft.steps[i], i);
-      if (dropY < p.y + NODE_H / 2) {
+      const p = positions.get(draft.steps[i].id);
+      if (p && dropY < p.y + NODE_H / 2) {
         index = i;
         break;
       }
@@ -436,11 +576,11 @@ export default function ProjectFlowPage() {
       return;
     }
     try {
-      const result = await validateFlow(
-        draft.steps,
-        runDataset.columns.map((column) => column.name),
-      );
-      setValidateErrors(result.errors);
+      const base = requiredFields.length
+        ? requiredFields
+        : runDataset.columns.map((column) => column.name);
+      const result = await validateFlow(draft.steps, base);
+      setValidateResult(result);
       show(
         result.ok ? '校验通过，流程可执行' : `校验发现 ${result.errors.length} 个问题`,
         result.ok ? 'success' : 'error',
@@ -558,6 +698,42 @@ export default function ProjectFlowPage() {
       show(err instanceof Error ? err.message : '生成 PDF 失败', 'error');
     } finally {
       setExporting(false);
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // 节点悬停加号 / 右键多级菜单
+  // ------------------------------------------------------------------
+  const insertMenu = (prefix: string): MenuProps['items'] =>
+    operatorGroups
+      .filter(([group]) => group !== '输出')
+      .map(([group, list]) => ({
+        key: `${prefix}:group_${group}`,
+        label: (
+          <span className="menu-group-label">
+            <span className="palette-dot" style={{ background: groupColor(group) }} />
+            {group}
+          </span>
+        ),
+        children: list.map((op) => ({ key: `${prefix}:${op.type}`, label: op.label })),
+      }));
+
+  const nodeMenuItems = (): MenuProps['items'] => [
+    { key: 'before', label: '在此节点前插入步骤', children: insertMenu('before') },
+    { key: 'after', label: '在此节点后插入步骤', children: insertMenu('after') },
+    { key: 'branch', label: '添加分支步骤', children: insertMenu('branch') },
+    { type: 'divider' },
+    { key: 'delete', label: '删除该步骤', danger: true },
+  ];
+
+  const handleNodeMenuClick = (step: FlowStep, info: { key: string }) => {
+    const [prefix, type] = info.key.split(':');
+    if (prefix === 'delete') {
+      removeStep(step.id);
+      return;
+    }
+    if (type && (prefix === 'before' || prefix === 'after' || prefix === 'branch')) {
+      insertRelative(step, type, prefix);
     }
   };
 
@@ -691,13 +867,39 @@ export default function ProjectFlowPage() {
                   </marker>
                 </defs>
                 {(() => {
-                  const points: Point[] = [{ x: 110, y: PAD }];
-                  draft.steps.forEach((step, index) => points.push(stepPosition(step, index)));
-                  points.push(pdfPos);
-                  return points.slice(0, -1).map((from, index) => (
+                  const mainSteps = draft.steps.filter((step) => isMainStep(step, draft.steps));
+                  const points: Point[] = [
+                    { x: 110, y: PAD },
+                    ...mainSteps.map((step) => positions.get(step.id) ?? { x: 110, y: PAD }),
+                    pdfPos,
+                  ];
+                  const paths = points.slice(0, -1).map((from, index) => ({
+                    key: `main-${index}`,
+                    d: edgePath(from, points[index + 1]),
+                  }));
+
+                  // 分支连线：首条从父节点横向连出，后续沿支链纵向连接。
+                  draft.steps.forEach((step) => {
+                    if (!step.branch_of) return;
+                    const siblings = draft.steps.filter((item) => item.branch_of === step.branch_of);
+                    const order = siblings.findIndex((item) => item.id === step.id);
+                    const fromStep =
+                      order > 0
+                        ? siblings[order - 1]
+                        : draft.steps.find((item) => item.id === step.branch_of);
+                    const from = fromStep ? positions.get(fromStep.id) : null;
+                    const to = positions.get(step.id);
+                    if (!from || !to) return;
+                    paths.push({
+                      key: `branch-${step.id}`,
+                      d: order === 0 ? branchEdgePath(from, to) : edgePath(from, to),
+                    });
+                  });
+
+                  return paths.map((path) => (
                     <path
-                      key={index}
-                      d={edgePath(from, points[index + 1])}
+                      key={path.key}
+                      d={path.d}
                       fill="none"
                       stroke="#94a3b8"
                       strokeWidth={1.6}
@@ -726,6 +928,9 @@ export default function ProjectFlowPage() {
                     </div>
                   </div>
                 </div>
+                <div className="uml-node-status flow" title={`数据流起点：${startFields.join('、') || '无'}`}>
+                  输出字段 {startFields.length} 个
+                </div>
                 <div className="uml-node-port out" />
               </div>
 
@@ -733,48 +938,145 @@ export default function ProjectFlowPage() {
               {draft.steps.map((step, index) => {
                 const def = operatorMap.get(step.operator);
                 const color = groupColor(def?.group);
-                const p = stepPosition(step, index);
+                const p = positions.get(step.id) ?? { x: 110, y: PAD };
                 const logEntry = runResult?.log?.[index + 1];
                 const isSelected = selectedId === step.id;
+                const flow = flowByStep.get(index);
+                const stepErrors = flow?.errors ?? [];
+                const inBranch = !isMainStep(step, draft.steps);
+                const isHover = hoverId === step.id;
+                const flowTip = flow
+                  ? `输入字段（${flow.input_fields.length}）：${
+                      flow.input_fields.join('、') || '无'
+                    }\n输出字段（${flow.output_fields.length}）：${
+                      flow.output_fields.join('、') || '无'
+                    }`
+                  : undefined;
+                const statusTip = stepErrors.length ? stepErrors.join('\n') : flowTip;
                 return (
                   <div
                     key={step.id}
-                    className={`uml-node ${isSelected ? 'selected' : ''} ${
-                      step.enabled ? '' : 'disabled'
-                    }`}
-                    style={{
-                      left: p.x,
-                      top: p.y,
-                      width: NODE_W,
-                      height: NODE_H,
-                      borderColor: isSelected ? color : undefined,
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onPointerDown={(event) => startDrag(event, step, index)}
+                    className="uml-node-wrap"
+                    style={{ left: p.x, top: p.y, width: NODE_W, height: NODE_H }}
+                    onMouseEnter={() => setHoverId(step.id)}
+                    onMouseLeave={() => setHoverId(null)}
                   >
-                    <div className="uml-node-bar" style={{ background: color }} />
-                    <div className="uml-node-body">
-                      <span className="uml-node-index" style={{ background: color }}>
-                        {index + 1}
-                      </span>
-                      <div className="uml-node-text">
-                        <div className="uml-node-label">
-                          {step.label || def?.label || step.operator}
+                    <Dropdown
+                      trigger={['contextMenu']}
+                      menu={{
+                        items: nodeMenuItems(),
+                        onClick: (info) => handleNodeMenuClick(step, info),
+                      }}
+                    >
+                      <div
+                        className={`uml-node ${isSelected ? 'selected' : ''} ${
+                          step.enabled ? '' : 'disabled'
+                        } ${stepErrors.length > 0 ? 'has-error' : ''}`}
+                        style={{ borderColor: isSelected ? color : undefined }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => startDrag(event, step)}
+                        onClick={() => setSelectedId(step.id)}
+                      >
+                        <div className="uml-node-bar" style={{ background: color }} />
+                        <div className="uml-node-body">
+                          <span className="uml-node-index" style={{ background: color }}>
+                            {inBranch ? '⑂' : index + 1}
+                          </span>
+                          <div className="uml-node-text">
+                            <div className="uml-node-label">
+                              {step.label || def?.label || step.operator}
+                            </div>
+                            <div className="uml-node-sub">
+                              {inBranch ? '分支 · ' : ''}
+                              {def ? `${def.group} · ${def.label}` : step.operator}
+                            </div>
+                          </div>
                         </div>
-                        <div className="uml-node-sub">
-                          {def ? `${def.group} · ${def.label}` : step.operator}
-                        </div>
+                        {!step.enabled ? (
+                          <div className="uml-node-status muted">已禁用，运行时跳过</div>
+                        ) : stepErrors.length > 0 ? (
+                          <div className="uml-node-status error" title={statusTip}>
+                            ⚠ {stepErrors.length} 个字段问题
+                          </div>
+                        ) : logEntry ? (
+                          <div
+                            className="uml-node-status"
+                            style={{ color: runStatusColor(logEntry.status) }}
+                            title={flowTip}
+                          >
+                            运行：{logEntry.status} · {logEntry.rows} 行
+                          </div>
+                        ) : flow ? (
+                          <div className="uml-node-status flow" title={statusTip}>
+                            字段 {flow.input_fields.length} → {flow.output_fields.length}
+                          </div>
+                        ) : null}
+                        <div className="uml-node-port in" />
+                        <div className="uml-node-port out" />
                       </div>
-                    </div>
-                    {!step.enabled ? (
-                      <div className="uml-node-status muted">已禁用，运行时跳过</div>
-                    ) : logEntry ? (
-                      <div className="uml-node-status" style={{ color: runStatusColor(logEntry.status) }}>
-                        运行：{logEntry.status} · {logEntry.rows} 行
-                      </div>
+                    </Dropdown>
+
+                    {isHover ? (
+                      <>
+                        <Dropdown
+                          trigger={['click']}
+                          menu={{
+                            items: insertMenu('before'),
+                            onClick: ({ key }) => {
+                              const type = key.split(':')[1];
+                              if (type) insertRelative(step, type, 'before');
+                            },
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className="node-add before"
+                            title="在此节点前插入步骤"
+                            onPointerDown={(event) => event.stopPropagation()}
+                          >
+                            +
+                          </button>
+                        </Dropdown>
+                        <Dropdown
+                          trigger={['click']}
+                          menu={{
+                            items: insertMenu('after'),
+                            onClick: ({ key }) => {
+                              const type = key.split(':')[1];
+                              if (type) insertRelative(step, type, 'after');
+                            },
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className="node-add after"
+                            title="在此节点后插入步骤"
+                            onPointerDown={(event) => event.stopPropagation()}
+                          >
+                            +
+                          </button>
+                        </Dropdown>
+                        <Dropdown
+                          trigger={['click']}
+                          menu={{
+                            items: insertMenu('branch'),
+                            onClick: ({ key }) => {
+                              const type = key.split(':')[1];
+                              if (type) insertRelative(step, type, 'branch');
+                            },
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className="node-add branch"
+                            title="从该节点添加分支步骤"
+                            onPointerDown={(event) => event.stopPropagation()}
+                          >
+                            ⑂
+                          </button>
+                        </Dropdown>
+                      </>
                     ) : null}
-                    <div className="uml-node-port in" />
-                    <div className="uml-node-port out" />
                   </div>
                 );
               })}
@@ -797,6 +1099,9 @@ export default function ProjectFlowPage() {
                       {boundTemplate ? boundTemplate.name : '点击选择 PDF 模板'}
                     </div>
                   </div>
+                </div>
+                <div className="uml-node-status flow" title={`数据流终点：${endFields.join('、') || '无'}`}>
+                  输入字段 {endFields.length} 个
                 </div>
                 <div className="uml-node-port in" />
               </div>
@@ -986,9 +1291,10 @@ export default function ProjectFlowPage() {
           ) : selectedStep ? (
             <StepEditor
               step={selectedStep}
-              index={draft.steps.findIndex((step) => step.id === selectedStep.id)}
+              index={selectedIndex}
               def={operatorMap.get(selectedStep.operator)}
               columns={availableColumns}
+              flowFields={flowByStep.get(selectedIndex)?.input_fields}
               onRename={(label) => updateStep(selectedStep.id, { label })}
               onToggle={(enabled) => updateStep(selectedStep.id, { enabled })}
               onParam={(key, value) => updateStepParam(selectedStep.id, key, value)}
@@ -1070,6 +1376,8 @@ interface StepEditorProps {
   index: number;
   def: OperatorDef | undefined;
   columns: string[];
+  /** 进入该步骤时的数据流字段快照；用于表达式字段校验 */
+  flowFields?: string[];
   onRename: (label: string) => void;
   onToggle: (enabled: boolean) => void;
   onParam: (key: string, value: unknown) => void;
@@ -1082,6 +1390,7 @@ function StepEditor({
   index,
   def,
   columns,
+  flowFields,
   onRename,
   onToggle,
   onParam,
@@ -1121,6 +1430,7 @@ function StepEditor({
           param={param}
           value={step.params?.[param.key]}
           columns={columns}
+          fields={flowFields}
           onChange={(value) => onParam(param.key, value)}
         />
       ))}
@@ -1148,10 +1458,12 @@ interface ParamControlProps {
   param: OperatorParam;
   value: unknown;
   columns: string[];
+  /** 当前步骤可用的数据流字段，用于表达式字段高亮校验 */
+  fields?: string[];
   onChange: (value: unknown) => void;
 }
 
-function ParamControl({ param, value, columns, onChange }: ParamControlProps) {
+function ParamControl({ param, value, columns, fields, onChange }: ParamControlProps) {
   const label = (
     <span className="field-label">
       {param.label}
@@ -1207,6 +1519,22 @@ function ParamControl({ param, value, columns, onChange }: ParamControlProps) {
         />
         {param.help ? <span className="field-hint">{param.help}</span> : null}
       </label>
+    );
+  }
+
+  if (param.type === 'expr') {
+    return (
+      <div className="field">
+        {label}
+        <TokenEditor
+          mode="expr"
+          value={value === undefined || value === null ? '' : String(value)}
+          onChange={onChange}
+          fields={fields ?? columns}
+          placeholder={param.placeholder ?? '使用 [字段名] 插入字段，例如 [总成绩] >= 60'}
+        />
+        {param.help ? <span className="field-hint">{param.help}</span> : null}
+      </div>
     );
   }
 

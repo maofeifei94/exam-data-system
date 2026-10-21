@@ -83,6 +83,9 @@ pub struct ApplyMappingInput {
     pub mappings: Vec<MappingPair>,
     #[serde(default)]
     pub persist_aliases: bool,
+    /// 只保留这些字段（来自流程「必需字段校验」），其余列从数据集中剔除
+    #[serde(default)]
+    pub keep_fields: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +183,12 @@ pub struct FlowStep {
     /// 流程图节点在画布上的位置；为空时前端按顺序自动排列。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<StepPos>,
+    /// 可视分支组标识；为空表示主链步骤
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch: String,
+    /// 该分支挂载在哪个步骤之后（步骤 id）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch_of: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -269,10 +278,20 @@ pub struct ValidateError {
     pub message: String,
 }
 
+/// 单个步骤的数据流快照：进入该步骤时可用字段、执行后字段、该步骤的问题。
+#[derive(Debug, Serialize)]
+pub struct StepFlow {
+    pub step_index: i64,
+    pub input_fields: Vec<String>,
+    pub output_fields: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ValidateResult {
     pub ok: bool,
     pub errors: Vec<ValidateError>,
+    pub steps: Vec<StepFlow>,
 }
 
 // ---------------- 操作符目录 ----------------

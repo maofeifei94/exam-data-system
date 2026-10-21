@@ -64,6 +64,42 @@ pub fn set_columns(conn: &Connection, dataset_id: &str, cols: &[DatasetColumn]) 
     Ok(())
 }
 
+/// 按给定下标保留数据列，其余列连同原始数据一起从物理表中删除。
+/// `keep_indices` 对应保留前 `cols` 的下标；`cols` 为保留后的列元数据。
+pub fn retain_columns(
+    conn: &Connection,
+    dataset_id: &str,
+    cols: &[DatasetColumn],
+    keep_indices: &[usize],
+) -> AppResult<()> {
+    if keep_indices.is_empty() {
+        return Err(AppError::bad_request("不能删除全部字段"));
+    }
+    let tname = table_name(dataset_id);
+    let tmp = format!("{tname}_keep");
+    conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{tmp}\";"))?;
+    let col_defs: Vec<String> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("\"c{i}\" {}", sql_type(&c.dtype)))
+        .collect();
+    conn.execute_batch(&format!("CREATE TABLE \"{tmp}\" ({});", col_defs.join(", ")))?;
+    let dst: Vec<String> = (0..keep_indices.len()).map(|i| format!("\"c{i}\"")).collect();
+    let src: Vec<String> = keep_indices.iter().map(|i| format!("\"c{i}\"")).collect();
+    conn.execute(
+        &format!(
+            "INSERT INTO \"{tmp}\" ({}) SELECT {} FROM \"{tname}\"",
+            dst.join(", "),
+            src.join(", ")
+        ),
+        [],
+    )?;
+    conn.execute_batch(&format!(
+        "DROP TABLE \"{tname}\"; ALTER TABLE \"{tmp}\" RENAME TO \"{tname}\";"
+    ))?;
+    Ok(())
+}
+
 pub fn get_dataset(conn: &Connection, id: &str) -> AppResult<Dataset> {
     let mut stmt = conn.prepare(
         "SELECT id, name, kind, source_file, origin, project_id, row_count, created_at, updated_at

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
+import { Button, Input } from 'antd';
 import { createProject } from '../api/client';
 import type { ExamProject } from '../api/types';
 import { useProject } from '../context/ProjectContext';
 import { isDesktop, pickFolder } from '../lib/native';
-import { Field } from './Field';
 import { DialogWindow } from './DialogWindow';
 import { useToast } from './Toast';
 
@@ -71,54 +71,47 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
       onClose={onClose}
       footer={
         <>
-          <button className="btn" onClick={onClose}>
-            取消
-          </button>
-          <button className="btn btn-primary" onClick={submit} disabled={saving}>
-            {saving ? '创建中…' : '创建项目'}
-          </button>
+          <Button onClick={onClose}>取消</Button>
+          <Button type="primary" onClick={submit} loading={saving}>
+            创建项目
+          </Button>
         </>
       }
     >
-      <Field label="项目名称" htmlFor="np-name">
-        <input
-          id="np-name"
-          type="text"
-          autoFocus
-          placeholder="例如：2026 年春季教师资格考试"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') submit();
-          }}
-        />
-      </Field>
-      <Field label="说明（可选）" htmlFor="np-desc">
-        <input
-          id="np-desc"
-          type="text"
-          placeholder="一句话描述本项目的用途"
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-        />
-      </Field>
-      <Field label="项目文件夹" htmlFor="np-folder">
-        <div className="browse-row">
-          <input
-            id="np-folder"
-            type="text"
-            placeholder="选择一个用于存放项目配置文件与导出结果的文件夹"
-            value={folder}
-            onChange={(event) => setFolder(event.target.value)}
+      <div className="dialog-form">
+        <label className="form-row">
+          <span className="field-label">项目名称</span>
+          <Input
+            autoFocus
+            placeholder="例如：2026 年春季教师资格考试"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onPressEnter={submit}
           />
-          <button className="btn" onClick={browse}>
-            浏览…
-          </button>
-        </div>
-      </Field>
-      <p className="dialog-hint">
-        项目文件夹用于写入 <code>exam-project.json</code>。创建后可在「项目流程」中配置数据导入与 PDF 输出节点。
-      </p>
+        </label>
+        <label className="form-row">
+          <span className="field-label">说明（可选）</span>
+          <Input
+            placeholder="一句话描述本项目的用途"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </label>
+        <label className="form-row">
+          <span className="field-label">项目文件夹</span>
+          <div className="browse-row">
+            <Input
+              placeholder="选择一个用于存放项目配置文件与导出结果的文件夹"
+              value={folder}
+              onChange={(event) => setFolder(event.target.value)}
+            />
+            <Button onClick={browse}>浏览…</Button>
+          </div>
+        </label>
+        <p className="dialog-hint">
+          项目文件夹用于写入 <code>exam-project.json</code>。创建后可在「项目流程」中配置数据导入与 PDF 输出节点。
+        </p>
+      </div>
     </DialogWindow>
   );
 }
