@@ -1,14 +1,15 @@
+use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::importer;
 use crate::models::{
-    ApplyMappingInput, ColumnSuggestion, Dataset, DatasetColumn, ImportResult, MappingPair, RowPage,
+    ApplyMappingInput, Dataset, DatasetColumn, ImportResult, MappingPair, RowPage,
 };
 use crate::state::AppState;
 use crate::store;
 use crate::util;
 use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::{header, HeaderValue, Response, StatusCode};
+use axum::http::{header, Response, StatusCode};
 use axum::Json;
 use rusqlite::params;
 use serde::Deserialize;
@@ -24,14 +25,6 @@ pub struct PageQuery {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ImportQuery {
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub header_row: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct ProjectQuery {
     #[serde(default)]
     pub project_id: Option<String>,
@@ -41,17 +34,19 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ProjectQuery>,
 ) -> AppResult<Json<Vec<Dataset>>> {
-    let conn = state.lock()?;
     let pid = q.project_id.filter(|s| !s.trim().is_empty());
-    Ok(Json(store::list_datasets(&conn, pid.as_deref())?))
+    let datasets = state
+        .db(move |conn| store::list_datasets(conn, pid.as_deref()))
+        .await?;
+    Ok(Json(datasets))
 }
 
 pub async fn get_one(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Dataset>> {
-    let conn = state.lock()?;
-    Ok(Json(store::get_dataset(&conn, &id)?))
+    let ds = state.db(move |conn| store::get_dataset(conn, &id)).await?;
+    Ok(Json(ds))
 }
 
 pub async fn rows(
@@ -59,22 +54,21 @@ pub async fn rows(
     Path(id): Path<String>,
     Query(q): Query<PageQuery>,
 ) -> AppResult<Json<RowPage>> {
-    let conn = state.lock()?;
     let limit = q.limit.unwrap_or(100).clamp(1, 5000);
     let offset = q.offset.unwrap_or(0).max(0);
-    Ok(Json(store::read_rows(&conn, &id, offset, limit)?))
+    let page = state
+        .db(move |conn| store::read_rows(conn, &id, offset, limit))
+        .await?;
+    Ok(Json(page))
 }
 
 pub async fn remove(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let conn = state.lock()?;
-    store::delete_dataset(&conn, &id)?;
-    conn.execute(
-        "DELETE FROM flow_runs WHERE dataset_id = ?1 OR output_dataset_id = ?1",
-        params![id],
-    )?;
+    state
+        .db(move |conn| store::delete_dataset(conn, &id))
+        .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -82,28 +76,30 @@ pub async fn export_csv(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Response<Body>> {
-    let (dataset, data) = {
-        let conn = state.lock()?;
-        let ds = store::get_dataset(&conn, &id)?;
-        let (cols, rows) = store::read_all_strings(&conn, &id, None)?;
-        let mut wtr = csv::Writer::from_writer(Vec::<u8>::new());
-        wtr.write_record(cols.iter().map(|c| c.name.as_str()))
-            .map_err(|e| AppError::internal(format!("CSV 生成失败: {e}")))?;
-        for r in rows.iter() {
-            wtr.write_record(r.iter().map(|s| s.as_str()))
-                .map_err(|e| AppError::internal(format!("CSV 生成失败: {e}")))?;
-        }
-        let body = wtr
-            .into_inner()
-            .map_err(|e| AppError::internal(format!("CSV 生成失败: {e}")))?;
-        (ds, body)
-    };
+    let (name, data) = state
+        .db(move |conn| {
+            let ds = store::get_dataset(conn, &id)?;
+            let (cols, rows) = store::read_all_strings(conn, &id, None)?;
+            let mut wtr = csv::Writer::from_writer(Vec::<u8>::new());
+            wtr.write_record(cols.iter().map(|c| c.name.as_str()))
+                .map_err(|e| AppError::internal_with_context("CSV 生成失败", e))?;
+            for r in rows.iter() {
+                wtr.write_record(r.iter().map(|s| s.as_str()))
+                    .map_err(|e| AppError::internal_with_context("CSV 生成失败", e))?;
+            }
+            let body = wtr
+                .into_inner()
+                .map_err(|e| AppError::internal_with_context("CSV 生成失败", e))?;
+            Ok((ds.name, body))
+        })
+        .await?;
+
     // 加 BOM，方便 Excel 直接双击打开
     let mut out = vec![0xEF, 0xBB, 0xBF];
     out.extend_from_slice(&data);
-    let filename = format!("{}.csv", dataset.name);
-    let encoded: String = urlencode(&filename);
-    let resp = Response::builder()
+    let filename = format!("{}.csv", name);
+    let encoded = util::urlencode(&filename);
+    Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
         .header(
@@ -111,21 +107,16 @@ pub async fn export_csv(
             format!("attachment; filename=\"export.csv\"; filename*=UTF-8''{encoded}"),
         )
         .body(Body::from(out))
-        .map_err(|e| AppError::internal(format!("{e}")))?;
-    Ok(resp)
+        .map_err(|e| AppError::internal_with_context("构建下载响应失败", e))
 }
 
-fn urlencode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        let c = *b as char;
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
-            out.push(c);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+/// 解析完成、等待入库的导入数据。
+struct PreparedUpload {
+    name: String,
+    filename: String,
+    project_id: String,
+    columns: Vec<DatasetColumn>,
+    rows: Vec<Vec<Option<String>>>,
 }
 
 pub async fn import(
@@ -177,13 +168,57 @@ pub async fn import(
         return Err(AppError::bad_request("无法识别文件类型（缺少扩展名）"));
     }
 
-    let tmp = std::env::temp_dir().join(format!("exam_up_{}.{}", crate::db::new_id(), ext));
-    std::fs::write(&tmp, &bytes)?;
+    // 文件解析是 CPU/IO 密集操作，放到阻塞线程池，避免卡住 async 运行时。
+    let prepared = state
+        .blocking(move || parse_upload(bytes, filename, ext, name, header_row, project_id))
+        .await?;
+
+    let result = state
+        .db(move |conn| {
+            db::with_tx(conn, |tx| {
+                let dataset = store::create_dataset_tx(
+                    tx,
+                    store::NewDataset {
+                        name: &prepared.name,
+                        kind: "import",
+                        source_file: &prepared.filename,
+                        origin: "文件导入",
+                        project_id: &prepared.project_id,
+                        columns: &prepared.columns,
+                        rows: &prepared.rows,
+                    },
+                )?;
+                let names: Vec<String> = prepared.columns.iter().map(|c| c.name.clone()).collect();
+                let mapping = store::suggest_columns(tx, &names)?;
+                let preview = store::read_rows(tx, &dataset.id, 0, 20)?;
+                Ok(ImportResult {
+                    dataset,
+                    mapping,
+                    preview,
+                })
+            })
+        })
+        .await?;
+    Ok(Json(result))
+}
+
+fn parse_upload(
+    bytes: Vec<u8>,
+    filename: String,
+    ext: String,
+    name: Option<String>,
+    header_row: i64,
+    project_id: String,
+) -> AppResult<PreparedUpload> {
+    let tmp = std::env::temp_dir().join(format!("exam_up_{}.{}", db::new_id(), ext));
+    std::fs::write(&tmp, &bytes)
+        .map_err(|e| AppError::internal_with_context("写入临时文件失败", e))?;
     let parsed = importer::parse_file(&tmp, &ext);
+    // 无论解析成功与否都要清理临时文件。
     let _ = std::fs::remove_file(&tmp);
     let parsed = parsed?;
 
-    let (header, body) = importer::split_header(parsed.rows, header_row as usize);
+    let (header, body) = importer::split_header(parsed.rows, header_row as usize)?;
     if header.is_empty() {
         return Err(AppError::bad_request("表格为空或没有表头"));
     }
@@ -197,7 +232,10 @@ pub async fn import(
                 .take(300)
                 .map(|r| r.get(i).cloned().flatten().unwrap_or_default())
                 .collect();
-            DatasetColumn { name: n.clone(), dtype: util::infer_dtype(n, &col_vals) }
+            DatasetColumn {
+                name: n.clone(),
+                dtype: util::infer_dtype(n, &col_vals),
+            }
         })
         .collect();
 
@@ -215,51 +253,13 @@ pub async fn import(
         }
     };
 
-    let (dataset, mapping, preview) = {
-        let conn = state.lock()?;
-        let dataset = store::create_dataset(
-            &conn,
-            &ds_name,
-            "import",
-            &filename,
-            "文件导入",
-            &project_id,
-            &columns,
-            &body,
-        )?;
-        let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-        let mapping = suggestions(&conn, &names)?;
-        let preview = store::read_rows(&conn, &dataset.id, 0, 20)?;
-        (dataset, mapping, preview)
-    };
-
-    Ok(Json(ImportResult { dataset, mapping, preview }))
-}
-
-fn suggestions(conn: &rusqlite::Connection, columns: &[String]) -> AppResult<Vec<ColumnSuggestion>> {
-    let mut stmt = conn.prepare("SELECT alias, standard FROM alias_mappings")?;
-    let alias_map: std::collections::HashMap<String, String> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect();
-    let mut stmt2 = conn.prepare("SELECT name FROM standard_fields")?;
-    let standards: Vec<String> = stmt2
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(columns
-        .iter()
-        .map(|c| {
-            if standards.iter().any(|s| s == c) {
-                ColumnSuggestion { source: c.clone(), standard: Some(c.clone()), matched_by: "exact_standard".into() }
-            } else if let Some(std) = alias_map.get(c) {
-                ColumnSuggestion { source: c.clone(), standard: Some(std.clone()), matched_by: "alias".into() }
-            } else {
-                ColumnSuggestion { source: c.clone(), standard: None, matched_by: "none".into() }
-            }
-        })
-        .collect())
+    Ok(PreparedUpload {
+        name: ds_name,
+        filename,
+        project_id,
+        columns,
+        rows: body,
+    })
 }
 
 pub async fn apply_mapping(
@@ -267,78 +267,81 @@ pub async fn apply_mapping(
     Path(id): Path<String>,
     Json(input): Json<ApplyMappingInput>,
 ) -> AppResult<Json<Dataset>> {
-    let conn = state.lock()?;
-    let mut columns = store::get_columns(&conn, &id)?;
-    let mut pairs: Vec<MappingPair> = Vec::new();
-    for m in input.mappings.iter() {
-        let from = m.from.trim().to_string();
-        let to = m.to.trim().to_string();
-        if from.is_empty() || to.is_empty() || from == to {
-            continue;
-        }
-        if !columns.iter().any(|c| c.name == from) {
-            return Err(AppError::bad_request(format!("字段 [{from}] 不存在")));
-        }
-        pairs.push(MappingPair { from, to });
-    }
-    for p in &pairs {
-        if let Some(c) = columns.iter_mut().find(|c| c.name == p.from) {
-            c.name = p.to.clone();
-        }
-    }
-    let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-    if store::unique_names(&names) != names {
-        return Err(AppError::bad_request("映射后会产成重名字段，请检查"));
-    }
+    let dataset = state
+        .db(move |conn| {
+            db::with_tx(conn, |tx| {
+                let mut columns = store::get_columns(tx, &id)?;
+                let mut pairs: Vec<MappingPair> = Vec::new();
+                for m in input.mappings.iter() {
+                    let from = m.from.trim().to_string();
+                    let to = m.to.trim().to_string();
+                    if from.is_empty() || to.is_empty() || from == to {
+                        continue;
+                    }
+                    if !columns.iter().any(|c| c.name == from) {
+                        return Err(AppError::bad_request(format!("字段 [{from}] 不存在")));
+                    }
+                    pairs.push(MappingPair { from, to });
+                }
+                for p in &pairs {
+                    if let Some(c) = columns.iter_mut().find(|c| c.name == p.from) {
+                        c.name = p.to.clone();
+                    }
+                }
+                let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+                if store::unique_names(&names) != names {
+                    return Err(AppError::bad_request("映射后会产成重名字段，请检查"));
+                }
 
-    // 数据导入约定：只保留流程「必要字段校验」声明的字段，其余原始列连同数据删除。
-    let keep_fields: Vec<String> = input
-        .keep_fields
-        .iter()
-        .map(|f| f.trim().to_string())
-        .filter(|f| !f.is_empty())
-        .collect();
-    if !keep_fields.is_empty() {
-        let missing: Vec<String> = keep_fields
-            .iter()
-            .filter(|f| !columns.iter().any(|c| &c.name == *f))
-            .cloned()
-            .collect();
-        if !missing.is_empty() {
-            return Err(AppError::bad_request(format!(
-                "必要字段在导入数据中不存在：{}",
-                missing.join("、")
-            )));
-        }
-        let mut kept: Vec<DatasetColumn> = Vec::new();
-        let mut keep_indices: Vec<usize> = Vec::new();
-        for (idx, column) in columns.iter().enumerate() {
-            if keep_fields.contains(&column.name) {
-                keep_indices.push(idx);
-                kept.push(column.clone());
-            }
-        }
-        store::retain_columns(&conn, &id, &kept, &keep_indices)?;
-        columns = kept;
-    }
+                // 数据导入约定：只保留流程「必要字段校验」声明的字段，其余原始列连同数据删除。
+                let keep_fields: Vec<String> = input
+                    .keep_fields
+                    .iter()
+                    .map(|f| f.trim().to_string())
+                    .filter(|f| !f.is_empty())
+                    .collect();
+                if !keep_fields.is_empty() {
+                    let missing: Vec<String> = keep_fields
+                        .iter()
+                        .filter(|f| !columns.iter().any(|c| &c.name == *f))
+                        .cloned()
+                        .collect();
+                    if !missing.is_empty() {
+                        return Err(AppError::bad_request(format!(
+                            "必要字段在导入数据中不存在：{}",
+                            missing.join("、")
+                        )));
+                    }
+                    let mut kept: Vec<DatasetColumn> = Vec::new();
+                    let mut keep_indices: Vec<usize> = Vec::new();
+                    for (idx, column) in columns.iter().enumerate() {
+                        if keep_fields.contains(&column.name) {
+                            keep_indices.push(idx);
+                            kept.push(column.clone());
+                        }
+                    }
+                    store::retain_columns_tx(tx, &id, &kept, &keep_indices)?;
+                    columns = kept;
+                }
 
-    store::set_columns(&conn, &id, &columns)?;
-    conn.execute(
-        "UPDATE datasets SET updated_at = ?1 WHERE id = ?2",
-        params![crate::db::now(), id],
-    )?;
+                store::set_columns(tx, &id, &columns)?;
+                tx.execute(
+                    "UPDATE datasets SET updated_at = ?1 WHERE id = ?2",
+                    params![db::now(), id],
+                )?;
 
-    if input.persist_aliases {
-        for p in &pairs {
-            conn.execute(
-                "INSERT INTO alias_mappings (id, alias, standard, updated_at) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(alias) DO UPDATE SET standard = excluded.standard, updated_at = excluded.updated_at",
-                params![crate::db::new_id(), p.from, p.to, crate::db::now()],
-            )?;
-        }
-    }
-    Ok(Json(store::get_dataset(&conn, &id)?))
+                if input.persist_aliases {
+                    for p in &pairs {
+                        tx.execute(
+                            "INSERT INTO alias_mappings (id, alias, standard, updated_at) VALUES (?1, ?2, ?3, ?4)
+                             ON CONFLICT(alias) DO UPDATE SET standard = excluded.standard, updated_at = excluded.updated_at",
+                            params![db::new_id(), p.from, p.to, db::now()],
+                        )?;
+                    }
+                }
+                store::get_dataset(tx, &id)
+            })
+        })
+        .await?;
+    Ok(Json(dataset))
 }
-
-#[allow(dead_code)]
-fn _unused(_: HeaderValue) {}

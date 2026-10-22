@@ -1,4 +1,4 @@
-use crate::db::{new_id, now};
+use crate::db::{self, new_id, now};
 use crate::engine;
 use crate::error::{AppError, AppResult};
 use crate::models::{
@@ -9,7 +9,7 @@ use crate::state::AppState;
 use crate::store;
 use axum::extract::{Path, Query, State};
 use axum::Json;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -19,11 +19,15 @@ const FLOW_COLS: &str =
 
 fn row_to_flow(r: &rusqlite::Row<'_>) -> rusqlite::Result<Flow> {
     let steps_raw: String = r.get(3)?;
+    let steps: Vec<FlowStep> = serde_json::from_str(&steps_raw).map_err(|e| {
+        // 存储的 JSON 损坏属于数据错误，不能静默当成「空流程」。
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     Ok(Flow {
         id: r.get(0)?,
         name: r.get(1)?,
         description: r.get(2)?,
-        steps: serde_json::from_str(&steps_raw).unwrap_or_default(),
+        steps,
         scope: r.get(4)?,
         project_id: r.get(5)?,
         source_id: r.get(6)?,
@@ -34,8 +38,9 @@ fn row_to_flow(r: &rusqlite::Row<'_>) -> rusqlite::Result<Flow> {
 
 fn fetch_flow(conn: &rusqlite::Connection, id: &str) -> AppResult<Flow> {
     let mut stmt = conn.prepare(&format!("SELECT {FLOW_COLS} FROM flows WHERE id = ?1"))?;
-    stmt.query_row(params![id], |r| row_to_flow(r))
-        .map_err(|_| AppError::not_found("流程不存在"))
+    stmt.query_row(params![id], row_to_flow)
+        .optional()?
+        .ok_or_else(|| AppError::not_found("流程不存在"))
 }
 
 pub async fn operators() -> AppResult<Json<Vec<crate::models::OperatorDef>>> {
@@ -55,28 +60,32 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     Query(q): Query<FlowQuery>,
 ) -> AppResult<Json<Vec<Flow>>> {
-    let conn = state.lock()?;
-    let mut sql = format!("SELECT {FLOW_COLS} FROM flows");
-    let mut binds: Vec<String> = Vec::new();
-    if let Some(pid) = q.project_id.as_deref().filter(|s| !s.trim().is_empty()) {
-        sql.push_str(" WHERE project_id = ?1");
-        binds.push(pid.to_string());
-    } else if let Some(sc) = q.scope.as_deref().filter(|s| !s.trim().is_empty()) {
-        sql.push_str(" WHERE scope = ?1");
-        binds.push(sc.to_string());
-    }
-    sql.push_str(" ORDER BY updated_at DESC");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(binds.iter()), |r| row_to_flow(r))?;
-    Ok(Json(rows.collect::<Result<Vec<_>, _>>()?))
+    let flows = state
+        .db(move |conn| {
+            let mut sql = format!("SELECT {FLOW_COLS} FROM flows");
+            let mut binds: Vec<String> = Vec::new();
+            if let Some(pid) = q.project_id.as_deref().filter(|s| !s.trim().is_empty()) {
+                sql.push_str(" WHERE project_id = ?1");
+                binds.push(pid.to_string());
+            } else if let Some(sc) = q.scope.as_deref().filter(|s| !s.trim().is_empty()) {
+                sql.push_str(" WHERE scope = ?1");
+                binds.push(sc.to_string());
+            }
+            sql.push_str(" ORDER BY updated_at DESC");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(binds.iter()), row_to_flow)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .await?;
+    Ok(Json(flows))
 }
 
 pub async fn get_one(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Flow>> {
-    let conn = state.lock()?;
-    Ok(Json(fetch_flow(&conn, &id)?))
+    let flow = state.db(move |conn| fetch_flow(conn, &id)).await?;
+    Ok(Json(flow))
 }
 
 fn normalize_steps(steps: &[FlowStep]) -> Vec<FlowStep> {
@@ -122,21 +131,22 @@ pub async fn create(
     let scope = resolve_scope(input.scope.as_deref(), &project_id);
     let id = new_id();
     let ts = now();
-    let conn = state.lock()?;
-    conn.execute(
-        "INSERT INTO flows (id, name, description, steps, scope, project_id, source_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?7)",
-        params![
-            id,
-            name,
-            input.description,
-            serde_json::to_string(&steps)?,
-            scope,
-            project_id,
-            ts
-        ],
-    )?;
-    Ok(Json(fetch_flow(&conn, &id)?))
+    let description = input.description;
+    let steps_json = serde_json::to_string(&steps)?;
+
+    let flow = state
+        .db(move |conn| {
+            db::with_tx(conn, |tx| {
+                tx.execute(
+                    "INSERT INTO flows (id, name, description, steps, scope, project_id, source_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?7)",
+                    params![id, name, description, steps_json, scope, project_id, ts],
+                )?;
+                fetch_flow(tx, &id)
+            })
+        })
+        .await?;
+    Ok(Json(flow))
 }
 
 /// 把（通常是全局库里的）流程复制成为一个考试项目的本地副本，之后全局改动不影响本项目。
@@ -149,29 +159,36 @@ pub async fn duplicate(
     if project_id.is_empty() {
         return Err(AppError::bad_request("必须指定目标考试项目"));
     }
-    let conn = state.lock()?;
-    let src = fetch_flow(&conn, &id)?;
     let new = new_id();
-    let name = input
-        .name
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| format!("{}（本项目）", src.name));
-    let ts = now();
-    conn.execute(
-        "INSERT INTO flows (id, name, description, steps, scope, project_id, source_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'project', ?5, ?6, ?7, ?7)",
-        params![
-            new,
-            name,
-            src.description,
-            serde_json::to_string(&src.steps)?,
-            project_id,
-            id,
-            ts
-        ],
-    )?;
-    Ok(Json(fetch_flow(&conn, &new)?))
+    let requested_name = input.name;
+
+    let flow = state
+        .db(move |conn| {
+            let src = fetch_flow(conn, &id)?;
+            let name = requested_name
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| format!("{}（本项目）", src.name));
+            let ts = now();
+            db::with_tx(conn, |tx| {
+                tx.execute(
+                    "INSERT INTO flows (id, name, description, steps, scope, project_id, source_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, 'project', ?5, ?6, ?7, ?7)",
+                    params![
+                        new,
+                        name,
+                        src.description,
+                        serde_json::to_string(&src.steps)?,
+                        project_id,
+                        id,
+                        ts
+                    ],
+                )?;
+                fetch_flow(tx, &new)
+            })
+        })
+        .await?;
+    Ok(Json(flow))
 }
 
 pub async fn update(
@@ -179,31 +196,50 @@ pub async fn update(
     Path(id): Path<String>,
     Json(input): Json<FlowInput>,
 ) -> AppResult<Json<Flow>> {
-    let steps = normalize_steps(&input.steps);
-    let conn = state.lock()?;
-    let n = conn.execute(
-        "UPDATE flows SET name = ?1, description = ?2, steps = ?3, updated_at = ?4 WHERE id = ?5",
-        params![
-            input.name.trim(),
-            input.description,
-            serde_json::to_string(&steps)?,
-            now(),
-            id
-        ],
-    )?;
-    if n == 0 {
-        return Err(AppError::not_found("流程不存在"));
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::bad_request("流程名称不能为空"));
     }
-    Ok(Json(fetch_flow(&conn, &id)?))
+    let steps = normalize_steps(&input.steps);
+    let description = input.description;
+    let steps_json = serde_json::to_string(&steps)?;
+
+    let flow = state
+        .db(move |conn| {
+            db::with_tx(conn, |tx| {
+                let n = tx.execute(
+                    "UPDATE flows SET name = ?1, description = ?2, steps = ?3, updated_at = ?4 WHERE id = ?5",
+                    params![name, description, steps_json, now(), id],
+                )?;
+                if n == 0 {
+                    return Err(AppError::not_found("流程不存在"));
+                }
+                fetch_flow(tx, &id)
+            })
+        })
+        .await?;
+    Ok(Json(flow))
 }
 
 pub async fn remove(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let conn = state.lock()?;
-    conn.execute("DELETE FROM flow_runs WHERE flow_id = ?1", params![id])?;
-    conn.execute("DELETE FROM flows WHERE id = ?1", params![id])?;
+    state
+        .db(move |conn| {
+            db::with_tx(conn, |tx| {
+                fetch_flow(tx, &id)?;
+                // 删除流程时把引用它的考试项目解绑，避免项目指向不存在的流程。
+                tx.execute(
+                    "UPDATE exam_projects SET flow_id = '', updated_at = ?1 WHERE flow_id = ?2",
+                    params![now(), id],
+                )?;
+                tx.execute("DELETE FROM flow_runs WHERE flow_id = ?1", params![id])?;
+                tx.execute("DELETE FROM flows WHERE id = ?1", params![id])?;
+                Ok(())
+            })
+        })
+        .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -212,32 +248,41 @@ pub async fn run(
     Path(id): Path<String>,
     Json(input): Json<RunFlowInput>,
 ) -> AppResult<Json<RunResult>> {
-    let conn = state.lock()?;
-    let _ = store::get_dataset(&conn, &input.dataset_id)?;
-    Ok(Json(engine::run_flow(&conn, &id, &input.dataset_id)?))
+    let result = state
+        .db(move |conn| {
+            // 提前校验数据集存在，避免把「数据集不存在」当成流程执行失败
+            let _ = store::get_dataset(conn, &input.dataset_id)?;
+            engine::run_flow(conn, &id, &input.dataset_id)
+        })
+        .await?;
+    Ok(Json(result))
 }
 
 pub async fn runs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Vec<FlowRun>>> {
-    let conn = state.lock()?;
-    let mut stmt = conn.prepare(
-        "SELECT id, flow_id, dataset_id, output_dataset_id, status, message, created_at
-         FROM flow_runs WHERE flow_id = ?1 ORDER BY created_at DESC LIMIT 50",
-    )?;
-    let rows = stmt.query_map(params![id], |r| {
-        Ok(FlowRun {
-            id: r.get(0)?,
-            flow_id: r.get(1)?,
-            dataset_id: r.get(2)?,
-            output_dataset_id: r.get(3)?,
-            status: r.get(4)?,
-            message: r.get(5)?,
-            created_at: r.get(6)?,
+    let runs = state
+        .db(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, flow_id, dataset_id, output_dataset_id, status, message, created_at
+                 FROM flow_runs WHERE flow_id = ?1 ORDER BY created_at DESC LIMIT 50",
+            )?;
+            let rows = stmt.query_map(params![id], |r| {
+                Ok(FlowRun {
+                    id: r.get(0)?,
+                    flow_id: r.get(1)?,
+                    dataset_id: r.get(2)?,
+                    output_dataset_id: r.get(3)?,
+                    status: r.get(4)?,
+                    message: r.get(5)?,
+                    created_at: r.get(6)?,
+                })
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
-    })?;
-    Ok(Json(rows.collect::<Result<Vec<_>, _>>()?))
+        .await?;
+    Ok(Json(runs))
 }
 
 pub async fn validate(Json(input): Json<ValidateFlowInput>) -> AppResult<Json<ValidateResult>> {

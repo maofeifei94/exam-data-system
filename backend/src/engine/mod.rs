@@ -10,7 +10,7 @@
 pub mod expr;
 pub mod operators;
 
-use crate::db::{new_id, now};
+use crate::db::{self, new_id, now};
 use crate::error::{AppError, AppResult};
 use crate::models::{
     DatasetColumn, FlowStep, RunLogEntry, RunResult, StepFlow, ValidateError, ValidateResult,
@@ -23,7 +23,6 @@ const PREVIEW_ROWS: i64 = 200;
 
 struct Compiler<'a> {
     conn: &'a Connection,
-    dataset_id: String,
     columns: Vec<DatasetColumn>,
     ctes: Vec<String>,
     cur: String,
@@ -78,7 +77,7 @@ impl<'a> Compiler<'a> {
         if columns.is_empty() {
             return Err(AppError::bad_request("数据集没有任何字段"));
         }
-        let tname = crate::db::table_name(dataset_id);
+        let tname = crate::db::table_name(dataset_id)?;
         let items: Vec<String> = columns
             .iter()
             .enumerate()
@@ -87,7 +86,6 @@ impl<'a> Compiler<'a> {
         let cte = format!("s0 AS (SELECT {} FROM \"{}\")", items.join(", "), tname);
         Ok(Compiler {
             conn,
-            dataset_id: dataset_id.to_string(),
             columns,
             ctes: vec![cte],
             cur: "s0".to_string(),
@@ -115,9 +113,11 @@ impl<'a> Compiler<'a> {
         self.with_ctes(&s)
     }
 
-    fn count_current(&self) -> i64 {
+    fn count_current(&self) -> Result<i64, String> {
         let sql = self.with_ctes(&format!("SELECT COUNT(*) FROM {}", self.cur));
-        self.conn.query_row(&sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0)
+        self.conn
+            .query_row(&sql, [], |r| r.get::<_, i64>(0))
+            .map_err(|e| format!("统计当前步骤行数失败: {e}"))
     }
 
     fn push_cte(&mut self, body: String) -> String {
@@ -148,14 +148,6 @@ impl<'a> Compiler<'a> {
             items.push(format!("{e} AS {}", q(n)));
         }
         format!("SELECT {} FROM {}", items.join(", "), from)
-    }
-
-    fn col_list(&self) -> String {
-        self.columns
-            .iter()
-            .map(|c| q(&c.name))
-            .collect::<Vec<_>>()
-            .join(", ")
     }
 
     fn has_column(&self, name: &str) -> bool {
@@ -240,7 +232,13 @@ impl<'a> Compiler<'a> {
             return Err(format!(
                 "缺少必需字段：{}。当前字段：{}",
                 missing.join("、"),
-                expr::preview_columns(&self.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
+                expr::preview_columns(
+                    &self
+                        .columns
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .collect::<Vec<_>>()
+                )
             ));
         }
         if !bool_param(p, "allow_extra", true) {
@@ -258,7 +256,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             None,
             Some(format!("必要字段齐全：{}", fields.join("、"))),
         ))
@@ -300,7 +298,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(inner),
             Some(if dup > 0 {
                 format!("警告：字段 {} 有 {dup} 组重复", cols.join("、"))
@@ -332,8 +330,18 @@ impl<'a> Compiler<'a> {
         }
         if let Some(arr) = p.get("mappings").and_then(|v| v.as_array()) {
             for item in arr {
-                let from = item.get("from").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-                let to = item.get("to").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                let from = item
+                    .get("from")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let to = item
+                    .get("to")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if from.is_empty() || to.is_empty() || from == to {
                     continue;
                 }
@@ -355,7 +363,7 @@ impl<'a> Compiler<'a> {
                 i,
                 step,
                 "ok",
-                self.count_current(),
+                self.count_current()?,
                 None,
                 Some("没有需要映射的字段".to_string()),
             ));
@@ -370,7 +378,11 @@ impl<'a> Compiler<'a> {
         if store::unique_names(&names) != names {
             return Err(format!(
                 "映射后出现重名字段：{}",
-                renames.iter().map(|(_, to)| to.as_str()).collect::<Vec<_>>().join("、")
+                renames
+                    .iter()
+                    .map(|(_, to)| to.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、")
             ));
         }
         let items: Vec<String> = self
@@ -394,7 +406,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!(
                 "已映射 {} 个字段：{}",
@@ -424,7 +436,11 @@ impl<'a> Compiler<'a> {
             .columns
             .iter()
             .map(|c| {
-                let new = if c.name == from { to.clone() } else { c.name.clone() };
+                let new = if c.name == from {
+                    to.clone()
+                } else {
+                    c.name.clone()
+                };
                 format!("{} AS {}", q(&c.name), q(&new))
             })
             .collect();
@@ -435,7 +451,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!("{from} → {to}")),
         ))
@@ -451,7 +467,10 @@ impl<'a> Compiler<'a> {
                 return Err(format!("字段 [{c}] 不存在"));
             }
         }
-        let items: Vec<String> = cols.iter().map(|c| format!("{} AS {}", q(c), q(c))).collect();
+        let items: Vec<String> = cols
+            .iter()
+            .map(|c| format!("{} AS {}", q(c), q(c)))
+            .collect();
         let body = format!("SELECT {} FROM {}", items.join(", "), self.cur);
         let cte = self.push_cte(body.clone());
         self.columns.retain(|c| cols.contains(&c.name));
@@ -459,7 +478,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!("保留 {} 个字段", cols.len())),
         ))
@@ -510,13 +529,17 @@ impl<'a> Compiler<'a> {
         let body = self.project(&self.cur.clone(), &[(col.clone(), e)], &[]);
         let cte = self.push_cte(body.clone());
         if let Some(c) = self.columns.iter_mut().find(|c| c.name == col) {
-            c.dtype = if to == "text" { "text".to_string() } else { "number".to_string() };
+            c.dtype = if to == "text" {
+                "text".to_string()
+            } else {
+                "number".to_string()
+            };
         }
         Ok(self.log_entry(
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!("[{col}] → {to}")),
         ))
@@ -541,7 +564,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!("空值填充：[{col}] → “{value}”")),
         ))
@@ -566,12 +589,15 @@ impl<'a> Compiler<'a> {
         };
         let body = format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur);
         let cte = self.push_cte(body.clone());
-        self.add_column(DatasetColumn { name: out.clone(), dtype: "number".to_string() });
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
         Ok(self.log_entry(
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!("新增字段 [{out}] = {raw}")),
         ))
@@ -584,7 +610,11 @@ impl<'a> Compiler<'a> {
         }
         let out = {
             let o = str_param(p, "out");
-            if o.is_empty() { "排名".to_string() } else { o }
+            if o.is_empty() {
+                "排名".to_string()
+            } else {
+                o
+            }
         };
         if self.has_column(&out) {
             return Err(format!("字段 [{out}] 已存在"));
@@ -594,7 +624,11 @@ impl<'a> Compiler<'a> {
             "row_number" => "ROW_NUMBER()",
             _ => "RANK()",
         };
-        let order = if str_param(p, "order") == "asc" { "ASC" } else { "DESC" };
+        let order = if str_param(p, "order") == "asc" {
+            "ASC"
+        } else {
+            "DESC"
+        };
         let parts = list_param(p, "partition_by");
         for c in &parts {
             if !self.has_column(c) {
@@ -612,12 +646,15 @@ impl<'a> Compiler<'a> {
         let e = format!("{method} OVER ({partition}ORDER BY {} {order})", q(&by));
         let body = format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur);
         let cte = self.push_cte(body.clone());
-        self.add_column(DatasetColumn { name: out.clone(), dtype: "number".to_string() });
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
         Ok(self.log_entry(
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!(
                 "按 [{by}] {order} 生成 [{out}]{}",
@@ -640,7 +677,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!("筛选条件：{raw}")),
         ))
@@ -660,7 +697,11 @@ impl<'a> Compiler<'a> {
         if !order_by.is_empty() && !self.has_column(&order_by) {
             return Err(format!("字段 [{order_by}] 不存在"));
         }
-        let order = if str_param(p, "order") == "asc" { "ASC" } else { "DESC" };
+        let order = if str_param(p, "order") == "asc" {
+            "ASC"
+        } else {
+            "DESC"
+        };
         let window_order = if order_by.is_empty() {
             String::new()
         } else {
@@ -669,11 +710,14 @@ impl<'a> Compiler<'a> {
         let inner = self.project(
             &self.cur.clone(),
             &[],
-            &[("__rn".to_string(), format!(
-                "ROW_NUMBER() OVER (PARTITION BY {} {} )",
-                cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "),
-                window_order.trim()
-            ))],
+            &[(
+                "__rn".to_string(),
+                format!(
+                    "ROW_NUMBER() OVER (PARTITION BY {} {} )",
+                    cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "),
+                    window_order.trim()
+                ),
+            )],
         );
         let keep = self
             .columns
@@ -687,7 +731,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             Some(cte),
             Some(format!("按 {} 去重", cols.join("、"))),
         ))
@@ -698,13 +742,17 @@ impl<'a> Compiler<'a> {
         if !self.has_column(&by) {
             return Err(format!("字段 [{by}] 不存在"));
         }
-        let order = if str_param(p, "order") == "asc" { "ASC" } else { "DESC" };
+        let order = if str_param(p, "order") == "asc" {
+            "ASC"
+        } else {
+            "DESC"
+        };
         self.order_by = Some(format!("{} {order}", q(&by)));
         Ok(self.log_entry(
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             None,
             Some(format!("结果按 [{by}] {order} 排序")),
         ))
@@ -717,7 +765,7 @@ impl<'a> Compiler<'a> {
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             None,
             Some(format!("只输出前 {n} 行")),
         ))
@@ -725,20 +773,28 @@ impl<'a> Compiler<'a> {
 
     fn op_output(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
         let name = str_param(p, "name");
-        self.output_name = Some(if name.is_empty() { "流程输出".to_string() } else { name });
+        let out_name = if name.is_empty() {
+            "流程输出".to_string()
+        } else {
+            name
+        };
+        self.output_name = Some(out_name.clone());
         Ok(self.log_entry(
             i,
             step,
             "ok",
-            self.count_current(),
+            self.count_current()?,
             None,
-            Some(format!("输出结果表：{}", self.output_name.clone().unwrap())),
+            Some(format!("输出结果表：{out_name}")),
         ))
     }
 }
 
 /// 运行流程：编译 → 执行 → 落地为新的数据集。
-pub fn run_flow(conn: &Connection, flow_id: &str, dataset_id: &str) -> AppResult<RunResult> {
+///
+/// 成功路径中「建结果表 + 写数据集元数据 + 写运行记录」放在同一事务内；
+/// 任一步失败都会整体回滚，不会留下半成品数据集。
+pub fn run_flow(conn: &mut Connection, flow_id: &str, dataset_id: &str) -> AppResult<RunResult> {
     let (flow_name, steps) = load_flow(conn, flow_id)?;
     if steps.is_empty() {
         return Err(AppError::bad_request("流程没有任何步骤"));
@@ -782,7 +838,11 @@ pub fn run_flow(conn: &Connection, flow_id: &str, dataset_id: &str) -> AppResult
                     sql: None,
                     message: Some(msg.clone()),
                 });
-                failed = Some(format!("第 {} 步「{}」失败：{msg}", i + 1, steps[idx].label));
+                failed = Some(format!(
+                    "第 {} 步「{}」失败：{msg}",
+                    i + 1,
+                    steps[idx].label
+                ));
                 break;
             }
         }
@@ -790,6 +850,15 @@ pub fn run_flow(conn: &Connection, flow_id: &str, dataset_id: &str) -> AppResult
 
     let run_id = new_id();
     let full_sql = c.final_sql();
+    // 先把编译结果取出并结束对 conn 的共享借用，下面才能开启事务。
+    let columns = c.columns.clone();
+    let log = std::mem::take(&mut c.log);
+    let out_name = c
+        .output_name
+        .clone()
+        .unwrap_or_else(|| format!("{flow_name} 结果"));
+    drop(c);
+
     if let Some(msg) = failed {
         conn.execute(
             "INSERT INTO flow_runs (id, flow_id, dataset_id, output_dataset_id, status, message, sql_text, created_at)
@@ -800,40 +869,39 @@ pub fn run_flow(conn: &Connection, flow_id: &str, dataset_id: &str) -> AppResult
             run_id,
             status: "failed".to_string(),
             message: Some(msg),
-            log: c.log,
+            log,
             output_dataset_id: None,
             output: None,
         });
     }
 
-    let out_name = c
-        .output_name
-        .clone()
-        .unwrap_or_else(|| format!("{flow_name} 结果"));
-    let out_ds = store::create_dataset_from_select(
-        conn,
-        &out_name,
-        "flow_output",
-        &format!("流程「{flow_name}」"),
-        &src_ds.project_id,
-        &c.columns,
-        &full_sql,
-    )?;
-    let output = store::read_rows(conn, &out_ds.id, 0, PREVIEW_ROWS)?;
-
-    conn.execute(
-        "INSERT INTO flow_runs (id, flow_id, dataset_id, output_dataset_id, status, message, sql_text, created_at)
-         VALUES (?1, ?2, ?3, ?4, 'success', ?5, ?6, ?7)",
-        rusqlite::params![
-            run_id,
-            flow_id,
-            dataset_id,
-            out_ds.id,
-            format!("输出 {} 行 / {} 列", out_ds.row_count, out_ds.columns.len()),
-            full_sql,
-            now()
-        ],
-    )?;
+    let origin = format!("流程「{flow_name}」");
+    let (out_ds, output) = db::with_tx(conn, |tx| {
+        let out_ds = store::create_dataset_from_select_tx(
+            tx,
+            &out_name,
+            "flow_output",
+            &origin,
+            &src_ds.project_id,
+            &columns,
+            &full_sql,
+        )?;
+        let output = store::read_rows(tx, &out_ds.id, 0, PREVIEW_ROWS)?;
+        tx.execute(
+            "INSERT INTO flow_runs (id, flow_id, dataset_id, output_dataset_id, status, message, sql_text, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'success', ?5, ?6, ?7)",
+            rusqlite::params![
+                run_id,
+                flow_id,
+                dataset_id,
+                out_ds.id,
+                format!("输出 {} 行 / {} 列", out_ds.row_count, out_ds.columns.len()),
+                full_sql,
+                now()
+            ],
+        )?;
+        Ok((out_ds, output))
+    })?;
 
     Ok(RunResult {
         run_id,
@@ -843,7 +911,7 @@ pub fn run_flow(conn: &Connection, flow_id: &str, dataset_id: &str) -> AppResult
             out_ds.row_count,
             out_ds.columns.len()
         )),
-        log: c.log,
+        log,
         output_dataset_id: Some(out_ds.id),
         output: Some(output),
     })
@@ -857,7 +925,8 @@ fn load_flow(conn: &Connection, flow_id: &str) -> AppResult<(String, Vec<FlowSte
         .ok_or_else(|| AppError::not_found(format!("流程不存在: {flow_id}")))?;
     let name: String = row.get(0)?;
     let raw: String = row.get(1)?;
-    let steps: Vec<FlowStep> = serde_json::from_str(&raw).unwrap_or_default();
+    let steps: Vec<FlowStep> = serde_json::from_str(&raw)
+        .map_err(|e| AppError::internal_with_context("流程定义 JSON 损坏", e))?;
     Ok((name, steps))
 }
 
@@ -870,28 +939,9 @@ pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult 
     let mut errors: Vec<ValidateError> = Vec::new();
     let mut flows: Vec<StepFlow> = Vec::new();
 
-    // 1. 收集必要字段，构建数据流起点
-    let mut declared: Vec<String> = Vec::new();
-    for step in steps {
-        if step.operator != "require_fields" {
-            continue;
-        }
-        let p = if step.params.is_null() {
-            Value::Object(Default::default())
-        } else {
-            step.params.clone()
-        };
-        for field in list_param(&p, "fields") {
-            if !declared.contains(&field) {
-                declared.push(field);
-            }
-        }
-    }
-    let mut cols: Vec<String> = if declared.is_empty() {
-        columns.to_vec()
-    } else {
-        declared
-    };
+    // 当前数据流字段始终以真实数据集列为准；
+    // 「必需字段」是校验条件，不能用它替换真实列（否则永远校验不出缺失字段）。
+    let mut cols: Vec<String> = columns.to_vec();
 
     for (idx, step) in steps.iter().enumerate() {
         let i = idx as i64;
@@ -1034,7 +1084,11 @@ pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult 
                 }
                 let out = {
                     let o = str_param(&p, "out");
-                    if o.is_empty() { "排名".to_string() } else { o }
+                    if o.is_empty() {
+                        "排名".to_string()
+                    } else {
+                        o
+                    }
                 };
                 if cols.contains(&out) {
                     step_errors.push(format!("字段 [{out}] 已存在"));
@@ -1083,5 +1137,144 @@ pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult 
         ok: errors.is_empty(),
         errors,
         steps: flows,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::DatasetColumn;
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    fn setup() -> (Connection, String) {
+        let mut conn = Connection::open_in_memory().expect("memory db");
+        conn.execute_batch(crate::db::SCHEMA).expect("schema");
+        let cols = vec![
+            DatasetColumn {
+                name: "姓名".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "笔试成绩".into(),
+                dtype: "number".into(),
+            },
+            DatasetColumn {
+                name: "面试成绩".into(),
+                dtype: "number".into(),
+            },
+        ];
+        let rows = vec![
+            vec![Some("张三".into()), Some("80".into()), Some("90".into())],
+            vec![Some("李四".into()), Some("90".into()), Some("80".into())],
+            vec![Some("王五".into()), Some("70".into()), Some("60".into())],
+        ];
+        let ds = store::create_dataset(
+            &mut conn,
+            store::NewDataset {
+                name: "成绩",
+                kind: "import",
+                source_file: "",
+                origin: "单元测试",
+                project_id: "",
+                columns: &cols,
+                rows: &rows,
+            },
+        )
+        .expect("dataset");
+        (conn, ds.id)
+    }
+
+    fn insert_flow(conn: &Connection, id: &str, steps: Value) {
+        conn.execute(
+            "INSERT INTO flows (id, name, steps, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+            rusqlite::params![id, "测试流程", steps.to_string(), now()],
+        )
+        .expect("flow");
+    }
+
+    fn steps(v: Value) -> Vec<FlowStep> {
+        serde_json::from_value(v).expect("valid steps")
+    }
+
+    #[test]
+    fn run_flow_materializes_ranked_dataset() {
+        let (mut conn, ds_id) = setup();
+        insert_flow(
+            &conn,
+            "f_rank",
+            json!([
+                { "id": "s1", "operator": "require_fields",
+                  "params": { "fields": ["姓名", "笔试成绩", "面试成绩"] } },
+                { "id": "s2", "operator": "compute",
+                  "params": { "out": "总成绩", "expr": "[笔试成绩]*0.6 + [面试成绩]*0.4", "decimals": 2 } },
+                { "id": "s3", "operator": "rank",
+                  "params": { "by": "总成绩", "order": "desc", "out": "排名" } },
+                { "id": "s4", "operator": "sort", "params": { "by": "总成绩", "order": "desc" } },
+                { "id": "s5", "operator": "output", "params": { "name": "排名结果" } }
+            ]),
+        );
+
+        let result = run_flow(&mut conn, "f_rank", &ds_id).expect("run");
+        assert_eq!(result.status, "success");
+        let out_id = result.output_dataset_id.expect("output id");
+        let page = store::read_rows(&conn, &out_id, 0, 10).expect("read output");
+        assert_eq!(page.total, 3);
+        assert_eq!(page.rows[0][0], json!("李四"));
+        // 列顺序：姓名 / 笔试成绩 / 面试成绩 / 总成绩 / 排名
+        assert_eq!(page.rows[0][3], json!(86.0));
+        assert_eq!(page.rows[0][4], json!(1.0));
+
+        let run_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM flow_runs WHERE status = 'success'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count runs");
+        assert_eq!(run_rows, 1);
+    }
+
+    #[test]
+    fn failed_flow_records_run_without_creating_dataset() {
+        let (mut conn, ds_id) = setup();
+        insert_flow(
+            &conn,
+            "f_bad",
+            json!([{ "id": "s1", "operator": "require_fields",
+                     "params": { "fields": ["身份证号"] } }]),
+        );
+        let result = run_flow(&mut conn, "f_bad", &ds_id).expect("run returns result");
+        assert_eq!(result.status, "failed");
+        assert!(result.output_dataset_id.is_none());
+
+        let outputs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM datasets WHERE kind = 'flow_output'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count outputs");
+        assert_eq!(outputs, 0);
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM flow_runs WHERE flow_id = 'f_bad'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("run row");
+        assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn validate_reports_missing_fields_without_touching_db() {
+        let result = validate_steps(
+            &steps(json!([{ "id": "s1", "operator": "require_fields",
+                           "params": { "fields": ["姓名", "身份证号"] } }])),
+            &["姓名".to_string()],
+        );
+        assert!(!result.ok);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("身份证号"));
     }
 }

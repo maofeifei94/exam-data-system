@@ -19,12 +19,11 @@ fn main() -> anyhow::Result<()> {
     );
 
     // raster image from a DynamicImage
-    let img =
-        printpdf::image_crate::DynamicImage::ImageRgb8(printpdf::image_crate::RgbImage::from_fn(
-            80,
-            100,
-            |x, y| printpdf::image_crate::Rgb([(x * 3) as u8, (y * 2) as u8, 120]),
-        ));
+    let img = printpdf::image_crate::DynamicImage::ImageRgb8(
+        printpdf::image_crate::RgbImage::from_fn(80, 100, |x, y| {
+            printpdf::image_crate::Rgb([(x * 3) as u8, (y * 2) as u8, 120])
+        }),
+    );
     let xobj = ImageXObject::from_dynamic_image(&img);
     Image::from(xobj).add_to_layer(
         layer.clone(),

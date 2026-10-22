@@ -331,7 +331,12 @@ fn default_orientation() -> String {
     "portrait".to_string()
 }
 fn default_margin() -> Margins {
-    Margins { top: 15.0, right: 12.0, bottom: 12.0, left: 12.0 }
+    Margins {
+        top: 15.0,
+        right: 12.0,
+        bottom: 12.0,
+        left: 12.0,
+    }
 }
 fn default_matrix() -> MatrixSetup {
     MatrixSetup {
@@ -551,7 +556,11 @@ impl TemplateBody {
             "Letter" => (215.9, 279.4),
             _ => (210.0, 297.0),
         };
-        let page_w = if self.page.orientation == "landscape" { ph } else { pw };
+        let page_w = if self.page.orientation == "landscape" {
+            ph
+        } else {
+            pw
+        };
         let content_w = (page_w - self.page.margin_mm.left - self.page.margin_mm.right).max(10.0);
         let mx = self.matrix.clone();
         let cols = mx.cols.max(1) as f32;
@@ -559,7 +568,11 @@ impl TemplateBody {
         let gap_x = mx.gap_x_mm.max(0.0);
         let gap_y = mx.gap_y_mm.max(0.0);
         let cell_w = ((content_w - gap_x * (cols - 1.0)) / cols).max(1.0);
-        let cell_h = if mx.cell_h_mm > 0.0 { mx.cell_h_mm } else { 30.0 };
+        let cell_h = if mx.cell_h_mm > 0.0 {
+            mx.cell_h_mm
+        } else {
+            30.0
+        };
         let matrix_w = cell_w * cols + gap_x * (cols - 1.0);
         let matrix_h = cell_h * rows + gap_y * (rows - 1.0);
 

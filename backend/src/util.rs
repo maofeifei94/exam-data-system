@@ -4,16 +4,28 @@
 /// 如果存成 REAL 会丢精度，例如 18 位身份证号变成科学计数法）。
 pub fn name_forces_text(name: &str) -> bool {
     const HINTS: &[&str] = &[
-        "证号", "身份证", "考号", "编号", "编码", "账号", "手机", "电话", "银行卡", "工号", "学号",
+        "证号",
+        "身份证",
+        "考号",
+        "编号",
+        "编码",
+        "账号",
+        "手机",
+        "电话",
+        "银行卡",
+        "工号",
+        "学号",
     ];
     HINTS.iter().any(|h| name.contains(h))
 }
 
 pub fn looks_like_image(v: &str) -> bool {
     let lower = v.to_ascii_lowercase();
-    [".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tif", ".tiff"]
-        .iter()
-        .any(|e| lower.ends_with(e))
+    [
+        ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tif", ".tiff",
+    ]
+    .iter()
+    .any(|e| lower.ends_with(e))
 }
 
 /// 安全数字：能被 f64 解析，且不会因 REAL 亲和性而丢失信息。
@@ -43,7 +55,11 @@ pub fn infer_dtype(name: &str, values: &[String]) -> String {
     if name_forces_text(name) {
         return "text".to_string();
     }
-    let sample: Vec<&String> = values.iter().filter(|v| !v.trim().is_empty()).take(200).collect();
+    let sample: Vec<&String> = values
+        .iter()
+        .filter(|v| !v.trim().is_empty())
+        .take(200)
+        .collect();
     if sample.is_empty() {
         return "text".to_string();
     }
@@ -59,14 +75,18 @@ pub fn infer_dtype(name: &str, values: &[String]) -> String {
     "text".to_string()
 }
 
-/// 在超长文本中截断，用于日志。
-pub fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let t: String = s.chars().take(n).collect();
-        format!("{t}...")
+/// RFC 3986 百分号编码，用于 `Content-Disposition` 的 `filename*` 参数。
+pub fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        let c = *b as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
     }
+    out
 }
 
 /// 解析颜色 `#RRGGBB` 或 `#RGB`，失败返回 None。

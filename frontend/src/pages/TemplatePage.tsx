@@ -39,11 +39,13 @@ import {
   normalizeTemplate,
   pageSizeMm,
   removeElement,
+  resizeRect,
   round1,
+  toParentBox,
   updateElement,
   walkElements,
 } from '../lib/templateModel';
-import type { ElementType } from '../lib/templateModel';
+import type { ElementType, ResizeHandle } from '../lib/templateModel';
 import { fieldColor, hexToRgba, splitTemplateTokens } from '../lib/tokens';
 
 const MM_PER_PT = 0.352778;
@@ -97,6 +99,36 @@ const ELEMENT_LABELS: Record<ElementType, string> = {
 };
 
 const INSERT_TYPES: ElementType[] = ['text', 'field', 'image', 'line', 'rect'];
+
+type RibbonTab = 'home' | 'insert' | 'layout' | 'view';
+
+const RIBBON_TABS: Array<{ id: RibbonTab; label: string }> = [
+  { id: 'home', label: '开始' },
+  { id: 'insert', label: '插入' },
+  { id: 'layout', label: '页面布局' },
+  { id: 'view', label: '视图' },
+];
+
+interface ResizeHandleSpec {
+  handle: ResizeHandle;
+  /** 顶点在选框中的相对位置（0 / 0.5 / 1） */
+  fx: number;
+  fy: number;
+  cursor: string;
+}
+
+const RESIZE_HANDLES: ResizeHandleSpec[] = [
+  { handle: 'nw', fx: 0, fy: 0, cursor: 'nwse-resize' },
+  { handle: 'n', fx: 0.5, fy: 0, cursor: 'ns-resize' },
+  { handle: 'ne', fx: 1, fy: 0, cursor: 'nesw-resize' },
+  { handle: 'e', fx: 1, fy: 0.5, cursor: 'ew-resize' },
+  { handle: 'se', fx: 1, fy: 1, cursor: 'nwse-resize' },
+  { handle: 's', fx: 0.5, fy: 1, cursor: 'ns-resize' },
+  { handle: 'sw', fx: 0, fy: 1, cursor: 'nesw-resize' },
+  { handle: 'w', fx: 0, fy: 0.5, cursor: 'ew-resize' },
+];
+
+const HANDLE_SIZE = 8;
 
 // --------------------------------------------------------------------
 // 画布：把模板文本渲染成「文字 + 字段胶囊」
@@ -292,6 +324,24 @@ export default function TemplatePage({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [size, setSize] = useState({ w: 620, h: 740 });
   const [view, setView] = useState<ViewState>({ zoom: 1, panX: 0, panY: 0 });
+  const [ribbonTab, setRibbonTab] = useState<RibbonTab>('home');
+  /** Leafer 正在拖动的元素：隐藏 HTML 选框，避免选框停留在旧位置 */
+  const [movingId, setMovingId] = useState<string | null>(null);
+  /** 拖动顶点时的实时选框（页面坐标，mm）；提交前不写回草稿，避免画布频繁重建 */
+  const [resizePreview, setResizePreview] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
+  const resizeDragRef = useRef<{
+    pointerId: number;
+    handle: ResizeHandle;
+    startX: number;
+    startY: number;
+    box: { x: number; y: number; w: number; h: number };
+    last: { x: number; y: number; w: number; h: number };
+  } | null>(null);
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<App | null>(null);
@@ -440,6 +490,12 @@ export default function TemplatePage({
     setView({ zoom: 1, panX: 0, panY: 0 });
   }, [draft.id, page.w, page.h]);
 
+  // 切换选中元素或工具时放弃未提交的缩放预览
+  useEffect(() => {
+    resizeDragRef.current = null;
+    setResizePreview(null);
+  }, [selection, tool]);
+
   // ------------------------------------------------------------------
   // Ctrl + 滚轮缩放；普通滚轮平移
   // ------------------------------------------------------------------
@@ -531,7 +587,6 @@ export default function TemplatePage({
       const w = Math.max(0.5, element.w_mm);
       const h = Math.max(0.5, element.h_mm);
       const radius = Math.max(0, element.border_radius_mm);
-      const isSelected = interactive && selectedElement?.id === element.id;
 
       const node = new Group({
         x: element.x_mm,
@@ -557,6 +612,7 @@ export default function TemplatePage({
           setSelection({ type: 'element', id: element.id });
           setEditRequestId(element.id);
         });
+        node.on('drag.start', () => setMovingId(element.id));
         node.on('drag.end', () => {
           const nx = round1(Number(node.x ?? element.x_mm));
           const ny = round1(Number(node.y ?? element.y_mm));
@@ -564,6 +620,7 @@ export default function TemplatePage({
             ...prev,
             elements: updateElement(prev.elements, element.id, { x_mm: nx, y_mm: ny }),
           }));
+          setMovingId(null);
         });
       }
 
@@ -606,8 +663,10 @@ export default function TemplatePage({
         for (let r = 0; r < rows; r += 1) {
           for (let c = 0; c < cols; c += 1) {
             if (element.children.length === 0) continue;
-            const cell = new Group({ x: c * cellW, y: r * cellH, hittable: false });
             const editableCell = interactive && r === 0 && c === 0;
+            // 只有左上角单元格可交互；其余单元格仅作为铺排预览。
+            // 注意 hittable 必须为 true，否则子元素无法接收拖拽事件。
+            const cell = new Group({ x: c * cellW, y: r * cellH, hittable: editableCell });
             element.children.forEach((child) => cell.add(buildElementNode(child, editableCell)));
             node.add(cell);
           }
@@ -710,41 +769,6 @@ export default function TemplatePage({
         element.children.forEach((child) => node.add(buildElementNode(child, interactive)));
       }
 
-      if (isSelected) {
-        node.add(
-          new Rect({
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-            stroke: '#2563eb',
-            strokeWidth: 2 * strokeMm,
-            hittable: false,
-          }),
-        );
-        const handle = 4 * strokeMm;
-        const points: Array<[number, number]> = [
-          [0, 0],
-          [w, 0],
-          [0, h],
-          [w, h],
-        ];
-        points.forEach(([hx, hy]) => {
-          node.add(
-            new Rect({
-              x: hx - handle / 2,
-              y: hy - handle / 2,
-              width: handle,
-              height: handle,
-              fill: '#ffffff',
-              stroke: '#2563eb',
-              strokeWidth: strokeMm,
-              hittable: false,
-            }),
-          );
-        });
-      }
-
       return node;
     };
 
@@ -832,6 +856,73 @@ export default function TemplatePage({
     setDraft((prev) => ({ ...prev, elements: updateElement(prev.elements, id, patch) }));
   };
 
+  // ------------------------------------------------------------------
+  // 顶点拖拽缩放：对角点固定，相邻两条边随顶点移动
+  // ------------------------------------------------------------------
+  const beginResize = (handle: ResizeHandle, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!selectedElement || !selectedLocated || tool !== 'select') return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const box = {
+      x: selectedLocated.x,
+      y: selectedLocated.y,
+      w: selectedElement.w_mm,
+      h: selectedElement.h_mm,
+    };
+    resizeDragRef.current = {
+      pointerId: event.pointerId,
+      handle,
+      startX: event.clientX,
+      startY: event.clientY,
+      box,
+      last: box,
+    };
+    setResizePreview(box);
+  };
+
+  const moveResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = (event.clientX - drag.startX) / scale;
+    const dy = (event.clientY - drag.startY) / scale;
+    const next = resizeRect(drag.box, drag.handle, dx, dy);
+    drag.last = next;
+    setResizePreview(next);
+  };
+
+  const endResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    resizeDragRef.current = null;
+    setResizePreview(null);
+    if (!selectedElement || !selectedLocated) return;
+    const box = drag.last;
+    // 选框使用页面绝对坐标，元素自身坐标相对父容器，提交前必须换算回相对坐标。
+    const local = toParentBox(selectedLocated, box);
+    const w = Math.max(1, round1(box.w));
+    const h = Math.max(0.5, round1(box.h));
+    const patch: Partial<TemplateElement> = {
+      x_mm: round1(local.x),
+      y_mm: round1(local.y),
+      w_mm: w,
+      h_mm: h,
+    };
+    // 矩阵高度变化后同步单元格高度，保持右侧属性面板与画布一致。
+    if (selectedElement.type === 'matrix') {
+      const rows = Math.max(1, Math.round(selectedElement.matrix?.rows ?? 1));
+      patch.matrix = {
+        ...DEFAULT_MATRIX,
+        ...(selectedElement.matrix ?? {}),
+        cell_h_mm: round1(h / rows),
+      };
+    }
+    patchElement(selectedElement.id, patch);
+  };
+
   const patchMatrix = (patch: Partial<MatrixSetup>) => {
     if (!matrixTarget) return;
     setDraft((prev) => {
@@ -845,6 +936,15 @@ export default function TemplatePage({
         elements: updateElement(prev.elements, located.element.id, { matrix: next }),
       };
     });
+  };
+
+  /** 功能区修改矩阵行数：同步单元格高度，保持矩阵总高度不变。 */
+  const setMatrixRows = (value: number) => {
+    if (!matrixTarget) return;
+    const nextRows = Math.max(1, Math.round(value));
+    const cellH = Math.max(4, matrixTarget.h_mm / nextRows);
+    patchMatrix({ rows: nextRows, cell_h_mm: cellH });
+    patchElement(matrixTarget.id, { h_mm: round1(cellH * nextRows) });
   };
 
   const updatePage = (patch: Partial<PageSetup>) => {
@@ -1207,6 +1307,30 @@ export default function TemplatePage({
       ? ['页面']
       : ['页面', ...selectedPath.map((element) => elementLabel(element))];
 
+  /** 选框使用页面绝对坐标（mm）；拖动顶点时优先显示实时预览。 */
+  const overlayBox =
+    resizePreview ??
+    (selectedElement && selectedLocated
+      ? {
+          x: selectedLocated.x,
+          y: selectedLocated.y,
+          w: selectedElement.w_mm,
+          h: selectedElement.h_mm,
+        }
+      : null);
+  const overlayWpx = overlayBox ? Math.max(0, overlayBox.w * scale) : 0;
+  const overlayHpx = overlayBox ? Math.max(0, overlayBox.h * scale) : 0;
+  // 细小元素（如线条、默认高度 8mm 的文本）缩放手柄会互相重叠，按尺寸收窄手柄并隐藏中边手柄。
+  const handleSize = Math.max(
+    4,
+    Math.min(HANDLE_SIZE, Math.min(overlayWpx || HANDLE_SIZE, overlayHpx || HANDLE_SIZE) * 0.5),
+  );
+  const visibleHandles = RESIZE_HANDLES.filter((spec) => {
+    if ((spec.handle === 'e' || spec.handle === 'w') && overlayHpx < 24) return false;
+    if ((spec.handle === 'n' || spec.handle === 's') && overlayWpx < 24) return false;
+    return true;
+  });
+
   if (loading) {
     return (
       <div className="page">
@@ -1288,124 +1412,364 @@ export default function TemplatePage({
           </button>
         </div>
 
-        {/* --------------- 功能区 --------------- */}
-        <div className="tpl-ribbon">
-          <div className="tpl-ribbon-group">
-            <span className="tpl-ribbon-label">插入</span>
-            <div className="tpl-ribbon-items">
-              {INSERT_TYPES.map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  className="tpl-tool"
-                  onClick={() => addElement(type)}
-                  title={`插入${ELEMENT_LABELS[type]}`}
-                >
-                  <span className="tpl-tool-icon">{elementIcon(type)}</span>
-                  {ELEMENT_LABELS[type]}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="tpl-tool"
-                onClick={() => addElement('matrix')}
-                disabled={Boolean(matrixElement)}
-                title={matrixElement ? '模板中已有矩阵' : '插入矩阵'}
-              >
-                <span className="tpl-tool-icon">{elementIcon('matrix')}</span>
-                矩阵
-              </button>
-            </div>
-          </div>
-
-          <span className="tpl-ribbon-sep" />
-
-          <div className="tpl-ribbon-group">
-            <span className="tpl-ribbon-label">插入位置</span>
-            <div className="tpl-ribbon-items">
-              <div className="segmented compact">
-                <button
-                  className={insertTarget === 'container' ? 'seg active' : 'seg'}
-                  onClick={() => setInsertTarget('container')}
-                  title="选中矩阵或矩形后，插入的元素成为其子元素"
-                >
-                  所选容器
-                </button>
-                <button
-                  className={insertTarget === 'page' ? 'seg active' : 'seg'}
-                  onClick={() => setInsertTarget('page')}
-                >
-                  页面顶层
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <span className="tpl-ribbon-sep" />
-
-          <div className="tpl-ribbon-group">
-            <span className="tpl-ribbon-label">矩阵</span>
-            <div className="tpl-ribbon-items">
-              <label className={`tpl-toggle${matrixTarget ? '' : ' disabled'}`}>
-                <input
-                  type="checkbox"
-                  checked={matrixConfig.show_grid}
-                  disabled={!matrixTarget}
-                  onChange={(event) => patchMatrix({ show_grid: event.target.checked })}
-                />
-                网格线
-              </label>
-              <label className={`tpl-toggle${matrixTarget ? '' : ' disabled'}`}>
-                <input
-                  type="checkbox"
-                  checked={matrixConfig.show_border}
-                  disabled={!matrixTarget}
-                  onChange={(event) => patchMatrix({ show_border: event.target.checked })}
-                />
-                外边框
-              </label>
-            </div>
-          </div>
-
-          <span className="tpl-ribbon-sep" />
-
-          <div className="tpl-ribbon-group">
-            <span className="tpl-ribbon-label">视图</span>
-            <div className="tpl-ribbon-items">
-              <div className="segmented compact">
-                <button
-                  className={tool === 'select' ? 'seg active' : 'seg'}
-                  onClick={() => setTool('select')}
-                  title="选择工具"
-                >
-                  ↗ 选择
-                </button>
-                <button
-                  className={tool === 'hand' ? 'seg active' : 'seg'}
-                  onClick={() => setTool('hand')}
-                  title="手型平移（或按住鼠标中键拖动）"
-                >
-                  ✋ 平移
-                </button>
-              </div>
-              <button type="button" className="tpl-tool" onClick={() => zoomAt(size.w / 2, size.h / 2, 1 / 1.2)}>
-                －
-              </button>
-              <button type="button" className="tpl-tool" onClick={() => zoomAt(size.w / 2, size.h / 2, 1.2)}>
-                ＋
-              </button>
-              <button type="button" className="tpl-tool" onClick={resetView}>
-                适应页面
-              </button>
-              <span className="tpl-zoom-readout">{Math.round(view.zoom * 100)}%</span>
-            </div>
-          </div>
-
-          <div className="toolbar-fill" />
-          {selection.type === 'element' ? (
-            <button className="tpl-tool danger" onClick={removeSelectedElement}>
-              删除选中元素
+        {/* --------------- 一级菜单：WPS 式选项卡 --------------- */}
+        <div className="tpl-tabs" role="tablist" aria-label="模板工具">
+          {RIBBON_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={ribbonTab === tab.id}
+              className={`tpl-tab${ribbonTab === tab.id ? ' active' : ''}`}
+              onClick={() => setRibbonTab(tab.id)}
+            >
+              {tab.label}
             </button>
+          ))}
+        </div>
+
+        {/* --------------- 二级菜单：当前选项卡的功能区 --------------- */}
+        <div className="tpl-ribbon" role="tabpanel">
+          {ribbonTab === 'home' ? (
+            <>
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <button
+                    type="button"
+                    className={`tpl-tool big${tool === 'select' ? ' active' : ''}`}
+                    onClick={() => setTool('select')}
+                    title="选择工具：拖动元素移动，拖动顶点缩放"
+                  >
+                    <span className="tpl-tool-icon">↗</span>
+                    选择
+                  </button>
+                  <button
+                    type="button"
+                    className={`tpl-tool big${tool === 'hand' ? ' active' : ''}`}
+                    onClick={() => setTool('hand')}
+                    title="手型平移（或按住鼠标中键拖动）"
+                  >
+                    <span className="tpl-tool-icon">✋</span>
+                    平移
+                  </button>
+                </div>
+                <span className="tpl-ribbon-label">工具</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <button
+                    type="button"
+                    className="tpl-tool big danger"
+                    onClick={removeSelectedElement}
+                    disabled={selection.type !== 'element'}
+                    title="删除当前选中的元素"
+                  >
+                    <span className="tpl-tool-icon">⌫</span>
+                    删除
+                  </button>
+                </div>
+                <span className="tpl-ribbon-label">编辑</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <button
+                    type="button"
+                    className="tpl-tool big"
+                    onClick={resetView}
+                    title="按窗口大小显示整页"
+                  >
+                    <span className="tpl-tool-icon">⤢</span>
+                    适应
+                  </button>
+                  <button
+                    type="button"
+                    className="tpl-tool"
+                    onClick={() => zoomAt(size.w / 2, size.h / 2, 1 / 1.2)}
+                    title="缩小"
+                  >
+                    －
+                  </button>
+                  <span className="tpl-zoom-readout">{Math.round(view.zoom * 100)}%</span>
+                  <button
+                    type="button"
+                    className="tpl-tool"
+                    onClick={() => zoomAt(size.w / 2, size.h / 2, 1.2)}
+                    title="放大"
+                  >
+                    ＋
+                  </button>
+                </div>
+                <span className="tpl-ribbon-label">缩放</span>
+              </div>
+            </>
+          ) : null}
+
+          {ribbonTab === 'insert' ? (
+            <>
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  {INSERT_TYPES.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      className="tpl-tool big"
+                      onClick={() => addElement(type)}
+                      title={`插入${ELEMENT_LABELS[type]}`}
+                    >
+                      <span className="tpl-tool-icon">{elementIcon(type)}</span>
+                      {ELEMENT_LABELS[type]}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="tpl-tool big"
+                    onClick={() => addElement('matrix')}
+                    disabled={Boolean(matrixElement)}
+                    title={matrixElement ? '模板中已有矩阵' : '插入矩阵'}
+                  >
+                    <span className="tpl-tool-icon">{elementIcon('matrix')}</span>
+                    矩阵
+                  </button>
+                </div>
+                <span className="tpl-ribbon-label">插入元素</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <div className="segmented compact">
+                    <button
+                      className={insertTarget === 'container' ? 'seg active' : 'seg'}
+                      onClick={() => setInsertTarget('container')}
+                      title="选中矩阵或矩形后，插入的元素成为其子元素"
+                    >
+                      所选容器
+                    </button>
+                    <button
+                      className={insertTarget === 'page' ? 'seg active' : 'seg'}
+                      onClick={() => setInsertTarget('page')}
+                    >
+                      页面顶层
+                    </button>
+                  </div>
+                </div>
+                <span className="tpl-ribbon-label">插入位置</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <label className={`tpl-toggle${matrixTarget ? '' : ' disabled'}`}>
+                    <input
+                      type="checkbox"
+                      checked={matrixConfig.show_grid}
+                      disabled={!matrixTarget}
+                      onChange={(event) => patchMatrix({ show_grid: event.target.checked })}
+                    />
+                    网格线
+                  </label>
+                  <label className={`tpl-toggle${matrixTarget ? '' : ' disabled'}`}>
+                    <input
+                      type="checkbox"
+                      checked={matrixConfig.show_border}
+                      disabled={!matrixTarget}
+                      onChange={(event) => patchMatrix({ show_border: event.target.checked })}
+                    />
+                    外边框
+                  </label>
+                </div>
+                <span className="tpl-ribbon-label">矩阵</span>
+              </div>
+            </>
+          ) : null}
+
+          {ribbonTab === 'layout' ? (
+            <>
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <label className="tpl-ribbon-field">
+                    <span>纸张</span>
+                    <select
+                      value={draft.page.size}
+                      onChange={(event) =>
+                        updatePage({ size: event.target.value as PageSetup['size'] })
+                      }
+                    >
+                      {(['A4', 'A3', 'A5', 'Letter'] as const).map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="tpl-ribbon-field">
+                    <span>方向</span>
+                    <select
+                      value={draft.page.orientation}
+                      onChange={(event) =>
+                        updatePage({
+                          orientation: event.target.value as PageSetup['orientation'],
+                        })
+                      }
+                    >
+                      <option value="portrait">纵向</option>
+                      <option value="landscape">横向</option>
+                    </select>
+                  </label>
+                </div>
+                <span className="tpl-ribbon-label">页面设置</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
+                    <label key={side} className="tpl-ribbon-field">
+                      <span>
+                        {side === 'top'
+                          ? '上'
+                          : side === 'right'
+                            ? '右'
+                            : side === 'bottom'
+                              ? '下'
+                              : '左'}
+                      </span>
+                      <input
+                        type="number"
+                        step={0.5}
+                        value={draft.page.margin_mm[side]}
+                        onChange={(event) =>
+                          updatePage({
+                            margin_mm: {
+                              ...draft.page.margin_mm,
+                              [side]: Number(event.target.value) || 0,
+                            },
+                          })
+                        }
+                      />
+                    </label>
+                  ))}
+                </div>
+                <span className="tpl-ribbon-label">页边距 (mm)</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <label className={`tpl-ribbon-field${matrixTarget ? '' : ' disabled'}`}>
+                    <span>行数</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={matrixConfig.rows}
+                      disabled={!matrixTarget}
+                      onChange={(event) => setMatrixRows(Number(event.target.value) || 1)}
+                    />
+                  </label>
+                  <label className={`tpl-ribbon-field${matrixTarget ? '' : ' disabled'}`}>
+                    <span>列数</span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={matrixConfig.cols}
+                      disabled={!matrixTarget}
+                      onChange={(event) =>
+                        patchMatrix({ cols: Math.max(1, Math.round(Number(event.target.value) || 1)) })
+                      }
+                    />
+                  </label>
+                </div>
+                <span className="tpl-ribbon-label">矩阵</span>
+              </div>
+            </>
+          ) : null}
+
+          {ribbonTab === 'view' ? (
+            <>
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <button
+                    type="button"
+                    className={`tpl-tool big${tool === 'select' ? ' active' : ''}`}
+                    onClick={() => setTool('select')}
+                  >
+                    <span className="tpl-tool-icon">↗</span>
+                    选择
+                  </button>
+                  <button
+                    type="button"
+                    className={`tpl-tool big${tool === 'hand' ? ' active' : ''}`}
+                    onClick={() => setTool('hand')}
+                  >
+                    <span className="tpl-tool-icon">✋</span>
+                    平移
+                  </button>
+                </div>
+                <span className="tpl-ribbon-label">显示</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <button type="button" className="tpl-tool big" onClick={resetView} title="适应页面">
+                    <span className="tpl-tool-icon">⤢</span>
+                    适应页面
+                  </button>
+                  <button
+                    type="button"
+                    className="tpl-tool big"
+                    onClick={() => setView({ zoom: 1, panX: 0, panY: 0 })}
+                    title="恢复到 100%"
+                  >
+                    <span className="tpl-tool-icon">1:1</span>
+                    100%
+                  </button>
+                  <button
+                    type="button"
+                    className="tpl-tool"
+                    onClick={() => zoomAt(size.w / 2, size.h / 2, 1 / 1.2)}
+                  >
+                    －
+                  </button>
+                  <span className="tpl-zoom-readout">{Math.round(view.zoom * 100)}%</span>
+                  <button
+                    type="button"
+                    className="tpl-tool"
+                    onClick={() => zoomAt(size.w / 2, size.h / 2, 1.2)}
+                  >
+                    ＋
+                  </button>
+                </div>
+                <span className="tpl-ribbon-label">缩放</span>
+              </div>
+
+              <span className="tpl-ribbon-sep" />
+
+              <div className="tpl-ribbon-group">
+                <div className="tpl-ribbon-items">
+                  <button type="button" className="tpl-tool" onClick={() => setAllCollapsed(false)}>
+                    展开全部
+                  </button>
+                  <button type="button" className="tpl-tool" onClick={() => setAllCollapsed(true)}>
+                    收起全部
+                  </button>
+                </div>
+                <span className="tpl-ribbon-label">结构树</span>
+              </div>
+            </>
           ) : null}
         </div>
 
@@ -1470,14 +1834,47 @@ export default function TemplatePage({
                 {tool === 'hand' ? '手型：拖动画布' : 'Ctrl + 滚轮缩放 · 滚轮平移'}
               </span>
             </div>
-            <div
-              className={`tpl-canvas${tool === 'hand' ? ' hand' : ''}`}
-              ref={hostRef}
-              onPointerDown={handleCanvasPointerDown}
-              onPointerMove={handleCanvasPointerMove}
-              onPointerUp={handleCanvasPointerUp}
-              onPointerCancel={handleCanvasPointerUp}
-            />
+            <div className="tpl-canvas-stage">
+              <div
+                className={`tpl-canvas${tool === 'hand' ? ' hand' : ''}`}
+                ref={hostRef}
+                onPointerDown={handleCanvasPointerDown}
+                onPointerMove={handleCanvasPointerMove}
+                onPointerUp={handleCanvasPointerUp}
+                onPointerCancel={handleCanvasPointerUp}
+              />
+              {tool === 'select' && overlayBox && movingId === null ? (
+                <div
+                  className="tpl-selection"
+                  style={{
+                    left: translateX + overlayBox.x * scale,
+                    top: translateY + overlayBox.y * scale,
+                    width: Math.max(0, overlayBox.w * scale),
+                    height: Math.max(0, overlayBox.h * scale),
+                  }}
+                >
+                  <div className="tpl-selection-frame" />
+                  {visibleHandles.map((spec) => (
+                    <div
+                      key={spec.handle}
+                      className={`tpl-handle tpl-handle-${spec.handle}`}
+                      style={{
+                        left: spec.fx * overlayWpx - handleSize / 2,
+                        top: spec.fy * overlayHpx - handleSize / 2,
+                        width: handleSize,
+                        height: handleSize,
+                        cursor: spec.cursor,
+                      }}
+                      title="拖动改变选中元素的范围"
+                      onPointerDown={(event) => beginResize(spec.handle, event)}
+                      onPointerMove={moveResize}
+                      onPointerUp={endResize}
+                      onPointerCancel={endResize}
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <div className="tpl-statusbar">
               <span>
                 纸张 {page.w}×{page.h} mm · 页边距 {draft.page.margin_mm.left}/{draft.page.margin_mm.top}/

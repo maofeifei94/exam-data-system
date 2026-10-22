@@ -32,6 +32,56 @@ export function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** 矩形框的 8 个缩放顶点：四角 + 四边中点。 */
+export type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+
+export interface RectBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * 拖动矩形框顶点后的新矩形：
+ * - 对角点保持不动；
+ * - 相邻两条边随顶点一起移动，矩形始终保持轴对齐；
+ * - 宽高不小于 minW / minH。
+ */
+export function resizeRect(
+  box: RectBox,
+  handle: ResizeHandle,
+  dx: number,
+  dy: number,
+  minW = 1,
+  minH = 0.5,
+): RectBox {
+  let { x, y, w, h } = box;
+
+  if (handle.includes('w')) {
+    x += dx;
+    w -= dx;
+  }
+  if (handle.includes('e')) w += dx;
+  if (handle.includes('n')) {
+    y += dy;
+    h -= dy;
+  }
+  if (handle.includes('s')) h += dy;
+
+  // 触到最小尺寸时固定对边，避免继续拖动导致翻转
+  if (w < minW) {
+    if (handle.includes('w')) x = box.x + box.w - minW;
+    w = minW;
+  }
+  if (h < minH) {
+    if (handle.includes('n')) y = box.y + box.h - minH;
+    h = minH;
+  }
+
+  return { x, y, w, h };
+}
+
 const BASE_ELEMENT: Omit<TemplateElement, 'id' | 'type' | 'x_mm' | 'y_mm' | 'w_mm' | 'h_mm'> = {
   text: '',
   field: '',
@@ -163,6 +213,17 @@ export interface LocatedElement {
   x: number;
   y: number;
   depth: number;
+}
+
+/**
+ * 把页面绝对坐标的矩形换算回元素自身的相对坐标。
+ * 元素 x_mm / y_mm 始终相对父容器（矩阵单元格、矩形框），
+ * 因此缩放提交时必须先减去父元素的绝对原点，否则嵌套元素会在松手瞬间跳位。
+ */
+export function toParentBox(located: LocatedElement, box: RectBox): RectBox {
+  const originX = located.x - located.element.x_mm;
+  const originY = located.y - located.element.y_mm;
+  return { ...box, x: box.x - originX, y: box.y - originY };
 }
 
 export function walkElements(

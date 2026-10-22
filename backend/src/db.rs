@@ -1,6 +1,8 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
+use crate::error::{AppError, AppResult};
+
 /// 建库语句。所有数据集（导入的、流程产出的）都共用这两张元数据表，
 /// 物理数据表统一命名为 `data_<id>`，物理列名固定为 c0、c1、c2 ...
 /// 这样列改名只是元数据操作，不受 SQLite 标识符限制。
@@ -101,25 +103,75 @@ CREATE TABLE IF NOT EXISTS pdf_templates (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+
+-- 列表页都按项目 / 流程过滤，补上索引避免数据量增长后全表扫描。
+CREATE INDEX IF NOT EXISTS idx_datasets_project ON datasets(project_id);
+CREATE INDEX IF NOT EXISTS idx_flows_project ON flows(project_id);
+CREATE INDEX IF NOT EXISTS idx_pdf_templates_project ON pdf_templates(project_id);
+CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id);
+CREATE INDEX IF NOT EXISTS idx_flow_runs_dataset ON flow_runs(dataset_id);
 "#;
 
 pub fn new_id() -> String {
-    // 16 位十六进制，足够短且不会与 SQLite 保留字冲突
-    uuid::Uuid::new_v4().simple().to_string()[..16].to_string()
+    // 16 位十六进制，足够短且不会与 SQLite 保留字冲突。
+    // 用 take 而不是字节切片，避免将来 UUID 表示形式变化时 panic。
+    uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(16)
+        .collect()
 }
 
 pub fn now() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-pub fn table_name(dataset_id: &str) -> String {
-    format!("data_{dataset_id}")
+/// 数据集物理表名。
+///
+/// 表名无法参数化，必须拼接进 SQL；因此这里对 ID 做白名单校验，
+/// 防止 `GET /api/datasets/<恶意字符串>/rows` 这类路径参数造成 SQL 注入。
+pub fn table_name(dataset_id: &str) -> AppResult<String> {
+    let valid = !dataset_id.is_empty()
+        && dataset_id.len() <= 64
+        && dataset_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if !valid {
+        return Err(AppError::bad_request("非法的数据集 ID"));
+    }
+    Ok(format!("data_{dataset_id}"))
+}
+
+/// 每条连接都必须设置的 PRAGMA。
+///
+/// `foreign_keys` 与 `busy_timeout` 是连接级配置，不能只在初始化连接上设置。
+pub fn configure(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA foreign_keys=ON;
+         PRAGMA temp_store=MEMORY;",
+    )?;
+    Ok(())
 }
 
 pub fn open(path: &str) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    configure(&conn)?;
     Ok(conn)
+}
+
+/// 在事务中执行一组操作：闭包返回 Err 时自动回滚，避免部分写入产生脏数据。
+pub fn with_tx<T>(
+    conn: &mut Connection,
+    f: impl FnOnce(&Connection) -> AppResult<T>,
+) -> AppResult<T> {
+    let tx = conn.transaction().map_err(AppError::from)?;
+    let value = f(&tx)?;
+    tx.commit().map_err(AppError::from)?;
+    Ok(value)
 }
 
 pub fn init(conn: &Connection) -> Result<()> {
@@ -179,21 +231,70 @@ fn seed(conn: &Connection) -> Result<()> {
 
     // (标准名, 显示标签, 数据类型, 小数精度, 所属分组, 描述)
     let fields: &[(&str, &str, &str, i64, &str, &str)] = &[
-        ("身份证号", "身份证号", "text", 0, "grp_identity", "考生唯一标识，必填"),
+        (
+            "身份证号",
+            "身份证号",
+            "text",
+            0,
+            "grp_identity",
+            "考生唯一标识，必填",
+        ),
         ("姓名", "姓名", "text", 0, "grp_identity", "考生姓名"),
-        ("准考证号", "准考证号", "text", 0, "grp_identity", "准考证编号"),
+        (
+            "准考证号",
+            "准考证号",
+            "text",
+            0,
+            "grp_identity",
+            "准考证编号",
+        ),
         ("性别", "性别", "text", 0, "grp_identity", ""),
         ("手机号", "手机号", "text", 0, "grp_identity", ""),
-        ("照片", "照片", "image", 0, "grp_identity", "考生照片文件路径或文件名"),
+        (
+            "照片",
+            "照片",
+            "image",
+            0,
+            "grp_identity",
+            "考生照片文件路径或文件名",
+        ),
         ("出生日期", "出生日期", "date", 0, "grp_identity", ""),
         ("学历", "学历", "text", 0, "grp_identity", ""),
         ("毕业院校", "毕业院校", "text", 0, "grp_identity", ""),
         ("专业", "专业", "text", 0, "grp_identity", ""),
-        ("笔试成绩", "笔试成绩", "decimal", 2, "grp_score", "笔试原始分"),
-        ("面试成绩", "面试成绩", "decimal", 2, "grp_score", "面试原始分"),
-        ("总成绩", "总成绩", "decimal", 2, "grp_score", "加权后的综合成绩"),
+        (
+            "笔试成绩",
+            "笔试成绩",
+            "decimal",
+            2,
+            "grp_score",
+            "笔试原始分",
+        ),
+        (
+            "面试成绩",
+            "面试成绩",
+            "decimal",
+            2,
+            "grp_score",
+            "面试原始分",
+        ),
+        (
+            "总成绩",
+            "总成绩",
+            "decimal",
+            2,
+            "grp_score",
+            "加权后的综合成绩",
+        ),
         ("排名", "排名", "integer", 0, "grp_score", "按总成绩排名"),
-        ("报考岗位", "报考岗位", "text", 0, "grp_exam", "招聘岗位名称"),
+        (
+            "报考岗位",
+            "报考岗位",
+            "text",
+            0,
+            "grp_exam",
+            "招聘岗位名称",
+        ),
         ("考场", "考场", "text", 0, "grp_exam", "考场编号"),
         ("座位号", "座位号", "integer", 0, "grp_exam", "考场内座位号"),
         ("体检结果", "体检结果", "text", 0, "grp_exam", ""),

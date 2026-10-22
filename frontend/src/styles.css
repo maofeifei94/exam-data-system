@@ -2845,8 +2845,20 @@ textarea.token-input {
   border-radius: 50%;
   box-shadow: 0 4px 14px -4px rgba(8, 18, 14, 0.35);
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.82);
   transition: background 0.14s, color 0.14s, border-color 0.14s, transform 0.14s,
-    box-shadow 0.14s;
+    box-shadow 0.14s, opacity 0.14s;
+}
+
+/* 仅在鼠标悬停节点（或插入菜单仍然打开）时显示外侧的 + / 分支按钮 */
+.uml-node-wrap:hover .node-add,
+.uml-node-wrap:focus-within .node-add,
+.uml-node-wrap.menu-open .node-add {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
 }
 
 .node-add:hover {
@@ -3937,14 +3949,60 @@ textarea.token-input {
   white-space: nowrap;
 }
 
-/* ---------------- 功能区 ---------------- */
+/* ---------------- 一级菜单：选项卡 ---------------- */
+
+.tpl-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  flex: 0 0 auto;
+  padding: 0 8px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+
+.tpl-tab {
+  position: relative;
+  padding: 7px 16px 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.13s, background 0.13s;
+}
+
+.tpl-tab:hover {
+  color: var(--text);
+  background: var(--bg-sunken);
+}
+
+.tpl-tab.active {
+  color: var(--primary);
+}
+
+.tpl-tab.active::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  height: 2px;
+  background: var(--primary);
+  border-radius: 2px 2px 0 0;
+}
+
+/* ---------------- 二级菜单：功能区 ---------------- */
 
 .tpl-ribbon {
   display: flex;
   align-items: stretch;
   flex: 0 0 auto;
   gap: 0;
-  padding: 5px 6px;
+  min-height: 72px;
+  padding: 4px 6px 3px;
   overflow-x: auto;
   background: linear-gradient(180deg, var(--bg-elevated), var(--bg-zebra));
   border-bottom: 1px solid var(--border);
@@ -3953,32 +4011,86 @@ textarea.token-input {
 .tpl-ribbon-group {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 3px;
-  padding: 0 9px;
+  justify-content: space-between;
+  gap: 2px;
+  padding: 0 10px;
 }
 
 .tpl-ribbon-label {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  order: 2;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   color: var(--text-muted);
-  text-transform: uppercase;
+  text-align: center;
   white-space: nowrap;
 }
 
 .tpl-ribbon-items {
+  order: 1;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   white-space: nowrap;
 }
 
 .tpl-ribbon-sep {
   flex: 0 0 auto;
   width: 1px;
-  margin: 3px 2px;
+  margin: 5px 2px;
   background: var(--border);
+}
+
+.tpl-tool.big {
+  flex-direction: column;
+  gap: 3px;
+  min-width: 46px;
+  padding: 5px 7px 4px;
+  font-size: 10.5px;
+  justify-content: center;
+}
+
+.tpl-tool.big .tpl-tool-icon {
+  font-size: 17px;
+}
+
+.tpl-tool.active {
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-color: rgba(15, 118, 110, 0.26);
+}
+
+.tpl-ribbon-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tpl-ribbon-field > span {
+  color: var(--text-muted);
+}
+
+.tpl-ribbon-field select,
+.tpl-ribbon-field input {
+  height: 24px;
+  padding: 0 5px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+}
+
+.tpl-ribbon-field input[type='number'] {
+  width: 54px;
+}
+
+.tpl-ribbon-field.disabled {
+  opacity: 0.42;
 }
 
 .tpl-tool {
@@ -4146,6 +4258,47 @@ textarea.token-input {
 .tpl-canvas {
   background: var(--bg-sunken);
   touch-action: none;
+}
+
+.tpl-canvas-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tpl-canvas-stage .tpl-canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 选中元素选框：HTML 覆盖层，保证顶点拖拽手感稳定 */
+.tpl-selection {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.tpl-selection-frame {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid #2563eb;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2);
+}
+
+.tpl-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #ffffff;
+  border: 1.5px solid #2563eb;
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgba(15, 30, 60, 0.25);
+  pointer-events: auto;
+}
+
+.tpl-handle:hover {
+  background: #dbeafe;
 }
 
 .tpl-canvas.hand {

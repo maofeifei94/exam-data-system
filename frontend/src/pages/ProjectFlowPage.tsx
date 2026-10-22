@@ -34,14 +34,23 @@ import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
 import { TokenEditor } from '../components/TokenEditor';
+import {
+  NODE_H as FLOW_NODE_H,
+  NODE_W as FLOW_NODE_W,
+  PAD as FLOW_PAD,
+  computeLayout,
+  insertRelativeStep,
+  insertStepAt,
+  isMainStep,
+} from '../lib/flowModel';
+import type { InsertMode, Point } from '../lib/flowModel';
 import ImportPage from './ImportPage';
 import TemplatePage from './TemplatePage';
 
 // 节点尺寸与间距（像素）
-const NODE_W = 232;
-const NODE_H = 82;
-const GAP_Y = 74;
-const PAD = 32;
+const NODE_W = FLOW_NODE_W;
+const NODE_H = FLOW_NODE_H;
+const PAD = FLOW_PAD;
 
 const GROUP_COLORS: Record<string, string> = {
   校验: '#b45309',
@@ -84,80 +93,11 @@ function newStepId(): string {
   return `step_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
-
 interface FlowDraft {
   id: string | null;
   name: string;
   description: string;
   steps: FlowStep[];
-}
-
-/** 主链步骤：没有挂载父节点，或父节点已被删除。 */
-function isMainStep(step: FlowStep, steps: FlowStep[]): boolean {
-  return !step.branch_of || !steps.some((item) => item.id === step.branch_of);
-}
-
-/**
- * 统一计算节点坐标与 PDF 锚点位置。
- * 主链纵向排列；分支挂载在父节点右侧，同一父节点的分支按数组顺序纵向排成一条支链。
- */
-function computeLayout(steps: FlowStep[]): { positions: Map<string, Point>; pdfPos: Point } {
-  const positions = new Map<string, Point>();
-  const mainSteps = steps.filter((step) => isMainStep(step, steps));
-
-  mainSteps.forEach((step, index) => {
-    positions.set(
-      step.id,
-      step.pos
-        ? { x: step.pos.x, y: step.pos.y }
-        : { x: 110, y: PAD + NODE_H + GAP_Y + index * (NODE_H + GAP_Y) },
-    );
-  });
-
-  const lastMain = mainSteps[mainSteps.length - 1];
-  const lastPos = lastMain ? positions.get(lastMain.id) : null;
-  const pdfPos: Point = {
-    x: 110,
-    y: lastPos ? lastPos.y + NODE_H + GAP_Y : PAD + NODE_H + GAP_Y,
-  };
-
-  let pending = steps.filter((step) => !positions.has(step.id));
-  let guard = 0;
-  while (pending.length > 0 && guard < steps.length) {
-    guard += 1;
-    const next: FlowStep[] = [];
-    for (const step of pending) {
-      const parentPos = step.branch_of ? positions.get(step.branch_of) : null;
-      if (!parentPos) {
-        next.push(step);
-        continue;
-      }
-      const placedSiblings = steps.filter(
-        (item) => item.branch_of === step.branch_of && positions.has(item.id),
-      ).length;
-      positions.set(
-        step.id,
-        step.pos
-          ? { x: step.pos.x, y: step.pos.y }
-          : {
-              x: parentPos.x + NODE_W + 150,
-              y: parentPos.y + placedSiblings * (NODE_H + 30),
-            },
-      );
-    }
-    pending = next;
-  }
-
-  // 极端情况下（父节点形成环）把剩余节点放在画布右侧，保证可见。
-  pending.forEach((step, index) => {
-    positions.set(step.id, { x: 110 + NODE_W + 150, y: PAD + index * (NODE_H + 30) });
-  });
-
-  return { positions, pdfPos };
 }
 
 function edgePath(from: Point, to: Point): string {
@@ -209,8 +149,8 @@ export default function ProjectFlowPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [validateResult, setValidateResult] = useState<FlowValidateResult | null>(null);
-  const [hoverId, setHoverId] = useState<string | null>(null);
-  const hoverTimer = useRef<number | null>(null);
+  /** 同时只打开一个节点的插入菜单，选中菜单项后立即关闭，避免子菜单残留 */
+  const [addMenu, setAddMenu] = useState<{ stepId: string; mode: InsertMode } | null>(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -280,30 +220,6 @@ export default function ProjectFlowPage() {
     return map;
   }, [validateResult]);
 
-  // hover 留出缓冲时间：指针从节点移到外侧加号、或移入下拉菜单时，不会立即丢失 hover 状态。
-  const showNodeHover = (id: string) => {
-    if (hoverTimer.current !== null) {
-      window.clearTimeout(hoverTimer.current);
-      hoverTimer.current = null;
-    }
-    setHoverId(id);
-  };
-
-  const hideNodeHover = () => {
-    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = window.setTimeout(() => {
-      hoverTimer.current = null;
-      setHoverId(null);
-    }, 240);
-  };
-
-  useEffect(
-    () => () => {
-      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
-    },
-    [],
-  );
-
   const validateErrors = validateResult?.errors ?? [];
 
   // 任一环节增删改后立即重新推演数据流，保持流程图上的字段快照实时更新。
@@ -330,6 +246,26 @@ export default function ProjectFlowPage() {
 
   const layout = useMemo(() => computeLayout(draft.steps), [draft.steps]);
   const { positions, pdfPos } = layout;
+
+  // 新增分支可能落在画布右侧，把选中的新节点滚动到可视区，避免“插入成功但看不见”。
+  useEffect(() => {
+    if (!selectedId) return;
+    const host = hostRef.current;
+    const p = positions.get(selectedId);
+    if (!host || !p) return;
+    const right = p.x + NODE_W;
+    if (right > host.scrollLeft + host.clientWidth) {
+      host.scrollLeft = right - host.clientWidth + PAD;
+    } else if (p.x < host.scrollLeft) {
+      host.scrollLeft = Math.max(0, p.x - PAD);
+    }
+    const bottom = p.y + NODE_H;
+    if (bottom > host.scrollTop + host.clientHeight) {
+      host.scrollTop = bottom - host.clientHeight + PAD;
+    } else if (p.y < host.scrollTop) {
+      host.scrollTop = Math.max(0, p.y - PAD);
+    }
+  }, [selectedId, positions]);
 
   const canvasSizeComputed = useMemo(() => {
     let maxX = canvasSize.w;
@@ -415,43 +351,31 @@ export default function ProjectFlowPage() {
   // ------------------------------------------------------------------
   // 草稿操作
   // ------------------------------------------------------------------
-  const addStep = (type: string, index?: number, pos?: Point, extra?: Partial<FlowStep>) => {
+  const buildStep = (type: string, pos?: Point): FlowStep => {
     const def = operatorMap.get(type);
-    const step: FlowStep = {
+    return {
       id: newStepId(),
       operator: type,
       label: def?.label ?? type,
       enabled: true,
       params: defaultParamsFor(def),
       pos,
-      ...extra,
     };
-    setDraft((prev) => {
-      const next = [...prev.steps];
-      const at = index === undefined ? next.length : Math.min(Math.max(index, 0), next.length);
-      next.splice(at, 0, step);
-      return { ...prev, steps: next };
-    });
+  };
+
+  const addStep = (type: string, index?: number, pos?: Point) => {
+    const step = buildStep(type, pos);
+    setDraft((prev) => ({ ...prev, steps: insertStepAt(prev.steps, step, index) }));
     setSelectedId(step.id);
+    setAddMenu(null);
   };
 
   /** 载入某个节点的「前 / 后 / 分支」插入位置。 */
-  const insertRelative = (step: FlowStep, type: string, mode: 'before' | 'after' | 'branch') => {
-    const index = draft.steps.findIndex((item) => item.id === step.id);
-    if (index < 0) {
-      addStep(type);
-      return;
-    }
-    if (mode === 'branch') {
-      addStep(type, index + 1, undefined, {
-        branch_of: step.id,
-        branch: `branch_${step.id}`,
-      });
-      return;
-    }
-    // 在分支节点内部前后插入时，继续留在同一条支链。
-    const extra = step.branch_of ? { branch_of: step.branch_of, branch: step.branch } : undefined;
-    addStep(type, mode === 'before' ? index : index + 1, undefined, extra);
+  const insertRelative = (step: FlowStep, type: string, mode: InsertMode) => {
+    const created = buildStep(type);
+    setDraft((prev) => ({ ...prev, steps: insertRelativeStep(prev.steps, created, step.id, mode) }));
+    setSelectedId(created.id);
+    setAddMenu(null);
   };
 
   const updateStep = (id: string, patch: Partial<FlowStep>) => {
@@ -762,6 +686,54 @@ export default function ProjectFlowPage() {
     }
   };
 
+  /**
+   * 节点外侧的插入按钮。菜单采用受控 open：
+   * 选中任意菜单项后立即关闭，避免 antd 子菜单浮层残留在画布上。
+   */
+  const renderAddMenu = (
+    step: FlowStep,
+    mode: InsertMode,
+    className: string,
+    symbol: string,
+    title: string,
+  ) => {
+    const open = addMenu?.stepId === step.id && addMenu.mode === mode;
+    return (
+      <Dropdown
+        trigger={['click']}
+        destroyOnHidden
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (nextOpen) {
+            setAddMenu({ stepId: step.id, mode });
+            return;
+          }
+          setAddMenu((prev) =>
+            prev && prev.stepId === step.id && prev.mode === mode ? null : prev,
+          );
+        }}
+        menu={{
+          items: insertMenu(mode),
+          onClick: ({ key }) => {
+            const type = key.split(':')[1];
+            setAddMenu(null);
+            if (type) insertRelative(step, type, mode);
+          },
+        }}
+      >
+        <button
+          type="button"
+          className={`node-add ${className}`}
+          title={title}
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {symbol}
+        </button>
+      </Dropdown>
+    );
+  };
+
   if (!currentProjectId) {
     return (
       <div className="page">
@@ -969,7 +941,6 @@ export default function ProjectFlowPage() {
                 const flow = flowByStep.get(index);
                 const stepErrors = flow?.errors ?? [];
                 const inBranch = !isMainStep(step, draft.steps);
-                const showAdd = hoverId === step.id || isSelected;
                 const flowTip = flow
                   ? `输入字段（${flow.input_fields.length}）：${
                       flow.input_fields.join('、') || '无'
@@ -981,10 +952,10 @@ export default function ProjectFlowPage() {
                 return (
                   <div
                     key={step.id}
-                    className={`uml-node-wrap ${showAdd ? 'is-hover' : ''}`}
+                    className={`uml-node-wrap${
+                      addMenu?.stepId === step.id ? ' menu-open' : ''
+                    }`}
                     style={{ left: p.x, top: p.y, width: NODE_W, height: NODE_H }}
-                    onMouseEnter={() => showNodeHover(step.id)}
-                    onMouseLeave={hideNodeHover}
                   >
                     <Dropdown
                       trigger={['contextMenu']}
@@ -1041,63 +1012,9 @@ export default function ProjectFlowPage() {
                       </div>
                     </Dropdown>
 
-                    <Dropdown
-                      trigger={['click']}
-                      menu={{
-                        items: insertMenu('before'),
-                        onClick: ({ key }) => {
-                          const type = key.split(':')[1];
-                          if (type) insertRelative(step, type, 'before');
-                        },
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="node-add before"
-                        title="在此节点前插入步骤"
-                        onPointerDown={(event) => event.stopPropagation()}
-                      >
-                        +
-                      </button>
-                    </Dropdown>
-                    <Dropdown
-                      trigger={['click']}
-                      menu={{
-                        items: insertMenu('after'),
-                        onClick: ({ key }) => {
-                          const type = key.split(':')[1];
-                          if (type) insertRelative(step, type, 'after');
-                        },
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="node-add after"
-                        title="在此节点后插入步骤"
-                        onPointerDown={(event) => event.stopPropagation()}
-                      >
-                        +
-                      </button>
-                    </Dropdown>
-                    <Dropdown
-                      trigger={['click']}
-                      menu={{
-                        items: insertMenu('branch'),
-                        onClick: ({ key }) => {
-                          const type = key.split(':')[1];
-                          if (type) insertRelative(step, type, 'branch');
-                        },
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="node-add branch"
-                        title="从该节点添加分支步骤"
-                        onPointerDown={(event) => event.stopPropagation()}
-                      >
-                        ⑂
-                      </button>
-                    </Dropdown>
+                    {renderAddMenu(step, 'before', 'before', '+', '在此节点前插入步骤')}
+                    {renderAddMenu(step, 'after', 'after', '+', '在此节点后插入步骤')}
+                    {renderAddMenu(step, 'branch', 'branch', '⑂', '从该节点添加分支步骤')}
                   </div>
                 );
               })}

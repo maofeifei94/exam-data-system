@@ -12,11 +12,49 @@ const KEYWORDS: &[&str] = &[
 ];
 
 const FUNCTIONS: &[&str] = &[
-    "ABS", "ROUND", "MIN", "MAX", "COALESCE", "IFNULL", "NULLIF", "IIF", "LENGTH", "LOWER",
-    "UPPER", "TRIM", "LTRIM", "RTRIM", "SUBSTR", "REPLACE", "INSTR", "PRINTF", "FORMAT", "CAST",
-    "CEIL", "CEILING", "FLOOR", "SQRT", "POWER", "POW", "MOD", "INT", "REAL", "TEXT", "SUM",
-    "AVG", "COUNT", "TOTAL", "DATE", "DATETIME", "STRFTIME", "JULIANDAY", "TYPEOF", "HEX",
-    "ROUNDUP", "GREATEST", "LEAST",
+    "ABS",
+    "ROUND",
+    "MIN",
+    "MAX",
+    "COALESCE",
+    "IFNULL",
+    "NULLIF",
+    "IIF",
+    "LENGTH",
+    "LOWER",
+    "UPPER",
+    "TRIM",
+    "LTRIM",
+    "RTRIM",
+    "SUBSTR",
+    "REPLACE",
+    "INSTR",
+    "PRINTF",
+    "FORMAT",
+    "CAST",
+    "CEIL",
+    "CEILING",
+    "FLOOR",
+    "SQRT",
+    "POWER",
+    "POW",
+    "MOD",
+    "INT",
+    "REAL",
+    "TEXT",
+    "SUM",
+    "AVG",
+    "COUNT",
+    "TOTAL",
+    "DATE",
+    "DATETIME",
+    "STRFTIME",
+    "JULIANDAY",
+    "TYPEOF",
+    "HEX",
+    "ROUNDUP",
+    "GREATEST",
+    "LEAST",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,7 +133,9 @@ fn tokenize(src: &str) -> Result<Vec<(Tok, usize)>, String> {
                 out.push((Tok::Comma, start));
                 i += 1;
             }
-            _ if c.is_ascii_digit() || (c == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()) => {
+            _ if c.is_ascii_digit()
+                || (c == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()) =>
+            {
                 let mut n = String::new();
                 while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                     n.push(chars[i]);
@@ -114,7 +154,10 @@ fn tokenize(src: &str) -> Result<Vec<(Tok, usize)>, String> {
             _ => {
                 let two: String = chars[i..(i + 2).min(chars.len())].iter().collect();
                 let two_upper = two.to_uppercase();
-                if matches!(two_upper.as_str(), ">=" | "<=" | "<>" | "!=" | "==" | "&&" | "||") {
+                if matches!(
+                    two_upper.as_str(),
+                    ">=" | "<=" | "<>" | "!=" | "==" | "&&" | "||"
+                ) {
                     out.push((Tok::Op(two_upper.clone()), start));
                     i += 2;
                 } else if "+-*/%=<>!".contains(c) {
@@ -159,7 +202,8 @@ pub fn compile(expr: &str, columns: &[String]) -> Result<String, String> {
                 if KEYWORDS.contains(&up.as_str()) {
                     parts.push(up);
                 } else if FUNCTIONS.contains(&up.as_str()) {
-                    let next_is_paren = matches!(toks.get(idx + 1).map(|x| &x.0), Some(Tok::LParen));
+                    let next_is_paren =
+                        matches!(toks.get(idx + 1).map(|x| &x.0), Some(Tok::LParen));
                     if !next_is_paren {
                         return Err(format!("函数 {up} 后面缺少 ("));
                     }

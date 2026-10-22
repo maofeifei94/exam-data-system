@@ -31,7 +31,13 @@ fn with_placeholder(mut p: OperatorParam, ph: &str) -> OperatorParam {
     p
 }
 
-fn def(otype: &str, label: &str, group: &str, description: &str, params: Vec<OperatorParam>) -> OperatorDef {
+fn def(
+    otype: &str,
+    label: &str,
+    group: &str,
+    description: &str,
+    params: Vec<OperatorParam>,
+) -> OperatorDef {
     OperatorDef {
         otype: otype.to_string(),
         label: label.to_string(),
@@ -189,7 +195,9 @@ pub fn find(otype: &str) -> Option<OperatorDef> {
 }
 
 pub fn label_of(otype: &str) -> String {
-    find(otype).map(|o| o.label).unwrap_or_else(|| otype.to_string())
+    find(otype)
+        .map(|o| o.label)
+        .unwrap_or_else(|| otype.to_string())
 }
 
 pub fn default_params(otype: &str) -> Value {
