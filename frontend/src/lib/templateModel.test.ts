@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { PdfTemplate, TemplateElement } from '../api/types';
 import {
   DEFAULT_MATRIX,
+  DEFAULT_PHOTO_EXTS,
+  DEFAULT_PHOTO_NAME,
   appendChild,
   contentSizeMm,
   createElement,
@@ -9,6 +11,7 @@ import {
   findPath,
   isContainer,
   normalizeTemplate,
+  normalizeTree,
   pageSizeMm,
   removeElement,
   resizeRect,
@@ -214,9 +217,11 @@ describe('createElement', () => {
     expect(matrix.border).toBe(true);
   });
 
-  it('图片默认绑定照片字段', () => {
+  it('图片默认使用照片名模板与候选后缀', () => {
     const image = createElement('image');
-    expect(image.field).toBe('照片');
+    expect(image.photo_name).toBe(DEFAULT_PHOTO_NAME);
+    expect(image.photo_exts).toEqual(DEFAULT_PHOTO_EXTS);
+    expect(image.photo_dir).toBe('');
     expect(image.w_mm).toBe(26);
     expect(image.h_mm).toBe(32);
   });
@@ -224,6 +229,31 @@ describe('createElement', () => {
   it('允许覆盖初始位置与尺寸', () => {
     const text = createElement('text', { x: 3, y: 4, w: 50, h: 9 });
     expect(text).toMatchObject({ x_mm: 3, y_mm: 4, w_mm: 50, h_mm: 9 });
+  });
+});
+
+describe('照片元素迁移', () => {
+  it('旧模板的 field 绑定迁移为名称模板并补全后缀', () => {
+    const [image] = normalizeTree([
+      element('old', { type: 'image', field: '准考证号', photo_name: undefined }),
+    ]);
+    expect(image.photo_name).toBe('{{准考证号}}');
+    expect(image.photo_exts).toEqual(DEFAULT_PHOTO_EXTS);
+    expect(image.photo_dir).toBe('');
+  });
+
+  it('已配置的照片属性保持不变', () => {
+    const [image] = normalizeTree([
+      element('img', {
+        type: 'image',
+        photo_dir: '/data/photos',
+        photo_name: 'zp_{{身份证号}}',
+        photo_exts: ['png'],
+      }),
+    ]);
+    expect(image.photo_dir).toBe('/data/photos');
+    expect(image.photo_name).toBe('zp_{{身份证号}}');
+    expect(image.photo_exts).toEqual(['png']);
   });
 });
 

@@ -366,7 +366,7 @@ pub fn count_rows(conn: &Connection, id: &str) -> AppResult<i64> {
     Ok(n)
 }
 
-fn json_value(v: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
+pub(crate) fn json_value(v: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
     use rusqlite::types::ValueRef;
     match v {
         ValueRef::Null => serde_json::Value::Null,

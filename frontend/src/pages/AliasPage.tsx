@@ -29,7 +29,6 @@ const DTYPES: ColumnDtype[] = [
   'date',
   'datetime',
   'boolean',
-  'image',
 ];
 
 const DTYPE_LABELS: Record<string, string> = {
@@ -40,7 +39,6 @@ const DTYPE_LABELS: Record<string, string> = {
   date: '日期',
   datetime: '日期时间',
   boolean: '布尔',
-  image: '图片',
 };
 
 interface AliasCard {
@@ -181,6 +179,14 @@ export default function AliasPage() {
         description: next.description,
       });
       setFields((prev) => prev.map((item) => (item.id === saved.id ? saved : item)));
+      // 重命名标准字段时同步别名归属，避免旧名卡片残留、新名卡片凭空多出来。
+      if (field.name !== saved.name) {
+        setAliases((prev) =>
+          prev.map((item) =>
+            item.standard === field.name ? { ...item, standard: saved.name } : item,
+          ),
+        );
+      }
     } catch (err) {
       setFields((prev) => prev.map((item) => (item.id === field.id ? field : item)));
       show(err instanceof Error ? err.message : '保存字段失败', 'error');

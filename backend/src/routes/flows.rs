@@ -2,8 +2,8 @@ use crate::db::{self, new_id, now};
 use crate::engine;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DuplicateInput, Flow, FlowInput, FlowRun, FlowStep, RunFlowInput, RunResult, ValidateFlowInput,
-    ValidateResult,
+    DuplicateInput, Flow, FlowInput, FlowRun, FlowStep, RunFlowInput, RunResult, StepData,
+    ValidateFlowInput, ValidateResult,
 };
 use crate::state::AppState;
 use crate::store;
@@ -283,6 +283,38 @@ pub async fn runs(
         })
         .await?;
     Ok(Json(runs))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StepRowsQuery {
+    pub dataset_id: String,
+    #[serde(default)]
+    pub offset: i64,
+    #[serde(default = "default_step_limit")]
+    pub limit: i64,
+}
+
+fn default_step_limit() -> i64 {
+    50
+}
+
+/// 「数据流」栏目：查看流程执行到某个节点之后的数据。
+///
+/// `index` 为 0 基步骤下标；等于流程步骤总数时返回最终输出。
+/// 该接口只编译并查询，不写入任何数据集。
+pub async fn step_rows(
+    State(state): State<Arc<AppState>>,
+    Path((id, index)): Path<(String, i64)>,
+    Query(q): Query<StepRowsQuery>,
+) -> AppResult<Json<StepData>> {
+    let dataset_id = q.dataset_id.trim().to_string();
+    if dataset_id.is_empty() {
+        return Err(AppError::bad_request("必须指定 dataset_id"));
+    }
+    let data = state
+        .db(move |conn| engine::preview_step(conn, &id, &dataset_id, index, q.offset, q.limit))
+        .await?;
+    Ok(Json(data))
 }
 
 pub async fn validate(Json(input): Json<ValidateFlowInput>) -> AppResult<Json<ValidateResult>> {

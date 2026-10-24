@@ -19,8 +19,13 @@ use std::sync::Arc;
 
 const FIELD_COLS: &str = "id, name, label, dtype, precision, group_id, description, system";
 
-/// 允许的字段类型。非法类型会导致数据集物理列类型推断异常，统一在这里拦掉。
-const ALLOWED_DTYPES: &[&str] = &["text", "number", "integer", "decimal", "date", "image"];
+/// 允许的字段类型。照片不作为数据类型：照片文件名按文本存储，
+/// 由 PDF 模板的照片元素负责「目录 + 名称 + 后缀」解析。
+///
+/// number 为历史类型，保留兼容；新数据统一用 decimal / integer。
+const ALLOWED_DTYPES: &[&str] = &[
+    "text", "number", "integer", "decimal", "percent", "date", "datetime", "boolean",
+];
 
 fn row_to_field(r: &rusqlite::Row<'_>) -> rusqlite::Result<StandardField> {
     Ok(StandardField {
@@ -147,6 +152,16 @@ pub async fn update_standard(
     let field = state
         .db(move |conn| {
             db::with_tx(conn, |tx| {
+                let old = fetch_field(tx, &id)?;
+                if old.name != name {
+                    // 重命名标准字段必须同步别名表的引用，否则别名卡片会「留在旧名上」，
+                    // 前端看起来就像新建了一个字段。
+                    tx.execute(
+                        "UPDATE alias_mappings SET standard = ?1, updated_at = ?2
+                         WHERE standard = ?3",
+                        params![name, now(), old.name],
+                    )?;
+                }
                 tx.execute(
                     "UPDATE standard_fields
                      SET name = ?1, label = ?2, dtype = ?3, precision = ?4, group_id = ?5,
@@ -443,7 +458,10 @@ mod tests {
     fn dtype_is_normalized_and_whitelisted() {
         assert_eq!(normalize_dtype("").expect("default"), "text");
         assert_eq!(normalize_dtype(" NUMBER ").expect("upper"), "number");
+        assert_eq!(normalize_dtype("percent").expect("percent"), "percent");
         let err = normalize_dtype("blob").expect_err("illegal dtype");
         assert_eq!(err.code, "validation_error");
+        // 照片不再是数据类型，必须明确拒绝
+        assert!(normalize_dtype("image").is_err());
     }
 }

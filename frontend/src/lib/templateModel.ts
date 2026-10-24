@@ -93,7 +93,16 @@ const BASE_ELEMENT: Omit<TemplateElement, 'id' | 'type' | 'x_mm' | 'y_mm' | 'w_m
   border: false,
   border_radius_mm: 0,
   children: [],
+  photo_dir: '',
+  photo_name: '',
+  photo_exts: [],
 };
+
+/** 照片元素的默认候选后缀，按顺序查找。 */
+export const DEFAULT_PHOTO_EXTS = ['jpg', 'jpeg', 'png'];
+
+/** 照片元素默认按「照片」字段取文件名。 */
+export const DEFAULT_PHOTO_NAME = '{{照片}}';
 
 export function createElement(
   type: ElementType,
@@ -119,7 +128,10 @@ export function createElement(
         ...base,
         w_mm: options.w ?? 26,
         h_mm: options.h ?? 32,
-        field: options.field ?? '照片',
+        field: '',
+        photo_dir: '',
+        photo_name: DEFAULT_PHOTO_NAME,
+        photo_exts: [...DEFAULT_PHOTO_EXTS],
         border: true,
       };
     case 'field':
@@ -158,6 +170,19 @@ export function normalizeTree(elements: TemplateElement[] | undefined): Template
         matrix: { ...mx, rows, cols, gap_x_mm: 0, gap_y_mm: 0 },
         children: normalizeTree(element.children),
         page_level: false,
+      };
+    }
+    if (element.type === 'image') {
+      // 旧模板用 field 绑定单个字段取照片文件名；新结构改为名称模板 + 候选后缀。
+      const legacyField = (element.field ?? '').trim();
+      const photoName = (element.photo_name ?? '').trim();
+      return {
+        ...element,
+        children: normalizeTree(element.children),
+        page_level: false,
+        photo_dir: element.photo_dir ?? '',
+        photo_name: photoName || (legacyField ? `{{${legacyField}}}` : DEFAULT_PHOTO_NAME),
+        photo_exts: element.photo_exts?.length ? element.photo_exts : [...DEFAULT_PHOTO_EXTS],
       };
     }
     return {
@@ -312,7 +337,10 @@ export function appendChild(
 
 export function elementLabel(element: TemplateElement): string {
   if (element.type === 'matrix') return `矩阵 ${element.matrix?.rows ?? 0}×${element.matrix?.cols ?? 0}`;
-  if (element.type === 'image') return `图片 · ${element.field || '照片'}`;
+  if (element.type === 'image') {
+    const name = (element.photo_name ?? element.field ?? '').replace(/\{\{?([^}]+)\}?\}/g, '$1');
+    return `图片 · ${name || '照片'}`;
+  }
   if (element.type === 'rect') return '矩形框';
   if (element.type === 'line') return '线条';
   if (element.type === 'field') return `字段 ${element.field || ''}`;

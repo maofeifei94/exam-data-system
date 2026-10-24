@@ -67,6 +67,7 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/api/flows/:id/run", post(flows::run))
         .route("/api/flows/:id/runs", get(flows::runs))
+        .route("/api/flows/:id/steps/:index/rows", get(flows::step_rows))
         .route("/api/flows/:id/duplicate", post(flows::duplicate))
         // PDF 模板
         .route("/api/pdf-templates", get(pdf::list).post(pdf::create))

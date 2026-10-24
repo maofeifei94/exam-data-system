@@ -9,17 +9,19 @@ export type ColumnDtype =
   | 'percent'
   | 'date'
   | 'datetime'
-  | 'boolean'
-  | 'image';
+  | 'boolean';
 
 /** 需要「精度（保留小数位）」的类型 */
 export const PRECISION_DTYPES: ColumnDtype[] = ['decimal', 'percent'];
 
-/** 兼容后端历史数据里把数值统一记成 number 的情况 */
+/**
+ * 兼容后端历史数据里把数值统一记成 number 的情况。
+ * 照片已不再是数据类型：历史 image 字段按文本处理。
+ */
 export function normalizeDtype(dtype: string | undefined): ColumnDtype {
-  if (!dtype || dtype === 'number') {
-    return dtype === 'number' ? 'decimal' : 'text';
-  }
+  if (!dtype) return 'text';
+  if (dtype === 'number') return 'decimal';
+  if (dtype === 'image') return 'text';
   return dtype as ColumnDtype;
 }
 
@@ -131,6 +133,16 @@ export interface RowPage {
   columns: DatasetColumn[];
   rows: (string | number | null)[][];
   total: number;
+}
+
+/**
+ * 流程中某个节点的数据快照。
+ * `step_index` 等于流程步骤总数时表示整条流程的最终输出。
+ */
+export interface FlowStepData extends RowPage {
+  step_index: number;
+  label: string;
+  operator: string;
 }
 
 export interface OperatorParam {
@@ -285,6 +297,15 @@ export interface TemplateElement {
   matrix?: MatrixSetup;
   /** 兼容旧模板：整页元素标记，新结构不再使用 */
   page_level?: boolean;
+  /** type=image：照片所在目录，空则回退到渲染请求的 photo_dir */
+  photo_dir?: string;
+  /** type=image：照片名模板，支持 `{{字段}}` / 固定字符串组合 */
+  photo_name?: string;
+  /**
+   * type=image：候选后缀（不带点），按顺序查找。
+   * 例如 ['jpg', 'png'] 会依次尝试 `名称.jpg`、`名称.png`。
+   */
+  photo_exts?: string[];
 }
 
 export interface PdfTemplate {

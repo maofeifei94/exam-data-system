@@ -1818,6 +1818,29 @@ body {
   cursor: pointer;
 }
 
+/* PDF 模板：照片元素的目录选择与后缀多选 */
+.photo-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.photo-dir-row input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.photo-dir-row .btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+.photo-ext-select {
+  width: 100%;
+  min-height: 86px;
+  padding: 4px;
+}
+
 /* ====================================================================== */
 /* 提示条 / 运行结果                                                       */
 /* ====================================================================== */
@@ -4458,3 +4481,134 @@ textarea.token-input {
 
 
 
+
+/* ---------------------- 数据流：节点树 + 节点数据 ---------------------- */
+.dataflow-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dataflow-layout > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+.dataflow-tree {
+  overflow: auto;
+  padding: 16px 14px;
+}
+
+.dataflow-tree .card-title {
+  margin-bottom: 10px;
+}
+
+.dataflow-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dataflow-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.dataflow-node:hover {
+  background: var(--bg-sunken);
+}
+
+.dataflow-node.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.dataflow-node.disabled {
+  opacity: 0.6;
+}
+
+.dataflow-node.anchor .dataflow-node-label {
+  font-weight: 650;
+}
+
+.dataflow-caret {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dataflow-caret.empty {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.dataflow-node-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dataflow-node-label {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dataflow-node-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dataflow-node-index {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.dataflow-node.active .dataflow-node-index,
+.dataflow-node.active .dataflow-node-meta {
+  color: var(--primary);
+}
+
+.dataflow-pdf-card {
+  flex: 0 0 auto;
+}
+
+.dataflow-pdf-frame {
+  width: 100%;
+  height: 320px;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+@media (max-width: 1100px) {
+  .dataflow-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}

@@ -19,15 +19,6 @@ pub fn name_forces_text(name: &str) -> bool {
     HINTS.iter().any(|h| name.contains(h))
 }
 
-pub fn looks_like_image(v: &str) -> bool {
-    let lower = v.to_ascii_lowercase();
-    [
-        ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tif", ".tiff",
-    ]
-    .iter()
-    .any(|e| lower.ends_with(e))
-}
-
 /// 安全数字：能被 f64 解析，且不会因 REAL 亲和性而丢失信息。
 fn safe_number(v: &str) -> bool {
     let t = v.trim();
@@ -62,9 +53,6 @@ pub fn infer_dtype(name: &str, values: &[String]) -> String {
         .collect();
     if sample.is_empty() {
         return "text".to_string();
-    }
-    if sample.iter().all(|v| looks_like_image(v)) {
-        return "image".to_string();
     }
     if sample.iter().all(|v| safe_number(v)) {
         return "number".to_string();

@@ -198,6 +198,16 @@ fn migrate(conn: &Connection) -> Result<()> {
     for (table, col, decl) in columns {
         ensure_column(conn, table, col, decl)?;
     }
+    // 照片已从「数据类型」中移除：历史字段统一按文本存储，
+    // 照片文件解析交给 PDF 模板的照片元素。
+    conn.execute(
+        "UPDATE standard_fields SET dtype = 'text' WHERE dtype = 'image'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE dataset_columns SET dtype = 'text' WHERE dtype = 'image'",
+        [],
+    )?;
     Ok(())
 }
 
@@ -253,10 +263,10 @@ fn seed(conn: &Connection) -> Result<()> {
         (
             "照片",
             "照片",
-            "image",
+            "text",
             0,
             "grp_identity",
-            "考生照片文件路径或文件名",
+            "考生照片文件名，由 PDF 照片元素按目录+名称+后缀解析",
         ),
         ("出生日期", "出生日期", "date", 0, "grp_identity", ""),
         ("学历", "学历", "text", 0, "grp_identity", ""),

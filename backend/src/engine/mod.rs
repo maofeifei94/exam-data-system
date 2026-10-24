@@ -13,13 +13,16 @@ pub mod operators;
 use crate::db::{self, new_id, now};
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DatasetColumn, FlowStep, RunLogEntry, RunResult, StepFlow, ValidateError, ValidateResult,
+    DatasetColumn, FlowStep, RunLogEntry, RunResult, StepData, StepFlow, ValidateError,
+    ValidateResult,
 };
 use crate::store;
 use rusqlite::Connection;
 use serde_json::Value;
 
 const PREVIEW_ROWS: i64 = 200;
+/// 节点数据预览单次最多返回的行数，防止误传超大 limit 拖垮接口。
+const MAX_PREVIEW_ROWS: i64 = 2000;
 
 struct Compiler<'a> {
     conn: &'a Connection,
@@ -917,6 +920,115 @@ pub fn run_flow(conn: &mut Connection, flow_id: &str, dataset_id: &str) -> AppRe
     })
 }
 
+/// 步骤的展示名：优先用户自定义标签，否则回退到操作符中文名。
+fn describe_step(step: &FlowStep) -> String {
+    if step.label.trim().is_empty() {
+        operators::label_of(&step.operator)
+    } else {
+        step.label.clone()
+    }
+}
+
+/// 预览流程执行到指定节点之后的数据，不落库、不改动任何数据集。
+///
+/// `step_index` 为 0 基下标；等于步骤总数时返回整条流程的最终输出
+/// （包含 `sort` / `limit` 步骤产生的排序与截断）。这样「数据流」栏目
+/// 可以逐个节点查阅中间结果，而不会像 `run_flow` 那样产生新的输出数据集。
+pub fn preview_step(
+    conn: &Connection,
+    flow_id: &str,
+    dataset_id: &str,
+    step_index: i64,
+    offset: i64,
+    limit: i64,
+) -> AppResult<StepData> {
+    let (_, steps) = load_flow(conn, flow_id)?;
+    if steps.is_empty() {
+        return Err(AppError::bad_request("流程没有任何步骤"));
+    }
+    // 数据集必须存在；缺失时返回明确的 404，而不是一张空表。
+    store::get_dataset(conn, dataset_id)?;
+
+    let last = steps.len() as i64;
+    if step_index < 0 || step_index > last {
+        return Err(AppError::bad_request(format!(
+            "节点序号 {step_index} 超出范围（0..{last}）"
+        )));
+    }
+
+    // 节点 i 的数据 = 执行完第 i 步之后的数据；终点节点执行完全部步骤。
+    let upto = (step_index + 1).min(last) as usize;
+    let mut c = Compiler::new(conn, dataset_id)?;
+    for (idx, step) in steps.iter().enumerate().take(upto) {
+        if !step.enabled {
+            continue;
+        }
+        c.step(idx as i64, step).map_err(|msg| {
+            AppError::bad_request(format!(
+                "第 {} 步「{}」执行失败：{msg}",
+                idx + 1,
+                describe_step(step)
+            ))
+        })?;
+    }
+
+    let (label, operator) = if step_index as usize == steps.len() {
+        ("流程输出".to_string(), "output".to_string())
+    } else {
+        let step = &steps[step_index as usize];
+        (describe_step(step), step.operator.clone())
+    };
+
+    // `limit` 步骤会限制最终行数，分页总数同样按该上限截断。
+    let count = c
+        .count_current()
+        .map_err(|msg| AppError::bad_request(format!("统计节点数据失败：{msg}")))?;
+    let total = match c.limit {
+        Some(n) => count.min(n.max(0)),
+        None => count,
+    };
+
+    let off = offset.max(0);
+    let ask = limit.clamp(0, MAX_PREVIEW_ROWS);
+    let take = match c.limit {
+        Some(n) => (n - off).max(0).min(ask),
+        None => ask,
+    };
+
+    let mut base = format!("SELECT * FROM {}", c.cur);
+    if let Some(order) = &c.order_by {
+        base.push_str(&format!(" ORDER BY {order}"));
+    }
+    let page_sql = c.with_ctes(&format!("{base} LIMIT {take} OFFSET {off}"));
+
+    let columns = c.columns.clone();
+    let ncol = columns.len();
+    let mut stmt = conn.prepare(&page_sql)?;
+    let mut rows = stmt.query([])?;
+    let mut out: Vec<Vec<serde_json::Value>> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let actual = row.as_ref().column_count();
+        let mut vals = Vec::with_capacity(ncol);
+        for i in 0..ncol {
+            vals.push(if i < actual {
+                store::json_value(row.get_ref(i)?)
+            } else {
+                serde_json::Value::Null
+            });
+        }
+        out.push(vals);
+    }
+
+    Ok(StepData {
+        step_index,
+        label,
+        operator,
+        columns,
+        rows: out,
+        total,
+    })
+}
+
 fn load_flow(conn: &Connection, flow_id: &str) -> AppResult<(String, Vec<FlowStep>)> {
     let mut stmt = conn.prepare("SELECT name, steps FROM flows WHERE id = ?1")?;
     let mut rows = stmt.query(rusqlite::params![flow_id])?;
@@ -1264,6 +1376,73 @@ mod tests {
             )
             .expect("run row");
         assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn preview_step_returns_rows_for_each_node() {
+        let (conn, ds_id) = setup();
+        insert_flow(
+            &conn,
+            "f_prev",
+            json!([
+                { "id": "s1", "operator": "require_fields",
+                  "params": { "fields": ["姓名", "笔试成绩", "面试成绩"] } },
+                { "id": "s2", "operator": "compute",
+                  "params": { "out": "总成绩", "expr": "[笔试成绩]*0.6 + [面试成绩]*0.4", "decimals": 2 } },
+                { "id": "s3", "operator": "rank",
+                  "params": { "by": "总成绩", "order": "desc", "out": "排名" } },
+                { "id": "s4", "operator": "sort", "params": { "by": "总成绩", "order": "desc" } },
+                { "id": "s5", "operator": "output", "params": { "name": "排名结果" } }
+            ]),
+        );
+
+        // 第 0 步（必需字段校验）后仍是原始 3 列
+        let after_check = preview_step(&conn, "f_prev", &ds_id, 0, 0, 10).expect("step 0");
+        assert_eq!(after_check.total, 3);
+        assert_eq!(after_check.columns.len(), 3);
+        assert_eq!(after_check.label, "必需字段校验");
+
+        // 第 1 步（计算总成绩）后新增一列，数据仍是原始 3 行
+        let after_compute = preview_step(&conn, "f_prev", &ds_id, 1, 0, 10).expect("step 1");
+        assert_eq!(after_compute.columns.len(), 4);
+        assert_eq!(after_compute.total, 3);
+        let li = after_compute
+            .rows
+            .iter()
+            .find(|row| row[0] == json!("李四"))
+            .expect("李四行");
+        assert_eq!(li[3], json!(86.0));
+
+        // 第 2 步（排名）后新增排名列，此时尚未排序
+        let after_rank = preview_step(&conn, "f_prev", &ds_id, 2, 0, 10).expect("step 2");
+        assert_eq!(after_rank.columns.len(), 5);
+        let li = after_rank
+            .rows
+            .iter()
+            .find(|row| row[0] == json!("李四"))
+            .expect("李四行");
+        // ROW_NUMBER() 返回整数，排名列为整数值
+        assert_eq!(li[4], json!(1));
+
+        // 最终输出（step_index == 步骤数）应用了排序
+        let final_data = preview_step(&conn, "f_prev", &ds_id, 5, 0, 10).expect("final");
+        assert_eq!(final_data.label, "流程输出");
+        assert_eq!(final_data.rows[0][0], json!("李四"));
+        assert_eq!(final_data.rows[0][4], json!(1));
+        assert_eq!(final_data.total, 3);
+    }
+
+    #[test]
+    fn preview_step_rejects_out_of_range_index() {
+        let (conn, ds_id) = setup();
+        insert_flow(
+            &conn,
+            "f_prev_bad",
+            json!([{ "id": "s1", "operator": "output", "params": { "name": "结果" } }]),
+        );
+        let err = preview_step(&conn, "f_prev_bad", &ds_id, 9, 0, 10).expect_err("越界必须报错");
+        assert_eq!(err.code, "bad_request");
+        assert!(err.message.contains("超出范围"));
     }
 
     #[test]

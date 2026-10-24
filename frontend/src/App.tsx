@@ -6,12 +6,13 @@ import { desktop } from './lib/native';
 import { ThemeProvider, useThemeMode } from './theme';
 import ProjectFilesPage from './pages/ProjectFilesPage';
 import ProjectFlowPage from './pages/ProjectFlowPage';
+import DataFlowPage from './pages/DataFlowPage';
 import ImportPage from './pages/ImportPage';
 import AliasPage from './pages/AliasPage';
 import TemplatePage from './pages/TemplatePage';
 import { NewProjectDialog } from './components/NewProjectDialog';
 
-export type ViewKey = 'files' | 'flow' | 'import' | 'alias' | 'templates';
+export type ViewKey = 'files' | 'flow' | 'dataflow' | 'import' | 'alias' | 'templates';
 
 interface ViewMeta {
   key: ViewKey;
@@ -22,19 +23,21 @@ interface ViewMeta {
 const VIEWS: Record<ViewKey, ViewMeta> = {
   files: { key: 'files', label: '项目文件', icon: 'folder' },
   flow: { key: 'flow', label: '项目流程', icon: 'flow' },
+  dataflow: { key: 'dataflow', label: '数据流', icon: 'dataflow' },
   import: { key: 'import', label: '数据导入', icon: 'import' },
   alias: { key: 'alias', label: '字段别名', icon: 'tag' },
   templates: { key: 'templates', label: 'PDF 模板', icon: 'layout' },
 };
 
-/** 左侧边栏只保留两项：项目文件、项目流程。字段别名 / PDF 模板属于全局配置，从顶栏菜单进入。 */
-const SIDEBAR_VIEWS: ViewKey[] = ['files', 'flow'];
+/** 左侧边栏：项目文件、项目流程、数据流。字段别名 / PDF 模板属于全局配置，从顶栏菜单进入。 */
+const SIDEBAR_VIEWS: ViewKey[] = ['files', 'flow', 'dataflow'];
 
 const ICONS: Record<string, string> = {
   folder: 'M3 5.5A1.5 1.5 0 0 1 4.5 4h4l1.5 2H19a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 17H4.5A1.5 1.5 0 0 1 3 15.5z',
   table: 'M3 5h18v3H3zM3 10h9v9H3zM14 10h7v4h-7zM14 16h7v3h-7z',
   import: 'M12 3v10m0 0-4-4m4 4 4-4M4 17h16v3H4z',
   flow: 'M6 4h5v5H6zM13 15h5v5h-5zM8.5 9v3.5a2 2 0 0 0 2 2H13M13 20.5H8.5',
+  dataflow: 'M9 3h6v4H9zM4 17h6v4H4zM14 17h6v4h-6zM12 7v5M4 17v-3h16v3',
   layout: 'M3 4h18v16H3zM3 9h18M9 9v11',
   tag: 'M3 12 12 3h7a2 2 0 0 1 2 2v7l-9 9zM16 7h.01',
   close: 'M5 5l14 14M19 5 5 19',
@@ -277,6 +280,8 @@ function Workbench() {
         );
       case 'flow':
         return <ProjectFlowPage />;
+      case 'dataflow':
+        return <DataFlowPage />;
       case 'import':
         return <ImportPage onNavigate={(next) => openView(next)} />;
       case 'alias':

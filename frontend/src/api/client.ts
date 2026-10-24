@@ -12,6 +12,7 @@ import type {
   FlowInput,
   FlowRun,
   FlowStep,
+  FlowStepData,
   FlowValidateResult,
   HealthResponse,
   ImportResult,
@@ -485,6 +486,27 @@ export function validateFlow(steps: FlowStep[], columns: string[]): Promise<Flow
 
 export function getFlowRuns(id: string): Promise<FlowRun[]> {
   return apiRequest<FlowRun[]>(`/api/flows/${id}/runs`);
+}
+
+/**
+ * 「数据流」栏目：查看流程执行到某个节点之后的数据。
+ * `stepIndex` 为 0 基步骤下标；传入步骤总数即可查看最终输出。
+ */
+export function getFlowStepRows(
+  id: string,
+  stepIndex: number,
+  datasetId: string,
+  offset = 0,
+  limit = 50,
+): Promise<FlowStepData> {
+  const params = new URLSearchParams({
+    dataset_id: datasetId,
+    offset: String(offset),
+    limit: String(limit),
+  });
+  return apiRequest<FlowStepData>(
+    `/api/flows/${id}/steps/${stepIndex}/rows?${params.toString()}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

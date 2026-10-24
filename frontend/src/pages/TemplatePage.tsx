@@ -47,11 +47,15 @@ import {
 } from '../lib/templateModel';
 import type { ElementType, ResizeHandle } from '../lib/templateModel';
 import { fieldColor, hexToRgba, splitTemplateTokens } from '../lib/tokens';
+import { isDesktop, pickFolder } from '../lib/native';
 
 const MM_PER_PT = 0.352778;
 const PAD = 34;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 8;
+
+/** 照片后缀下拉选项；顺序即查找优先级。 */
+const PHOTO_EXT_OPTIONS = ['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif', 'tif', 'tiff'];
 
 type Tool = 'select' | 'hand';
 type Selection = { type: 'page' } | { type: 'element'; id: string };
@@ -731,7 +735,7 @@ export default function TemplatePage({
             y: 0,
             width: w,
             height: h,
-            text: `▣ ${element.field || '照片'}`,
+            text: `▣ ${(element.photo_name || element.field || '照片').replace(/\{\{?([^}]+)\}?\}/g, '$1')}`,
             fontSize: Math.min(element.font_size * MM_PER_PT, 3.2),
             fill: '#94a3b8',
             textAlign: 'center',
@@ -1249,7 +1253,7 @@ export default function TemplatePage({
         : element.type === 'field'
           ? element.field || '未绑定'
           : element.type === 'image'
-            ? element.field || '照片'
+            ? (element.photo_name || element.field || '照片').replace(/\{\{?([^}]+)\}?\}/g, '$1')
             : hasChildren
               ? `${element.children.length} 项`
               : '';
@@ -2247,21 +2251,66 @@ function ElementEditor({
 
       {element.type === 'image' ? (
         <div className="tpl-section">
-          <div className="tpl-section-title">图片</div>
-          <label className="field">
-            <span className="field-label">绑定字段</span>
-            <input
-              type="text"
-              list="template-field-options"
-              value={element.field}
-              onChange={(event) => onChange({ field: event.target.value })}
+          <div className="tpl-section-title">照片</div>
+          <div className="field">
+            <span className="field-label">照片目录</span>
+            <div className="photo-dir-row">
+              <input
+                type="text"
+                value={element.photo_dir ?? ''}
+                placeholder="选择照片所在文件夹"
+                onChange={(event) => onChange({ photo_dir: event.target.value })}
+              />
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={async () => {
+                  const picked = await pickFolder(element.photo_dir || undefined);
+                  if (picked) onChange({ photo_dir: picked });
+                }}
+              >
+                选择…
+              </button>
+            </div>
+            {!isDesktop() ? (
+              <span className="field-hint">浏览器环境无法弹出系统窗口，请手动填写目录</span>
+            ) : null}
+          </div>
+          <div className="field">
+            <span className="field-label">照片名</span>
+            <TokenEditor
+              value={element.photo_name ?? ''}
+              mode="template"
+              fields={columns}
+              placeholder="字段组合，如 {{身份证号}}"
+              onChange={(photo_name) => onChange({ photo_name })}
             />
-            <datalist id="template-field-options">
-              {columns.map((column) => (
-                <option key={column} value={column} />
+            <span className="field-hint">
+              可用 <span className="mono">{'{{字段名}}'}</span> 取数据值，也可直接输入固定文本
+            </span>
+          </div>
+          <div className="field">
+            <span className="field-label">照片后缀</span>
+            <select
+              multiple
+              className="photo-ext-select"
+              value={element.photo_exts ?? []}
+              onChange={(event) =>
+                onChange({
+                  photo_exts: Array.from(event.target.selectedOptions).map(
+                    (option) => option.value,
+                  ),
+                })
+              }
+            >
+              {PHOTO_EXT_OPTIONS.map((ext) => (
+                <option key={ext} value={ext}>
+                  .{ext}
+                </option>
               ))}
-            </datalist>
-          </label>
+            </select>
+            <span className="field-hint">按住 Ctrl / Cmd 可多选，按选择顺序查找文件</span>
+          </div>
         </div>
       ) : null}
 

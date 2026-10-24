@@ -63,6 +63,20 @@ pub struct RowPage {
     pub total: i64,
 }
 
+/// 流程中某个节点的数据快照。
+///
+/// `step_index` 为 0 基下标：执行完该下标对应的步骤后的数据；
+/// 等于步骤总数时表示整条流程的最终输出（含排序 / 截断）。
+#[derive(Debug, Serialize)]
+pub struct StepData {
+    pub step_index: i64,
+    pub label: String,
+    pub operator: String,
+    pub columns: Vec<DatasetColumn>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub total: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ColumnSuggestion {
     pub source: String,
@@ -486,10 +500,19 @@ pub struct TemplateElement {
     /// 兼容旧模板：true 表示整页元素（每页只画一次）
     #[serde(default)]
     pub page_level: bool,
+    /// type = "image" 时：照片所在目录；为空时回退到渲染请求的 photo_dir
+    #[serde(default)]
+    pub photo_dir: String,
+    /// type = "image" 时：照片名模板，支持 `{字段}` 占位符与固定字符串组合
+    #[serde(default)]
+    pub photo_name: String,
+    /// type = "image" 时：按顺序尝试的候选后缀（不带点，如 jpg、png）
+    #[serde(default)]
+    pub photo_exts: Vec<String>,
 }
 
 impl TemplateElement {
-    fn empty(id: &str, etype: &str) -> Self {
+    pub(crate) fn empty(id: &str, etype: &str) -> Self {
         TemplateElement {
             id: id.to_string(),
             etype: etype.to_string(),
@@ -509,6 +532,9 @@ impl TemplateElement {
             children: Vec::new(),
             matrix: None,
             page_level: false,
+            photo_dir: String::new(),
+            photo_name: String::new(),
+            photo_exts: Vec::new(),
         }
     }
 }
@@ -540,10 +566,25 @@ impl Default for TemplateBody {
     }
 }
 
+/// 递归迁移照片元素：旧模板把照片文件名存在 `field`（绑定单个数据列），
+/// 新结构改为 `photo_name`（支持 `{字段}` 占位符的组合模板）。
+///
+/// 这里不主动删除 `field`，保留原值便于旧客户端回读。
+fn migrate_photo_elements(elements: &mut [TemplateElement]) {
+    for el in elements.iter_mut() {
+        if el.etype == "image" && el.photo_name.trim().is_empty() && !el.field.trim().is_empty() {
+            el.photo_name = format!("{{{}}}", el.field.trim());
+        }
+        migrate_photo_elements(&mut el.children);
+    }
+}
+
 impl TemplateBody {
     /// 把旧版「扁平元素 + 页面级矩阵」模板迁移为嵌套元素结构：
     /// 页面元素保持在根，单元格元素挂到新建的 matrix 元素下。
     pub fn normalize(&mut self, kind: &str) {
+        // 照片元素迁移：旧模板用 field 绑定单个字段，新结构改为「名称模板 + 后缀」。
+        migrate_photo_elements(&mut self.elements);
         if self.elements.iter().any(|e| e.etype == "matrix") {
             return;
         }

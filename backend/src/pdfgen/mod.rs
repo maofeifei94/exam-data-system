@@ -340,14 +340,25 @@ impl<'a> Painter<'a> {
                 });
             }
             "image" => {
-                let raw = ctx.value(&el.field);
+                // 照片名是模板字符串：先按 `{字段}` 占位符插值，再拼接候选后缀查文件。
+                // 老模板未迁移时回退到 field 绑定值。
+                let name = if el.photo_name.trim().is_empty() {
+                    ctx.value(&el.field).to_string()
+                } else {
+                    interpolate(&el.photo_name, ctx)
+                };
+                let dir = if el.photo_dir.trim().is_empty() {
+                    self.photo_dir
+                } else {
+                    Some(el.photo_dir.as_str())
+                };
                 draw_image(
                     self.doc,
                     self.layer,
                     el,
                     origin,
                     self.page_h,
-                    resolve_photo(raw, self.photo_dir),
+                    resolve_photo(&name, dir, &el.photo_exts),
                 );
             }
             _ => {
@@ -377,28 +388,55 @@ impl<'a> Painter<'a> {
     }
 }
 
-fn resolve_photo(raw: &str, dir: Option<&str>) -> Option<std::path::PathBuf> {
-    let v = raw.trim();
-    if v.is_empty() {
+/// 默认照片后缀；模板未显式配置时按这个顺序尝试。
+pub const DEFAULT_PHOTO_EXTS: &[&str] = &["jpg", "jpeg", "png"];
+
+/// 在目录中按「名称 + 候选后缀」查找照片文件。
+///
+/// 查找顺序：
+/// 1. 名称本身已经是完整路径或带后缀，先按原样尝试（绝对路径优先）；
+/// 2. 名称 + 每个候选后缀，依次尝试小写 / 大写扩展名（兼容 Windows 导出）。
+///
+/// 目录为空时只按名称本身查找，避免把相对路径解析到不可预期的位置。
+fn resolve_photo(raw: &str, dir: Option<&str>, exts: &[String]) -> Option<std::path::PathBuf> {
+    let name = raw.trim();
+    if name.is_empty() {
         return None;
     }
-    let p = std::path::PathBuf::from(v);
-    if p.is_absolute() && p.exists() {
-        return Some(p);
-    }
+    let raw_path = std::path::Path::new(name);
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    let dir = dir.map(str::trim).filter(|d| !d.is_empty());
+
+    // 1) 原样路径：绝对路径或相对当前工作目录
+    candidates.push(raw_path.to_path_buf());
     if let Some(d) = dir {
-        let d = d.trim();
-        if !d.is_empty() {
-            let joined = std::path::Path::new(d).join(v);
-            if joined.exists() {
-                return Some(joined);
+        candidates.push(std::path::Path::new(d).join(name));
+    }
+
+    // 2) 名称 + 后缀；名称已带后缀时不再重复追加
+    if raw_path.extension().is_none() {
+        let exts: Vec<String> = if exts.is_empty() {
+            DEFAULT_PHOTO_EXTS.iter().map(|e| e.to_string()).collect()
+        } else {
+            exts.iter()
+                .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+                .filter(|e| {
+                    !e.is_empty() && e.len() <= 8 && e.bytes().all(|b| b.is_ascii_alphanumeric())
+                })
+                .collect()
+        };
+        for ext in exts {
+            for variant in [ext.clone(), ext.to_ascii_uppercase()] {
+                let file = format!("{name}.{variant}");
+                if let Some(d) = dir {
+                    candidates.push(std::path::Path::new(d).join(&file));
+                }
+                candidates.push(std::path::PathBuf::from(file));
             }
         }
     }
-    if p.exists() {
-        return Some(p);
-    }
-    None
+
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 fn page_size_mm(p: &PageSetup) -> (f32, f32) {
@@ -600,4 +638,60 @@ pub fn render_pdf_data(
         .map_err(|e| AppError::internal(format!("PDF 写入失败: {e}")))?
         .into_inner();
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("exam_pdfgen_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn photo_name_tries_configured_extensions_in_order() {
+        let dir = temp_dir("exts");
+        std::fs::write(dir.join("张三.png"), b"x").expect("write png");
+        std::fs::write(dir.join("张三.JPG"), b"x").expect("write jpg");
+
+        let exts = vec!["jpg".to_string(), "png".to_string()];
+        let found = resolve_photo("张三", dir.to_str(), &exts).expect("found by ext");
+        assert_eq!(found.file_name().unwrap().to_string_lossy(), "张三.JPG");
+
+        let only_png = vec!["png".to_string()];
+        let found = resolve_photo("张三", dir.to_str(), &only_png).expect("found png");
+        assert_eq!(found.file_name().unwrap().to_string_lossy(), "张三.png");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn photo_name_with_extension_is_used_as_is() {
+        let dir = temp_dir("named");
+        std::fs::write(dir.join("报名照.png"), b"x").expect("write");
+        let found =
+            resolve_photo("报名照.png", dir.to_str(), &["jpg".to_string()]).expect("exact name");
+        assert!(found.ends_with("报名照.png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn photo_missing_returns_none_instead_of_failing() {
+        let dir = temp_dir("missing");
+        assert!(resolve_photo("", dir.to_str(), &[]).is_none());
+        assert!(resolve_photo("不存在", dir.to_str(), &["jpg".to_string()]).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_photo_element_is_migrated_to_name_template() {
+        let mut body = TemplateBody::default();
+        let mut el = TemplateElement::empty("e1", "image");
+        el.field = "照片".to_string();
+        body.elements.push(el);
+        body.normalize("single");
+        assert_eq!(body.elements[0].photo_name, "{照片}");
+    }
 }
