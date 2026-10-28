@@ -543,10 +543,14 @@ export function runFlow(id: string, datasetId: string): Promise<RunResult> {
   });
 }
 
-export function validateFlow(steps: FlowStep[], columns: string[]): Promise<FlowValidateResult> {
+export function validateFlow(
+  steps: FlowStep[],
+  columns: string[],
+  projectId?: string,
+): Promise<FlowValidateResult> {
   return apiRequest<FlowValidateResult>('/api/flows/validate', {
     method: 'POST',
-    body: JSON.stringify({ steps, columns }),
+    body: JSON.stringify({ steps, columns, project_id: projectId }),
   });
 }
 

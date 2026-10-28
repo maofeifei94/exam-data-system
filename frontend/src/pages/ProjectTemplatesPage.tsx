@@ -6,6 +6,7 @@ import {
   deleteProjectAlias,
   deleteProjectField,
   duplicatePdfTemplate,
+  listFieldGroups,
   listPdfTemplates,
   listProjectAliases,
   listProjectFields,
@@ -15,6 +16,7 @@ import {
 } from '../api/client';
 import type {
   ColumnDtype,
+  FieldGroup,
   PdfTemplate,
   ProjectAlias,
   ProjectField,
@@ -63,6 +65,7 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
   const [aliases, setAliases] = useState<ProjectAlias[]>([]);
   const [templates, setTemplates] = useState<PdfTemplate[]>([]);
   const [globalFields, setGlobalFields] = useState<StandardField[]>([]);
+  const [groups, setGroups] = useState<FieldGroup[]>([]);
   const [globalTemplates, setGlobalTemplates] = useState<PdfTemplate[]>([]);
 
   // 从全局字段库挑选
@@ -80,18 +83,26 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
   const load = async (projectId: string) => {
     setLoading(true);
     try {
-      const [projectFieldList, projectAliasList, projectTemplates, allFields, allTemplates] =
-        await Promise.all([
-          listProjectFields(projectId),
-          listProjectAliases(projectId),
-          listPdfTemplates({ projectId }),
-          listStandardFields(),
-          listPdfTemplates({ scope: 'global' }),
-        ]);
+      const [
+        projectFieldList,
+        projectAliasList,
+        projectTemplates,
+        allFields,
+        groupList,
+        allTemplates,
+      ] = await Promise.all([
+        listProjectFields(projectId),
+        listProjectAliases(projectId),
+        listPdfTemplates({ projectId }),
+        listStandardFields(),
+        listFieldGroups(),
+        listPdfTemplates({ scope: 'global' }),
+      ]);
       setFields(projectFieldList);
       setAliases(projectAliasList);
       setTemplates(projectTemplates);
       setGlobalFields(allFields);
+      setGroups(groupList);
       setGlobalTemplates(allTemplates);
     } catch (err) {
       show(err instanceof Error ? err.message : '加载项目模板失败', 'error');
@@ -106,6 +117,7 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
       setAliases([]);
       setTemplates([]);
       setGlobalFields([]);
+      setGroups([]);
       setGlobalTemplates([]);
       return;
     }
@@ -117,6 +129,27 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
 
   /** 某字段在本项目内的别名（卡片渲染用）。 */
   const fieldAliases = (name: string) => aliases.filter((alias) => alias.standard === name);
+
+  /** 全局字段按分组拆开，「未分组」排最后，供挑选弹层分区展示。 */
+  const groupedGlobalFields = useMemo(() => {
+    const known = new Set(groups.map((group) => group.id));
+    const result = groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      fields: globalFields.filter((field) => field.group_id === group.id),
+    }));
+    const ungrouped = globalFields.filter((field) => !known.has(field.group_id));
+    if (ungrouped.length) {
+      result.push({ id: '', name: '未分组', fields: ungrouped });
+    }
+    return result.filter((group) => group.fields.length > 0);
+  }, [groups, globalFields]);
+
+  const togglePickField = (id: string) => {
+    setPickedFieldIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  };
 
   const openPickFields = () => {
     setPickedFieldIds([]);
@@ -526,35 +559,46 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
         <p className="panel-hint">
           已有同名字段会自动跳过；复制后可在本项目内独立修改。
         </p>
-        <div className="pick-list">
-          {globalFields.map((field) => {
-            const exists = existingNames.has(field.name);
-            const checked = pickedFieldIds.includes(field.id);
-            return (
-              <label key={field.id} className={`pick-row ${exists ? 'disabled' : ''}`}>
-                <input
-                  type="checkbox"
-                  disabled={exists}
-                  checked={checked}
-                  onChange={(event) =>
-                    setPickedFieldIds((prev) =>
-                      event.target.checked
-                        ? [...prev, field.id]
-                        : prev.filter((id) => id !== field.id),
-                    )
-                  }
-                />
-                <span>
-                  {field.name}
-                  <span className="detail-meta">
-                    {' '}
-                    · {DTYPE_LABELS[normalizeDtype(field.dtype)] ?? field.dtype}
-                    {exists ? ' · 已在本项目' : ''}
-                  </span>
-                </span>
-              </label>
-            );
-          })}
+        <div className="pick-groups">
+          {groupedGlobalFields.length === 0 ? (
+            <EmptyState text="全局字段库还没有字段" />
+          ) : (
+            groupedGlobalFields.map((group) => (
+              <div className="pick-group" key={group.id || 'ungrouped'}>
+                <div className="pick-group-title">
+                  {group.name}
+                  <span className="pick-group-count">{group.fields.length}</span>
+                </div>
+                <div className="pick-tiles">
+                  {group.fields.map((field) => {
+                    const exists = existingNames.has(field.name);
+                    const selected = pickedFieldIds.includes(field.id);
+                    return (
+                      <button
+                        type="button"
+                        key={field.id}
+                        className={`pick-tile ${selected ? 'selected' : ''} ${
+                          exists ? 'disabled' : ''
+                        }`}
+                        disabled={exists}
+                        title={exists ? '已在本项目' : `复制「${field.name}」到本项目`}
+                        onClick={() => {
+                          if (!exists) togglePickField(field.id);
+                        }}
+                      >
+                        <span className="pick-tile-name">{field.name}</span>
+                        <span className="pick-tile-meta">
+                          {exists
+                            ? '已在本项目'
+                            : (DTYPE_LABELS[normalizeDtype(field.dtype)] ?? field.dtype)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </Modal>
 

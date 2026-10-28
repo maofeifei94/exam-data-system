@@ -2,7 +2,7 @@ use crate::db::{self, new_id, now};
 use crate::engine;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DuplicateInput, Flow, FlowInput, FlowRun, FlowStep, RunFlowInput, RunResult, StepData,
+    self, DuplicateInput, Flow, FlowInput, FlowRun, FlowStep, RunFlowInput, RunResult, StepData,
     ValidateFlowInput, ValidateResult,
 };
 use crate::state::AppState;
@@ -317,7 +317,38 @@ pub async fn step_rows(
     Ok(Json(data))
 }
 
-pub async fn validate(Json(input): Json<ValidateFlowInput>) -> AppResult<Json<ValidateResult>> {
+pub async fn validate(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<ValidateFlowInput>,
+) -> AppResult<Json<ValidateResult>> {
     let steps = normalize_steps(&input.steps);
-    Ok(Json(engine::validate_steps(&steps, &input.columns)))
+    let mut result = engine::validate_steps(&steps, &input.columns);
+
+    // 项目流程额外校验：必需字段必须真实存在于项目模板，而不是沿用全局字段。
+    if let Some(project_id) = input.project_id.filter(|id| !id.trim().is_empty()) {
+        let names = state
+            .db(move |conn| engine::scoped_field_names(conn, &project_id))
+            .await?;
+        for (idx, step) in steps.iter().enumerate() {
+            if !step.enabled || step.operator != "require_fields" {
+                continue;
+            }
+            let fields = step
+                .params
+                .get("fields")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            for field in fields {
+                if !names.iter().any(|name| name == field) {
+                    result.errors.push(models::ValidateError {
+                        step_index: idx as i64,
+                        message: format!("项目模板中缺少必需字段：{field}"),
+                    });
+                }
+            }
+        }
+        result.ok = result.errors.is_empty();
+    }
+    Ok(Json(result))
 }

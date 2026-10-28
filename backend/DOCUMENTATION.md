@@ -247,6 +247,10 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 - `count_current` 等辅助函数返回 `Result`，不再 `unwrap`。
 - 在校验接口 `validate_steps` 中做静态数据流分析：逐步推导每步的输入/输出字段集合，
   提前暴露「引用了不存在的字段」这类问题，无需真正执行。
+- **项目流程的必需字段必须存在于项目模板**：`engine::missing_required_fields` 汇总所有
+  启用步骤的 `require_fields`，与 `project_fields` 比对；`run_flow` 发现缺失时直接写一条
+  `failed` 运行记录并返回失败结果（不产出数据集），`/api/flows/validate` 收到
+  `project_id` 时也会追加「项目模板中缺少必需字段：X」错误。全局流程不受此约束。
 
 ### 4.8 节点数据预览（`engine::preview_step`）
 

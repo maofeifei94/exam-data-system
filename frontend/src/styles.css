@@ -4767,3 +4767,81 @@ textarea.token-input {
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* 全局字段挑选：按分组展示可点击矩形块，选中后整块变色 */
+.pick-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.pick-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.pick-group-count {
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+}
+
+.pick-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.pick-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  transition: background 0.14s, border-color 0.14s, box-shadow 0.14s, color 0.14s;
+}
+
+.pick-tile:hover:not(.disabled):not(.selected) {
+  border-color: var(--primary);
+  background: var(--bg-sunken);
+}
+
+.pick-tile.selected {
+  color: var(--primary);
+  background: var(--primary-soft, rgba(37, 99, 235, 0.12));
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-ring);
+}
+
+.pick-tile.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pick-tile-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.pick-tile-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}

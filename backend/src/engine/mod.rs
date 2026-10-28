@@ -798,12 +798,37 @@ impl<'a> Compiler<'a> {
 /// 成功路径中「建结果表 + 写数据集元数据 + 写运行记录」放在同一事务内；
 /// 任一步失败都会整体回滚，不会留下半成品数据集。
 pub fn run_flow(conn: &mut Connection, flow_id: &str, dataset_id: &str) -> AppResult<RunResult> {
-    let (flow_name, steps) = load_flow(conn, flow_id)?;
+    let (flow_name, project_id, steps) = load_flow(conn, flow_id)?;
     if steps.is_empty() {
         return Err(AppError::bad_request("流程没有任何步骤"));
     }
     // 数据集必须存在
     let src_ds = store::get_dataset(conn, dataset_id)?;
+
+    // 项目流程：必需字段必须存在于项目模板中；缺一个就拒绝运行并记录失败。
+    // 全局流程沿用原有行为（不强制绑定全局字段字典）。
+    let missing = if project_id.trim().is_empty() {
+        Vec::new()
+    } else {
+        missing_required_fields(conn, &project_id, &steps)?
+    };
+    if !missing.is_empty() {
+        let run_id = new_id();
+        let message = format!("项目模板中缺少必需字段：{}", missing.join("、"));
+        conn.execute(
+            "INSERT INTO flow_runs (id, flow_id, dataset_id, output_dataset_id, status, message, sql_text, created_at)
+             VALUES (?1, ?2, ?3, '', 'failed', ?4, '', ?5)",
+            rusqlite::params![run_id, flow_id, dataset_id, message, now()],
+        )?;
+        return Ok(RunResult {
+            run_id,
+            status: "failed".to_string(),
+            message: Some(message),
+            log: Vec::new(),
+            output_dataset_id: None,
+            output: None,
+        });
+    }
 
     let mut c = Compiler::new(conn, dataset_id)?;
     let mut failed: Option<String> = None;
@@ -942,7 +967,7 @@ pub fn preview_step(
     offset: i64,
     limit: i64,
 ) -> AppResult<StepData> {
-    let (_, steps) = load_flow(conn, flow_id)?;
+    let (_, _, steps) = load_flow(conn, flow_id)?;
     if steps.is_empty() {
         return Err(AppError::bad_request("流程没有任何步骤"));
     }
@@ -1029,17 +1054,64 @@ pub fn preview_step(
     })
 }
 
-fn load_flow(conn: &Connection, flow_id: &str) -> AppResult<(String, Vec<FlowStep>)> {
-    let mut stmt = conn.prepare("SELECT name, steps FROM flows WHERE id = ?1")?;
+fn load_flow(conn: &Connection, flow_id: &str) -> AppResult<(String, String, Vec<FlowStep>)> {
+    let mut stmt = conn.prepare("SELECT name, project_id, steps FROM flows WHERE id = ?1")?;
     let mut rows = stmt.query(rusqlite::params![flow_id])?;
     let row = rows
         .next()?
         .ok_or_else(|| AppError::not_found(format!("流程不存在: {flow_id}")))?;
     let name: String = row.get(0)?;
-    let raw: String = row.get(1)?;
+    let project_id: String = row.get(1)?;
+    let raw: String = row.get(2)?;
     let steps: Vec<FlowStep> = serde_json::from_str(&raw)
         .map_err(|e| AppError::internal_with_context("流程定义 JSON 损坏", e))?;
-    Ok((name, steps))
+    Ok((name, project_id, steps))
+}
+
+/// 当前作用域内可用的字段名：项目流程查项目模板，全局流程查全局标准字段。
+pub(crate) fn scoped_field_names(conn: &Connection, project_id: &str) -> AppResult<Vec<String>> {
+    if project_id.trim().is_empty() {
+        let mut stmt = conn.prepare("SELECT name FROM standard_fields")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    } else {
+        let mut stmt = conn.prepare("SELECT name FROM project_fields WHERE project_id = ?1")?;
+        let rows = stmt.query_map(rusqlite::params![project_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+}
+
+/// 流程中声明为必需、但当前作用域模板里不存在的字段（按出现顺序去重）。
+pub(crate) fn missing_required_fields(
+    conn: &Connection,
+    project_id: &str,
+    steps: &[FlowStep],
+) -> AppResult<Vec<String>> {
+    let names = scoped_field_names(conn, project_id)?;
+    let mut missing: Vec<String> = Vec::new();
+    for step in steps.iter().filter(|s| s.enabled) {
+        if step.operator != "require_fields" {
+            continue;
+        }
+        let fields = step
+            .params
+            .get("fields")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for field in fields {
+            if !names.iter().any(|name| name == field) && !missing.iter().any(|m| m == field) {
+                missing.push(field.to_string());
+            }
+        }
+    }
+    Ok(missing)
 }
 
 /// 静态校验：不执行 SQL，只根据字段名推演每一步是否可行。
@@ -1345,6 +1417,33 @@ mod tests {
             )
             .expect("count runs");
         assert_eq!(run_rows, 1);
+    }
+
+    #[test]
+    fn project_flow_fails_when_required_field_missing_from_template() {
+        let (mut conn, ds_id) = setup();
+        conn.execute(
+            "INSERT INTO project_fields
+               (id, project_id, name, label, created_at, updated_at)
+             VALUES ('pf1', 'p1', '姓名', '姓名', 'now', 'now')",
+            [],
+        )
+        .expect("project field");
+        conn.execute(
+            "INSERT INTO flows (id, name, steps, project_id, created_at, updated_at)
+             VALUES ('f_proj', '项目流程', ?1, 'p1', 'now', 'now')",
+            rusqlite::params![json!([
+                { "id": "s1", "operator": "require_fields",
+                  "params": { "fields": ["姓名", "身份证号"] } }
+            ])
+            .to_string()],
+        )
+        .expect("flow");
+
+        let result = run_flow(&mut conn, "f_proj", &ds_id).expect("run returns result");
+        assert_eq!(result.status, "failed");
+        assert!(result.output_dataset_id.is_none());
+        assert!(result.message.expect("message").contains("身份证号"));
     }
 
     #[test]

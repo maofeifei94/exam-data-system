@@ -362,6 +362,9 @@ pub struct ValidateFlowInput {
     pub steps: Vec<FlowStep>,
     #[serde(default)]
     pub columns: Vec<String>,
+    /// 项目流程传项目 id，用于校验必需字段是否存在于项目模板。
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

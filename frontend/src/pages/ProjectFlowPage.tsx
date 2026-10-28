@@ -232,7 +232,7 @@ export default function ProjectFlowPage() {
         const base = requiredFields.length
           ? requiredFields
           : (runDataset?.columns.map((column) => column.name) ?? []);
-        const result = await validateFlow(draft.steps, base);
+        const result = await validateFlow(draft.steps, base, currentProjectId || undefined);
         if (active) setValidateResult(result);
       } catch {
         // 校验失败时保留上一次结果，不打断编辑
@@ -531,7 +531,7 @@ export default function ProjectFlowPage() {
       const base = requiredFields.length
         ? requiredFields
         : runDataset.columns.map((column) => column.name);
-      const result = await validateFlow(draft.steps, base);
+      const result = await validateFlow(draft.steps, base, currentProjectId || undefined);
       setValidateResult(result);
       show(
         result.ok ? '校验通过，流程可执行' : `校验发现 ${result.errors.length} 个问题`,
