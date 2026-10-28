@@ -6,14 +6,13 @@ import {
   importDataset,
   listFlows,
   listProjectFields,
-  listStandardFields,
 } from '../api/client';
 import type { ColumnSuggestion, Dataset, ImportResult, RowPage, StandardField } from '../api/types';
 import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
-import { mergeFieldLists } from '../lib/projectFields';
+import { projectFieldsAsStandard } from '../lib/projectFields';
 import type { ViewKey } from '../App';
 
 const KEEP_ORIGINAL = '__keep_original__';
@@ -115,12 +114,12 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
     setAppliedDataset(null);
     setAppliedRows(null);
     try {
-      const [fields, projectFields, imported] = await Promise.all([
-        listStandardFields(),
+      const [projectFields, imported] = await Promise.all([
         listProjectFields(currentProjectId || ''),
         importDataset(file, name || undefined, headerRow, currentProjectId || undefined),
       ]);
-      setStandardFields(mergeFieldLists(fields, projectFields));
+      // 项目只能用本项目字段：全局字段需先在「项目模板」中复制进来。
+      setStandardFields(projectFieldsAsStandard(projectFields));
       setResult(imported);
       const initial: Record<string, string> = {};
       for (const suggestion of imported.mapping) {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Input, InputNumber, Modal, Select } from 'antd';
+import { Modal } from 'antd';
 import {
   copyProjectFields,
   deletePdfTemplate,
@@ -19,10 +19,10 @@ import type {
 } from '../api/types';
 import { PRECISION_DTYPES, normalizeDtype } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
-import { Field } from '../components/Field';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import { InlineSelect, PrecisionInput } from './AliasPage';
 
 const DTYPES: ColumnDtype[] = ['text', 'integer', 'decimal', 'percent', 'date', 'datetime', 'boolean'];
 
@@ -41,16 +41,11 @@ interface Props {
   onNewTemplate: () => void;
 }
 
-interface FieldDraft {
-  name: string;
-  dtype: ColumnDtype;
-  precision: number;
-  description: string;
-}
-
 function dtypeNeedsPrecision(dtype: ColumnDtype): boolean {
   return PRECISION_DTYPES.includes(normalizeDtype(dtype));
 }
+
+const DTYPE_OPTIONS = DTYPES.map((dtype) => ({ value: dtype, label: DTYPE_LABELS[dtype] }));
 
 export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: Props) {
   const { show } = useToast();
@@ -73,9 +68,9 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
   const [pickTemplatesOpen, setPickTemplatesOpen] = useState(false);
   const [pickedTemplateIds, setPickedTemplateIds] = useState<string[]>([]);
 
-  // 编辑项目字段
-  const [editingField, setEditingField] = useState<ProjectField | null>(null);
-  const [fieldDraft, setFieldDraft] = useState<FieldDraft | null>(null);
+  // 卡片内联编辑草稿（字段名 / 说明）
+  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
+  const [descDrafts, setDescDrafts] = useState<Record<string, string>>({});
 
   const load = async (projectId: string) => {
     setLoading(true);
@@ -134,41 +129,54 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
     }
   };
 
-  const openEditField = (field: ProjectField) => {
-    setEditingField(field);
-    setFieldDraft({
+  /** 卡片内联修改：只提交变化的字段，保存到本项目。 */
+  const patchField = async (field: ProjectField, patch: Partial<ProjectFieldUpdate>) => {
+    const payload: ProjectFieldUpdate = {
       name: field.name,
+      label: field.label,
       dtype: normalizeDtype(field.dtype),
       precision: field.precision,
+      group_id: field.group_id,
       description: field.description,
-    });
-  };
-
-  const saveField = async () => {
-    if (!editingField || !fieldDraft) return;
-    const name = fieldDraft.name.trim();
-    if (!name) {
-      show('字段名不能为空', 'error');
-      return;
-    }
-    const payload: ProjectFieldUpdate = {
-      name,
-      label: name,
-      dtype: fieldDraft.dtype,
-      precision: dtypeNeedsPrecision(fieldDraft.dtype) ? fieldDraft.precision : 0,
-      description: fieldDraft.description,
+      ...patch,
     };
-    setBusy(true);
     try {
-      const saved = await updateProjectField(editingField.id, payload);
+      const saved = await updateProjectField(field.id, payload);
       setFields((prev) => prev.map((item) => (item.id === saved.id ? saved : item)));
-      setEditingField(null);
-      setFieldDraft(null);
-      show('已保存到本项目', 'success');
     } catch (err) {
       show(err instanceof Error ? err.message : '保存字段失败', 'error');
-    } finally {
-      setBusy(false);
+    }
+  };
+
+  const commitName = async (field: ProjectField) => {
+    const raw = nameDrafts[field.id];
+    if (raw === undefined) return;
+    const name = raw.trim();
+    if (!name) {
+      show('字段名不能为空', 'error');
+      setNameDrafts((prev) => ({ ...prev, [field.id]: field.name }));
+      return;
+    }
+    setNameDrafts((prev) => {
+      const next = { ...prev };
+      delete next[field.id];
+      return next;
+    });
+    if (name !== field.name) {
+      await patchField(field, { name, label: name });
+    }
+  };
+
+  const commitDescription = async (field: ProjectField) => {
+    const raw = descDrafts[field.id];
+    if (raw === undefined) return;
+    setDescDrafts((prev) => {
+      const next = { ...prev };
+      delete next[field.id];
+      return next;
+    });
+    if (raw !== field.description) {
+      await patchField(field, { description: raw });
     }
   };
 
@@ -290,39 +298,95 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
               {fields.length === 0 ? (
                 <EmptyState text="本项目还没有字段模板。点击「从全局字段添加」选择需要的字段。" />
               ) : (
-                <table className="data-table align-center bordered">
-                  <thead className="data-table__head">
-                    <tr>
-                      <th>字段名</th>
-                      <th>类型</th>
-                      <th>精度</th>
-                      <th>说明</th>
-                      <th>来源</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fields.map((field) => (
-                      <tr key={field.id}>
-                        <td>{field.name}</td>
-                        <td>{DTYPE_LABELS[normalizeDtype(field.dtype)] ?? field.dtype}</td>
-                        <td>{dtypeNeedsPrecision(normalizeDtype(field.dtype)) ? field.precision : '—'}</td>
-                        <td>{field.description || '—'}</td>
-                        <td>{field.source_id ? '全局复制' : '本项目新建'}</td>
-                        <td>
-                          <div className="row-actions">
-                            <button className="btn btn-sm" disabled={busy} onClick={() => openEditField(field)}>
-                              编辑
-                            </button>
-                            <button className="btn btn-sm" disabled={busy} onClick={() => removeField(field)}>
-                              移除
-                            </button>
+                <div className="alias-grid">
+                  {fields.map((field) => {
+                    const dtype = normalizeDtype(field.dtype);
+                    return (
+                      <div className="alias-card" key={field.id}>
+                        <div className="alias-card-top">
+                          <input
+                            className="alias-name-input"
+                            value={nameDrafts[field.id] ?? field.name}
+                            onChange={(event) =>
+                              setNameDrafts((prev) => ({ ...prev, [field.id]: event.target.value }))
+                            }
+                            onBlur={() => void commitName(field)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') event.currentTarget.blur();
+                              if (event.key === 'Escape') {
+                                setNameDrafts((prev) => {
+                                  const next = { ...prev };
+                                  delete next[field.id];
+                                  return next;
+                                });
+                              }
+                            }}
+                          />
+                          <button
+                            className="alias-chip-remove"
+                            title="从本项目移除"
+                            disabled={busy}
+                            onClick={() => void removeField(field)}
+                          >
+                            ✕
+                          </button>
+                        </div>
+
+                        <div className="alias-card-meta">
+                          <div className="alias-type-combo">
+                            <InlineSelect
+                              value={dtype}
+                              options={DTYPE_OPTIONS}
+                              onChange={(value) => {
+                                const next = value as ColumnDtype;
+                                patchField(field, {
+                                  dtype: next,
+                                  precision: dtypeNeedsPrecision(next) ? field.precision : 0,
+                                });
+                              }}
+                            />
+                            {dtypeNeedsPrecision(dtype) ? (
+                              <PrecisionInput
+                                value={field.precision ?? 2}
+                                onChange={(value) =>
+                                  setFields((prev) =>
+                                    prev.map((item) =>
+                                      item.id === field.id ? { ...item, precision: value } : item,
+                                    ),
+                                  )
+                                }
+                                onCommit={(value) => patchField(field, { precision: value })}
+                              />
+                            ) : null}
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          <span className="detail-meta">
+                            {field.source_id ? '来自全局字段' : '本项目新建'}
+                          </span>
+                        </div>
+
+                        <input
+                          className="alias-desc-input"
+                          placeholder="说明（可选）"
+                          value={descDrafts[field.id] ?? field.description}
+                          onChange={(event) =>
+                            setDescDrafts((prev) => ({ ...prev, [field.id]: event.target.value }))
+                          }
+                          onBlur={() => void commitDescription(field)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') event.currentTarget.blur();
+                            if (event.key === 'Escape') {
+                              setDescDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[field.id];
+                                return next;
+                              });
+                            }
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </section>
@@ -466,60 +530,6 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
             ))
           )}
         </div>
-      </Modal>
-
-      {/* 编辑项目字段 */}
-      <Modal
-        open={editingField !== null}
-        title="编辑项目字段"
-        okText="保存到本项目"
-        cancelText="取消"
-        confirmLoading={busy}
-        onOk={saveField}
-        onCancel={() => {
-          setEditingField(null);
-          setFieldDraft(null);
-        }}
-      >
-        {fieldDraft ? (
-          <div className="column">
-            <Field label="字段名">
-              <Input
-                value={fieldDraft.name}
-                onChange={(event) => setFieldDraft({ ...fieldDraft, name: event.target.value })}
-              />
-            </Field>
-            <Field label="数据类型">
-              <Select
-                style={{ width: 200 }}
-                value={fieldDraft.dtype}
-                onChange={(value: ColumnDtype) => setFieldDraft({ ...fieldDraft, dtype: value })}
-                options={DTYPES.map((dtype) => ({ value: dtype, label: DTYPE_LABELS[dtype] }))}
-              />
-            </Field>
-            {dtypeNeedsPrecision(fieldDraft.dtype) ? (
-              <Field label="保留小数位">
-                <InputNumber
-                  min={0}
-                  max={6}
-                  value={fieldDraft.precision}
-                  onChange={(value) =>
-                    setFieldDraft({ ...fieldDraft, precision: Number(value) || 0 })
-                  }
-                />
-              </Field>
-            ) : null}
-            <Field label="说明">
-              <Input
-                value={fieldDraft.description}
-                onChange={(event) =>
-                  setFieldDraft({ ...fieldDraft, description: event.target.value })
-                }
-              />
-            </Field>
-            <p className="panel-hint">修改只保存到「{currentProject?.name ?? '本项目'}」，不会影响全局字段库。</p>
-          </div>
-        ) : null}
       </Modal>
     </div>
   );

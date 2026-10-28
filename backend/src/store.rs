@@ -448,18 +448,37 @@ pub fn read_all_strings(
     Ok((columns, out))
 }
 
-/// 根据标准字段字典与别名表推断导入列的映射建议。
-pub fn suggest_columns(conn: &Connection, columns: &[String]) -> AppResult<Vec<ColumnSuggestion>> {
+/// 推断导入列的映射建议。
+///
+/// - `project_id` 为空：使用全局标准字段字典；
+/// - 传入项目 id：只使用该项目的 `project_fields`，全局字段必须先复制到项目才会被匹配，
+///   避免项目数据集隐式引用全局字段。
+pub fn suggest_columns(
+    conn: &Connection,
+    columns: &[String],
+    project_id: Option<&str>,
+) -> AppResult<Vec<ColumnSuggestion>> {
+    let standards: Vec<String> = match project_id.filter(|id| !id.is_empty()) {
+        Some(id) => {
+            let mut stmt = conn.prepare("SELECT name FROM project_fields WHERE project_id = ?1")?;
+            let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        }
+        None => {
+            let mut stmt = conn.prepare("SELECT name FROM standard_fields")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        }
+    };
+
+    // 别名只在其目标标准名存在于当前作用域时才生效，防止把列映射到项目里没有的字段。
     let mut stmt = conn.prepare("SELECT alias, standard FROM alias_mappings")?;
     let alias_map: HashMap<String, String> = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
+        .filter(|(_, standard)| standards.iter().any(|name| name == standard))
         .collect();
-    let mut stmt2 = conn.prepare("SELECT name FROM standard_fields")?;
-    let standards: Vec<String> = stmt2
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(columns
         .iter()
@@ -613,13 +632,47 @@ mod tests {
         .expect("alias");
 
         let names = vec!["成绩".to_string(), "分数".to_string(), "备注".to_string()];
-        let got = suggest_columns(&conn, &names).expect("suggest");
+        let got = suggest_columns(&conn, &names, None).expect("suggest");
 
         assert_eq!(got[0].matched_by, "exact_standard");
         assert_eq!(got[1].matched_by, "alias");
         assert_eq!(got[1].standard.as_deref(), Some("成绩"));
         assert_eq!(got[2].matched_by, "none");
         assert!(got[2].standard.is_none());
+    }
+
+    #[test]
+    fn suggest_columns_uses_only_project_fields_when_scoped() {
+        let conn = memory_db();
+        conn.execute(
+            "INSERT INTO standard_fields (id, name, label) VALUES ('s1', '成绩', '成绩')",
+            [],
+        )
+        .expect("standard");
+        conn.execute(
+            "INSERT INTO alias_mappings (id, alias, standard, updated_at)
+             VALUES ('a1', '分数', '成绩', '2026-01-01 00:00:00')",
+            [],
+        )
+        .expect("alias");
+        // 项目只复制了「姓名」，没有「成绩」。
+        conn.execute(
+            "INSERT INTO project_fields
+               (id, project_id, name, label, created_at, updated_at)
+             VALUES ('p1', 'proj1', '姓名', '姓名', 'now', 'now')",
+            [],
+        )
+        .expect("project field");
+
+        let names = vec!["成绩".to_string(), "分数".to_string(), "姓名".to_string()];
+        let got = suggest_columns(&conn, &names, Some("proj1")).expect("suggest");
+
+        // 全局字段与别名都不应穿透到项目作用域。
+        assert_eq!(got[0].matched_by, "none");
+        assert!(got[0].standard.is_none());
+        assert_eq!(got[1].matched_by, "none");
+        assert!(got[1].standard.is_none());
+        assert_eq!(got[2].matched_by, "exact_standard");
     }
 
     #[test]

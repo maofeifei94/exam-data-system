@@ -10,7 +10,6 @@ import {
   listOperators,
   listPdfTemplates,
   listProjectFields,
-  listStandardFields,
   renderPdfTemplate,
   runFlow,
   updateFlow,
@@ -34,7 +33,7 @@ import { EmptyState } from '../components/EmptyState';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
-import { mergeFieldLists } from '../lib/projectFields';
+import { projectFieldsAsStandard } from '../lib/projectFields';
 import { TokenEditor } from '../components/TokenEditor';
 import {
   NODE_H as FLOW_NODE_H,
@@ -293,11 +292,10 @@ export default function ProjectFlowPage() {
     (async () => {
       setLoading(true);
       try {
-        const [ops, datasetList, fields, projectFields, flows, projectTpl, globalTpl] =
+        const [ops, datasetList, projectFields, flows, projectTpl, globalTpl] =
           await Promise.all([
             listOperators(),
             listDatasets(currentProjectId),
-            listStandardFields(),
             listProjectFields(currentProjectId),
             listFlows({ projectId: currentProjectId }),
             listPdfTemplates({ projectId: currentProjectId }),
@@ -306,7 +304,8 @@ export default function ProjectFlowPage() {
         if (!active) return;
         setOperators(ops);
         setDatasets(datasetList);
-        setStandardFields(mergeFieldLists(fields, projectFields));
+        // 项目流程只使用本项目字段，全局字段需先在「项目模板」中复制。
+        setStandardFields(projectFieldsAsStandard(projectFields));
         setProjectTemplates(projectTpl);
         setGlobalTemplates(globalTpl);
 

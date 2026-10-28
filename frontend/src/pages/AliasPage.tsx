@@ -600,19 +600,22 @@ export default function AliasPage() {
                         {card.aliases.length === 0 ? (
                           <span className="alias-empty">暂无别名</span>
                         ) : (
-                          card.aliases.map((alias) => (
-                            <span key={alias.id} className="alias-chip">
-                              <span className="alias-chip-prefix">别名：</span>
-                              {alias.alias}
-                              <button
-                                className="alias-chip-remove"
-                                title="删除该别名"
-                                onClick={() => removeAlias(alias)}
-                              >
-                                ✕
-                              </button>
-                            </span>
-                          ))
+                          <>
+                            <span className="alias-chip-prefix">别名：</span>
+                            {card.aliases.map((alias, index) => (
+                              <span key={alias.id} className="alias-chip">
+                                {index > 0 ? <span className="alias-chip-sep">，</span> : null}
+                                {alias.alias}
+                                <button
+                                  className="alias-chip-remove"
+                                  title="删除该别名"
+                                  onClick={() => removeAlias(alias)}
+                                >
+                                  ✕
+                                </button>
+                              </span>
+                            ))}
+                          </>
                         )}
                       </div>
 
@@ -693,7 +696,7 @@ interface InlineSelectProps {
 }
 
 /** 小数位：纯键盘输入，隐藏上下调节按钮，并与数据类型放在同一个控件框内。 */
-function PrecisionInput({
+export function PrecisionInput({
   value,
   onChange,
   onCommit,
@@ -736,7 +739,7 @@ function PrecisionInput({
   );
 }
 
-function InlineSelect({ value, options, onChange, title, variant = 'dtype' }: InlineSelectProps) {
+export function InlineSelect({ value, options, onChange, title, variant = 'dtype' }: InlineSelectProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);

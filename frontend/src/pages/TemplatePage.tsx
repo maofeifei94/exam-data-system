@@ -27,7 +27,7 @@ import { Spinner } from '../components/Spinner';
 import { TokenEditor } from '../components/TokenEditor';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
-import { mergeFieldLists } from '../lib/projectFields';
+import { projectFieldsAsStandard } from '../lib/projectFields';
 import {
   DEFAULT_MATRIX,
   appendChild,
@@ -417,14 +417,17 @@ export default function TemplatePage({
     (async () => {
       setLoading(true);
       try {
-        const [datasetList, fieldList, projectFields] = await Promise.all([
+        const [datasetList, globalFields, projectFields] = await Promise.all([
           listDatasets(currentProjectId || undefined),
           listStandardFields(),
           listProjectFields(currentProjectId || ''),
         ]);
         if (!active) return;
         setDatasets(datasetList);
-        setFields(mergeFieldLists(fieldList, projectFields));
+        // 项目作用域只引用本项目字段；全局模板编辑仍使用全局字段库。
+        setFields(
+          scope === 'project' ? projectFieldsAsStandard(projectFields) : globalFields,
+        );
         if (datasetList.length > 0) setDatasetId(datasetList[0].id);
       } catch (err) {
         show(err instanceof Error ? err.message : '加载数据失败', 'error');
@@ -436,7 +439,7 @@ export default function TemplatePage({
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProjectId]);
+  }, [currentProjectId, scope]);
 
   // ------------------------------------------------------------------
   // 加载当前作用域下的模板（随作用域 / 当前项目变化）

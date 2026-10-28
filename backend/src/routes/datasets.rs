@@ -189,7 +189,10 @@ pub async fn import(
                     },
                 )?;
                 let names: Vec<String> = prepared.columns.iter().map(|c| c.name.clone()).collect();
-                let mapping = store::suggest_columns(tx, &names)?;
+                // 有项目时只按项目本地字段推断，避免数据集引用全局字段。
+                let project_scope =
+                    (!prepared.project_id.is_empty()).then_some(prepared.project_id.as_str());
+                let mapping = store::suggest_columns(tx, &names, project_scope)?;
                 let preview = store::read_rows(tx, &dataset.id, 0, 20)?;
                 Ok(ImportResult {
                     dataset,

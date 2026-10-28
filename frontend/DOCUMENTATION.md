@@ -86,7 +86,7 @@ React 应用 src/main.tsx → App.tsx
 | `src/lib/templateModel.ts` | **PDF 模板的几何与元素树模型**（详见第 4 节）。 |
 | `src/lib/flowModel.ts` | 流程图画布布局算法：主链 / 分支节点坐标计算、相对插入、分支兄弟节点。 |
 | `src/lib/tokens.ts` | 字段胶囊解析与配色：表达式 token、模板 token、字段配色、hex→rgba。 |
-| `src/lib/projectFields.ts` | `mergeFieldLists(globals, projectFields)`：按字段名合并全局字段与项目本地字段，同名时项目字段优先，供导入映射 / 流程编辑器 / 模板字段建议共用。 |
+| `src/lib/projectFields.ts` | `projectFieldsAsStandard(projectFields)`：把项目本地字段转换成标准字段形状。**不做全局合并**——项目内只能引用本项目字段，全局字段需先复制进项目。 |
 | `src/lib/native.ts` | 见上（桌面能力）。 |
 | `*.test.ts` | 上述模块的单元测试（vitest）。 |
 
@@ -94,12 +94,12 @@ React 应用 src/main.tsx → App.tsx
 
 | 文件 | 职责 |
 | --- | --- |
-| `ProjectTemplatesPage.tsx` | **项目模板**：左侧栏「项目文件」之前的栏目，默认空。分「字段模板 / PDF 模板」两个 tab，可从全局字段库勾选复制、从全局 PDF 模板复制、或新建空白模板，并就地编辑/移除；保存结果全部落在本项目（`project_fields` / project scope 模板），不依赖全局。 |
+| `ProjectTemplatesPage.tsx` | **项目模板**：左侧栏「项目文件」之前的栏目，默认空。分「字段模板 / PDF 模板」两个 tab。字段以卡片展示（与全局「字段别名」页一致：卡片内联改名/改类型/改小数位/改说明），可从全局字段库勾选复制、移除；PDF 模板可从全局复制或新建空白。保存结果全部落在本项目（`project_fields` / project scope 模板），不依赖全局。 |
 | `ProjectFilesPage.tsx` | 项目文件总览：项目信息、关联数据集、快捷入口（导入 / 流程 / 模板）。 |
 | `ImportPage.tsx` | 数据导入：顶部横向步骤条（选择文件 → 数据预览 → 字段映射 → 完成），每步独立面板、内部滚动，底部固定上一步/下一步按钮，避免长表单溢出窗口。 |
 | `ProjectFlowPage.tsx` | 处理流程编辑器：画布节点、两级参数表单、静态校验、运行与运行日志。 |
 | `DataFlowPage.tsx` | **数据流**：左侧按 `branch_of` 还原的节点多级目录，右侧查看该节点数据表；终点节点展示 PDF 预览与下载。 |
-| `AliasPage.tsx` | 字段别名与标准字段管理：分组卡片、拖拽换组、改名、增删别名。 |
+| `AliasPage.tsx` | 字段别名与标准字段管理：分组卡片、拖拽换组、改名、增删别名。别名胶囊共用同一前缀「别名：」，多个别名以逗号分隔；`InlineSelect` / `PrecisionInput` 也供项目模板卡片复用。 |
 | `TemplatePage.tsx` | PDF 模板设计器：页面/矩阵设置、元素树、画布拖拽缩放、属性面板、预览与渲染导出。 |
 
 ---
@@ -271,10 +271,10 @@ FlowStepData extends RowPage {
 - 步骤 2 映射表使用 `data-table align-center bordered`，列出「原名 / 建议标准字段 / 保存为新别名」，
   必要字段以 chips 展示；点击「应用映射」后进入步骤 3；
 - 步骤 3 展示导入结果行数并向父组件回调 `onImported(dataset)`，「再导入一个文件」调用 `reset()`。
-- 字段候选取 `mergeFieldLists(listStandardFields(), listProjectFields(projectId))`，
-  因此导入时可直接选用项目模板里自定义的字段。
+- 字段候选只取 `listProjectFields(projectId)`；全局字段必须先复制进本项目才会出现。
+  后端导入建议同样按 `project_id` 作用域，避免数据集隐式引用全局字段。
 
-### 4.9 项目模板的字段合并与作用域
+### 4.9 项目模板的复制与作用域
 
 项目模板页（`ProjectTemplatesPage.tsx`）把全局资源「复制」为本项目资源，复制后完全本地可控：
 
@@ -283,10 +283,10 @@ FlowStepData extends RowPage {
 | 字段 | `listStandardFields()` 勾选 → `copyProjectFields(projectId, ids)` | `project_fields`（`UNIQUE(project_id, name)`，重复复制幂等） |
 | PDF 模板 | `listPdfTemplates({scope:'global'})` → `duplicatePdfTemplate(id, {project_id})` | `pdf_templates` 中 `scope='project'` 的新行 |
 
-- 编辑项目字段：`updateProjectField` 只改本项目副本，全局字典不变；
+- 编辑项目字段：卡片内联修改（名称/类型/小数位/说明），`updateProjectField` 只改本项目副本；
 - 移除项目字段：仅删本地副本，不影响全局与其他项目；
 - 「新建空白模板」通过 `TemplatePage` 的 `initialNew` 参数打开空白草稿，保存时 `scope='project'`；
-- 合并规则见 `mergeFieldLists`：同名时项目字段覆盖全局字段，保证项目自定义字段在同名时生效。
+- 项目内只使用 `project_fields`，全局字段不会自动出现（`TemplatePage` 仅在全局作用域时使用全局字段库）。
 
 ### 4.10 外观选项（`选项` 菜单）
 

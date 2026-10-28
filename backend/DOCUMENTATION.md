@@ -101,8 +101,11 @@ SQLite（WAL 模式）
 
 `project_fields` 与 `standard_fields` 字段结构一致（`name / label / dtype / precision /
 group_id / description`），额外带 `project_id` 与 `source_id`（来源全局字段 id，仅作溯源）。
-前端把两份列表按 `name` 合并后作为导入映射、流程编辑器、模板字段建议的候选集合，
-项目字段同名时优先，从而让项目模板脱离全局字典独立演进。
+
+作用域规则：**项目内只能引用本项目字段**。导入建议（`store::suggest_columns` 收到
+`project_id` 时）只查 `project_fields`，别名也仅在其目标标准名属于该项目时生效；
+流程编辑器、导入映射、项目 PDF 模板的字段候选同样只来自 `project_fields`。
+全局字段必须先在「项目模板」中复制到本项目，才能被项目内的数据集/流程/模板引用。
 
 ### 3.2 动态数据表 `data_<dataset_id>`
 
@@ -285,7 +288,7 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 新增照片元素的三个配置：`photo_dir`（目录，可由系统对话框选择）、
 `photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）。
 
-### 4.10 项目字段复制（`routes/project_fields.rs::copy_fields`）
+### 4.10 项目字段复制与作用域（`routes/project_fields.rs::copy_fields`）
 
 `POST /api/project-fields/copy` 接收 `{ project_id, field_ids }`，把全局字段复制为本项目字段：
 
@@ -295,7 +298,10 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 - 使用 `INSERT ... ON CONFLICT(project_id, name) DO NOTHING`：
   **同项目中同名时跳过而不是报错**，因此重复点击「从全局添加」结果是幂等的，
   返回本次实际新增的条数；未知 `field_ids` 直接忽略；
-- 复制后项目字段拥有独立主键，后续改名/改类型/删除只影响本项目，全局字典不变。
+- 复制后项目字段拥有独立主键，后续改名/改类型/删除只影响本项目，全局字典不变；
+- 导入时的列映射建议（`store::suggest_columns(conn, names, project_id)`）在
+  `project_id` 非空时只匹配本项目字段，别名映射若指向项目里不存在的字段则不生效，
+  因此项目数据集不会隐式引用全局字段。
 
 ---
 
