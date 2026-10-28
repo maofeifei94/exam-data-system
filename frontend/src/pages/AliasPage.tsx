@@ -602,9 +602,8 @@ export default function AliasPage() {
                         ) : (
                           <>
                             <span className="alias-chip-prefix">别名：</span>
-                            {card.aliases.map((alias, index) => (
+                            {card.aliases.map((alias) => (
                               <span key={alias.id} className="alias-chip">
-                                {index > 0 ? <span className="alias-chip-sep">，</span> : null}
                                 {alias.alias}
                                 <button
                                   className="alias-chip-remove"

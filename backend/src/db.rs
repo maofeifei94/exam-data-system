@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS project_fields (
     UNIQUE (project_id, name)
 );
 
+-- 项目本地别名：复制全局字段时连同别名单一起复制，之后可在项目内独立增删。
+CREATE TABLE IF NOT EXISTS project_alias_mappings (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    alias       TEXT NOT NULL,
+    standard    TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE (project_id, alias)
+);
+
 CREATE TABLE IF NOT EXISTS alias_mappings (
     id          TEXT PRIMARY KEY,
     alias       TEXT NOT NULL UNIQUE,
@@ -125,6 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_datasets_project ON datasets(project_id);
 CREATE INDEX IF NOT EXISTS idx_flows_project ON flows(project_id);
 CREATE INDEX IF NOT EXISTS idx_pdf_templates_project ON pdf_templates(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_fields_project ON project_fields(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_aliases_project ON project_alias_mappings(project_id);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_dataset ON flow_runs(dataset_id);
 "#;

@@ -472,13 +472,29 @@ pub fn suggest_columns(
     };
 
     // 别名只在其目标标准名存在于当前作用域时才生效，防止把列映射到项目里没有的字段。
-    let mut stmt = conn.prepare("SELECT alias, standard FROM alias_mappings")?;
-    let alias_map: HashMap<String, String> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|(_, standard)| standards.iter().any(|name| name == standard))
-        .collect();
+    let alias_map: HashMap<String, String> = match project_id.filter(|id| !id.is_empty()) {
+        Some(id) => {
+            let mut stmt = conn.prepare(
+                "SELECT alias, standard FROM project_alias_mappings WHERE project_id = ?1",
+            )?;
+            let rows = stmt.query_map(params![id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|(_, standard)| standards.iter().any(|name| name == standard))
+                .collect()
+        }
+        None => {
+            let mut stmt = conn.prepare("SELECT alias, standard FROM alias_mappings")?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|(_, standard)| standards.iter().any(|name| name == standard))
+                .collect()
+        }
+    };
 
     Ok(columns
         .iter()
@@ -664,15 +680,31 @@ mod tests {
         )
         .expect("project field");
 
-        let names = vec!["成绩".to_string(), "分数".to_string(), "姓名".to_string()];
+        // 项目自己的别名（复制全局字段时带过来的）应当生效。
+        conn.execute(
+            "INSERT INTO project_alias_mappings (id, project_id, alias, standard, updated_at)
+             VALUES ('pa1', 'proj1', '名字', '姓名', 'now')",
+            [],
+        )
+        .expect("project alias");
+
+        let names = vec![
+            "成绩".to_string(),
+            "分数".to_string(),
+            "姓名".to_string(),
+            "名字".to_string(),
+        ];
         let got = suggest_columns(&conn, &names, Some("proj1")).expect("suggest");
 
-        // 全局字段与别名都不应穿透到项目作用域。
+        // 全局字段与全局别名都不应穿透到项目作用域。
         assert_eq!(got[0].matched_by, "none");
         assert!(got[0].standard.is_none());
         assert_eq!(got[1].matched_by, "none");
         assert!(got[1].standard.is_none());
         assert_eq!(got[2].matched_by, "exact_standard");
+        // 项目别名可以命中本项目字段。
+        assert_eq!(got[3].matched_by, "alias");
+        assert_eq!(got[3].standard.as_deref(), Some("姓名"));
     }
 
     #[test]

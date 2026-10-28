@@ -5,7 +5,10 @@
 
 use crate::db::{self, new_id, now};
 use crate::error::{AppError, AppResult};
-use crate::models::{CopyProjectFieldsInput, ProjectField, ProjectFieldInput, ProjectFieldUpdate};
+use crate::models::{
+    CopyProjectFieldsInput, ProjectAlias, ProjectAliasInput, ProjectField, ProjectFieldInput,
+    ProjectFieldUpdate,
+};
 use crate::routes::fields::{normalize_dtype, validate_field_name};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
@@ -147,7 +150,7 @@ pub async fn update(
     let field = state
         .db(move |conn| {
             db::with_tx(conn, |tx| {
-                fetch_field(tx, &id)?;
+                let old = fetch_field(tx, &id)?;
                 tx.execute(
                     "UPDATE project_fields
                      SET name = ?1, label = ?2, dtype = ?3, precision = ?4, group_id = ?5,
@@ -171,6 +174,14 @@ pub async fn update(
                         AppError::from(e)
                     }
                 })?;
+                // 字段改名时同步项目内的别名归属，卡片不会残留在旧名上。
+                if old.name != name {
+                    tx.execute(
+                        "UPDATE project_alias_mappings SET standard = ?1, updated_at = ?2
+                         WHERE project_id = ?3 AND standard = ?4",
+                        params![name, now(), old.project_id, old.name],
+                    )?;
+                }
                 fetch_field(tx, &id)
             })
         })
@@ -185,13 +196,122 @@ pub async fn remove(
     let removed = state
         .db(move |conn| {
             db::with_tx(conn, |tx| {
-                fetch_field(tx, &id)?;
+                let field = fetch_field(tx, &id)?;
+                tx.execute(
+                    "DELETE FROM project_alias_mappings WHERE project_id = ?1 AND standard = ?2",
+                    params![field.project_id, field.name],
+                )?;
                 Ok(tx.execute("DELETE FROM project_fields WHERE id = ?1", params![id])? as i64)
             })
         })
         .await?;
     if removed == 0 {
         return Err(AppError::not_found("项目字段不存在"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+const ALIAS_COLS: &str = "id, project_id, alias, standard, updated_at";
+
+fn row_to_alias(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectAlias> {
+    Ok(ProjectAlias {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        alias: r.get(2)?,
+        standard: r.get(3)?,
+        updated_at: r.get(4)?,
+    })
+}
+
+/// 列出项目内的全部别名（服务于项目字段卡片）。
+pub async fn list_aliases(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ProjectFieldsQuery>,
+) -> AppResult<Json<Vec<ProjectAlias>>> {
+    let project_id = q.project_id.unwrap_or_default().trim().to_string();
+    if project_id.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+    let aliases = state
+        .db(move |conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {ALIAS_COLS} FROM project_alias_mappings
+                 WHERE project_id = ?1 ORDER BY updated_at ASC"
+            ))?;
+            let rows = stmt.query_map(params![project_id], row_to_alias)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .await?;
+    Ok(Json(aliases))
+}
+
+/// 新增或更新一条项目别名（同一项目内别名唯一）。
+pub async fn save_alias(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<ProjectAliasInput>,
+) -> AppResult<Json<ProjectAlias>> {
+    let project_id = require_project(&input.project_id)?;
+    let alias = input.alias.trim().to_string();
+    let standard = input.standard.trim().to_string();
+    if alias.is_empty() || standard.is_empty() {
+        return Err(AppError::validation("别名与字段名不能为空"));
+    }
+    if alias.chars().count() > 120 {
+        return Err(AppError::validation(format!("别名过长: {alias}")));
+    }
+
+    let saved = state
+        .db(move |conn| {
+            db::with_tx(conn, |tx| {
+                // 只允许给本项目已有的字段添加别名，避免项目别名指向全局字段。
+                let exists: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM project_fields WHERE project_id = ?1 AND name = ?2",
+                        params![project_id, standard],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if exists.is_none() {
+                    return Err(AppError::not_found(format!("本项目没有字段 [{standard}]")));
+                }
+                let ts = now();
+                tx.execute(
+                    "INSERT INTO project_alias_mappings (id, project_id, alias, standard, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(project_id, alias) DO UPDATE SET
+                         standard = excluded.standard,
+                         updated_at = excluded.updated_at",
+                    params![new_id(), project_id, alias, standard, ts],
+                )?;
+                tx.query_row(
+                    &format!(
+                        "SELECT {ALIAS_COLS} FROM project_alias_mappings
+                         WHERE project_id = ?1 AND alias = ?2"
+                    ),
+                    params![project_id, alias],
+                    row_to_alias,
+                )
+                .map_err(AppError::from)
+            })
+        })
+        .await?;
+    Ok(Json(saved))
+}
+
+pub async fn delete_alias(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> AppResult<Json<serde_json::Value>> {
+    let removed = state
+        .db(move |conn| {
+            Ok(conn.execute(
+                "DELETE FROM project_alias_mappings WHERE id = ?1",
+                params![id],
+            )? as i64)
+        })
+        .await?;
+    if removed == 0 {
+        return Err(AppError::not_found("别名不存在"));
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -254,6 +374,21 @@ fn copy_fields(conn: &Connection, project_id: &str, field_ids: &[String]) -> App
                 ts
             ],
         )? as i64;
+
+        // 别名整体复制到项目，保证项目字段的编辑界面与全局完全一致。
+        let mut alias_stmt =
+            conn.prepare("SELECT alias FROM alias_mappings WHERE standard = ?1")?;
+        let aliases: Vec<String> = alias_stmt
+            .query_map(params![name], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for alias in aliases {
+            conn.execute(
+                "INSERT INTO project_alias_mappings (id, project_id, alias, standard, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(project_id, alias) DO NOTHING",
+                params![new_id(), project_id, alias, name, ts],
+            )?;
+        }
     }
     Ok(copied)
 }
@@ -305,6 +440,41 @@ mod tests {
             )
             .expect("project row");
         assert_eq!(project_of, "p2");
+    }
+
+    #[test]
+    fn copy_brings_aliases_with_the_field() {
+        let conn = memory_db();
+        let id = seeded_field_id(&conn, "身份证号");
+        let global_aliases: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM alias_mappings WHERE standard = '身份证号'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("global aliases");
+        assert!(global_aliases > 0, "seed 数据应包含别名");
+
+        copy_fields(&conn, "p1", &[id]).expect("copy");
+        let project_aliases: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project_alias_mappings
+                 WHERE project_id = 'p1' AND standard = '身份证号'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("project aliases");
+        assert_eq!(project_aliases, global_aliases);
+
+        // 另一个项目不会共享别名。
+        let other: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project_alias_mappings WHERE project_id = 'p2'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("other aliases");
+        assert_eq!(other, 0);
     }
 
     #[test]

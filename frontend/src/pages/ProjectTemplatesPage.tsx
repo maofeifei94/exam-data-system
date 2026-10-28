@@ -3,16 +3,20 @@ import { Modal } from 'antd';
 import {
   copyProjectFields,
   deletePdfTemplate,
+  deleteProjectAlias,
   deleteProjectField,
   duplicatePdfTemplate,
   listPdfTemplates,
+  listProjectAliases,
   listProjectFields,
   listStandardFields,
+  saveProjectAlias,
   updateProjectField,
 } from '../api/client';
 import type {
   ColumnDtype,
   PdfTemplate,
+  ProjectAlias,
   ProjectField,
   ProjectFieldUpdate,
   StandardField,
@@ -56,6 +60,7 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
   const [tab, setTab] = useState<'fields' | 'pdf'>('fields');
 
   const [fields, setFields] = useState<ProjectField[]>([]);
+  const [aliases, setAliases] = useState<ProjectAlias[]>([]);
   const [templates, setTemplates] = useState<PdfTemplate[]>([]);
   const [globalFields, setGlobalFields] = useState<StandardField[]>([]);
   const [globalTemplates, setGlobalTemplates] = useState<PdfTemplate[]>([]);
@@ -68,20 +73,23 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
   const [pickTemplatesOpen, setPickTemplatesOpen] = useState(false);
   const [pickedTemplateIds, setPickedTemplateIds] = useState<string[]>([]);
 
-  // 卡片内联编辑草稿（字段名 / 说明）
+  // 卡片内联编辑草稿（字段名 / 新增别名）
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
-  const [descDrafts, setDescDrafts] = useState<Record<string, string>>({});
+  const [aliasDrafts, setAliasDrafts] = useState<Record<string, string>>({});
 
   const load = async (projectId: string) => {
     setLoading(true);
     try {
-      const [projectFieldList, projectTemplates, allFields, allTemplates] = await Promise.all([
-        listProjectFields(projectId),
-        listPdfTemplates({ projectId }),
-        listStandardFields(),
-        listPdfTemplates({ scope: 'global' }),
-      ]);
+      const [projectFieldList, projectAliasList, projectTemplates, allFields, allTemplates] =
+        await Promise.all([
+          listProjectFields(projectId),
+          listProjectAliases(projectId),
+          listPdfTemplates({ projectId }),
+          listStandardFields(),
+          listPdfTemplates({ scope: 'global' }),
+        ]);
       setFields(projectFieldList);
+      setAliases(projectAliasList);
       setTemplates(projectTemplates);
       setGlobalFields(allFields);
       setGlobalTemplates(allTemplates);
@@ -95,6 +103,7 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
   useEffect(() => {
     if (!currentProjectId) {
       setFields([]);
+      setAliases([]);
       setTemplates([]);
       setGlobalFields([]);
       setGlobalTemplates([]);
@@ -105,6 +114,9 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
   }, [currentProjectId]);
 
   const existingNames = useMemo(() => new Set(fields.map((field) => field.name)), [fields]);
+
+  /** 某字段在本项目内的别名（卡片渲染用）。 */
+  const fieldAliases = (name: string) => aliases.filter((alias) => alias.standard === name);
 
   const openPickFields = () => {
     setPickedFieldIds([]);
@@ -164,19 +176,44 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
     });
     if (name !== field.name) {
       await patchField(field, { name, label: name });
+      setAliases((prev) =>
+        prev.map((item) => (item.standard === field.name ? { ...item, standard: name } : item)),
+      );
     }
   };
 
-  const commitDescription = async (field: ProjectField) => {
-    const raw = descDrafts[field.id];
-    if (raw === undefined) return;
-    setDescDrafts((prev) => {
-      const next = { ...prev };
-      delete next[field.id];
-      return next;
-    });
-    if (raw !== field.description) {
-      await patchField(field, { description: raw });
+  /** 给项目字段添加别名（与全局别名页一致：回车或点「添加」）。 */
+  const addAlias = async (field: ProjectField) => {
+    const raw = (aliasDrafts[field.name] ?? '').trim();
+    if (!currentProjectId || !raw) return;
+    setBusy(true);
+    try {
+      const saved = await saveProjectAlias({
+        project_id: currentProjectId,
+        alias: raw,
+        standard: field.name,
+      });
+      setAliases((prev) => {
+        const rest = prev.filter((item) => item.id !== saved.id && item.alias !== saved.alias);
+        return [...rest, saved];
+      });
+      setAliasDrafts((prev) => ({ ...prev, [field.name]: '' }));
+    } catch (err) {
+      show(err instanceof Error ? err.message : '添加别名失败', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeAlias = async (alias: ProjectAlias) => {
+    setBusy(true);
+    try {
+      await deleteProjectAlias(alias.id);
+      setAliases((prev) => prev.filter((item) => item.id !== alias.id));
+    } catch (err) {
+      show(err instanceof Error ? err.message : '删除别名失败', 'error');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -185,6 +222,7 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
     try {
       await deleteProjectField(field.id);
       setFields((prev) => prev.filter((item) => item.id !== field.id));
+      setAliases((prev) => prev.filter((item) => item.standard !== field.name));
       show('已从本项目移除', 'success');
     } catch (err) {
       show(err instanceof Error ? err.message : '删除字段失败', 'error');
@@ -364,25 +402,51 @@ export default function ProjectTemplatesPage({ onEditTemplate, onNewTemplate }: 
                           </span>
                         </div>
 
-                        <input
-                          className="alias-desc-input"
-                          placeholder="说明（可选）"
-                          value={descDrafts[field.id] ?? field.description}
-                          onChange={(event) =>
-                            setDescDrafts((prev) => ({ ...prev, [field.id]: event.target.value }))
-                          }
-                          onBlur={() => void commitDescription(field)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') event.currentTarget.blur();
-                            if (event.key === 'Escape') {
-                              setDescDrafts((prev) => {
-                                const next = { ...prev };
-                                delete next[field.id];
-                                return next;
-                              });
+                        <div className="alias-chips">
+                          {fieldAliases(field.name).length === 0 ? (
+                            <span className="alias-empty">暂无别名</span>
+                          ) : (
+                            <>
+                              <span className="alias-chip-prefix">别名：</span>
+                              {fieldAliases(field.name).map((alias) => (
+                                <span key={alias.id} className="alias-chip">
+                                  {alias.alias}
+                                  <button
+                                    className="alias-chip-remove"
+                                    title="删除该别名"
+                                    onClick={() => void removeAlias(alias)}
+                                  >
+                                    ✕
+                                  </button>
+                                </span>
+                              ))}
+                            </>
+                          )}
+                        </div>
+
+                        <div className="alias-add">
+                          <input
+                            type="text"
+                            placeholder="添加别名，回车确认"
+                            value={aliasDrafts[field.name] ?? ''}
+                            onChange={(event) =>
+                              setAliasDrafts((prev) => ({
+                                ...prev,
+                                [field.name]: event.target.value,
+                              }))
                             }
-                          }}
-                        />
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') void addAlias(field);
+                            }}
+                          />
+                          <button
+                            className="btn btn-sm"
+                            disabled={busy || !(aliasDrafts[field.name] ?? '').trim()}
+                            onClick={() => void addAlias(field)}
+                          >
+                            添加
+                          </button>
+                        </div>
                       </div>
                     );
                   })}

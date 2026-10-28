@@ -71,6 +71,14 @@ pub fn router() -> Router<Arc<AppState>> {
             "/api/project-fields/:id",
             put(project_fields::update).delete(project_fields::remove),
         )
+        .route(
+            "/api/project-aliases",
+            get(project_fields::list_aliases).post(project_fields::save_alias),
+        )
+        .route(
+            "/api/project-aliases/:id",
+            delete(project_fields::delete_alias),
+        )
         // 流程
         .route("/api/operators", get(flows::operators))
         .route("/api/flows", get(flows::list).post(flows::create))

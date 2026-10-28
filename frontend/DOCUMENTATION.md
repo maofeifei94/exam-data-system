@@ -99,7 +99,7 @@ React 应用 src/main.tsx → App.tsx
 | `ImportPage.tsx` | 数据导入：顶部横向步骤条（选择文件 → 数据预览 → 字段映射 → 完成），每步独立面板、内部滚动，底部固定上一步/下一步按钮，避免长表单溢出窗口。 |
 | `ProjectFlowPage.tsx` | 处理流程编辑器：画布节点、两级参数表单、静态校验、运行与运行日志。 |
 | `DataFlowPage.tsx` | **数据流**：左侧按 `branch_of` 还原的节点多级目录，右侧查看该节点数据表；终点节点展示 PDF 预览与下载。 |
-| `AliasPage.tsx` | 字段别名与标准字段管理：分组卡片、拖拽换组、改名、增删别名。别名胶囊共用同一前缀「别名：」，多个别名以逗号分隔；`InlineSelect` / `PrecisionInput` 也供项目模板卡片复用。 |
+| `AliasPage.tsx` | 字段别名与标准字段管理：分组卡片、拖拽换组、改名、增删别名。别名胶囊共用同一前缀「别名：」，其后并列展示全部别名标签（不重复前缀、不加分隔符）；`InlineSelect` / `PrecisionInput` 也供项目模板卡片复用。 |
 | `TemplatePage.tsx` | PDF 模板设计器：页面/矩阵设置、元素树、画布拖拽缩放、属性面板、预览与渲染导出。 |
 
 ---
@@ -280,10 +280,13 @@ FlowStepData extends RowPage {
 
 | 资源 | 复制来源 | 落地位置 |
 | --- | --- | --- |
-| 字段 | `listStandardFields()` 勾选 → `copyProjectFields(projectId, ids)` | `project_fields`（`UNIQUE(project_id, name)`，重复复制幂等） |
+| 字段 + 别名 | `listStandardFields()` 勾选 → `copyProjectFields(projectId, ids)` | `project_fields`（`UNIQUE(project_id, name)`）+ `project_alias_mappings`（字段的全局别名单整体复制） |
 | PDF 模板 | `listPdfTemplates({scope:'global'})` → `duplicatePdfTemplate(id, {project_id})` | `pdf_templates` 中 `scope='project'` 的新行 |
 
-- 编辑项目字段：卡片内联修改（名称/类型/小数位/说明），`updateProjectField` 只改本项目副本；
+- 项目字段卡片与全局「字段别名」页使用同一套卡片样式（`alias-card` / `alias-name-input` /
+  `alias-type-combo` / `alias-chips` / `alias-add`），颜色与交互一致；
+- 编辑项目字段：卡片内联修改名称/类型/小数位，别名可增删（`saveProjectAlias` /
+  `deleteProjectAlias`），`updateProjectField` 只改本项目副本；
 - 移除项目字段：仅删本地副本，不影响全局与其他项目；
 - 「新建空白模板」通过 `TemplatePage` 的 `initialNew` 参数打开空白草稿，保存时 `scope='project'`；
 - 项目内只使用 `project_fields`，全局字段不会自动出现（`TemplatePage` 仅在全局作用域时使用全局字段库）。

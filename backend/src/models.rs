@@ -237,6 +237,23 @@ pub struct CopyProjectFieldsInput {
     pub field_ids: Vec<String>,
 }
 
+/// 项目本地别名。结构与全局别名一致，但按 `project_id` 隔离。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectAlias {
+    pub id: String,
+    pub project_id: String,
+    pub alias: String,
+    pub standard: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectAliasInput {
+    pub project_id: String,
+    pub alias: String,
+    pub standard: String,
+}
+
 // ---------------- 流程 ----------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

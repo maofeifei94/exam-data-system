@@ -20,6 +20,8 @@ import type {
   OperatorDef,
   PdfTemplate,
   PdfTemplateInput,
+  ProjectAlias,
+  ProjectAliasInput,
   ProjectField,
   ProjectFieldInput,
   ProjectFieldUpdate,
@@ -465,6 +467,25 @@ export function copyProjectFields(
     method: 'POST',
     body: JSON.stringify({ project_id: projectId, field_ids: fieldIds }),
   });
+}
+
+/** 列出项目本地别名。 */
+export function listProjectAliases(projectId: string): Promise<ProjectAlias[]> {
+  if (!projectId) return Promise.resolve([]);
+  return apiRequest<ProjectAlias[]>(
+    `/api/project-aliases?project_id=${encodeURIComponent(projectId)}`,
+  );
+}
+
+export function saveProjectAlias(input: ProjectAliasInput): Promise<ProjectAlias> {
+  return apiRequest<ProjectAlias>('/api/project-aliases', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteProjectAlias(id: string): Promise<OkResponse> {
+  return apiRequest<OkResponse>(`/api/project-aliases/${id}`, { method: 'DELETE' });
 }
 
 // ---------------------------------------------------------------------------

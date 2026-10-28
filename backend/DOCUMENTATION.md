@@ -73,7 +73,7 @@ SQLite（WAL 模式）
 | `src/routes/projects.rs` | 考试项目 CRUD。删除项目时解绑关联数据集；可把项目绑定写回配置文件。 |
 | `src/routes/datasets.rs` | 数据集列表/详情/删除、分页行读取、CSV 导出、文件导入、字段映射应用。 |
 | `src/routes/fields.rs` | 标准字段、字段分组、别名映射；导入列映射建议。 |
-| `src/routes/project_fields.rs` | 项目本地字段（项目模板）CRUD，以及从全局字段库幂等复制到本项目的 `/api/project-fields/copy`。 |
+| `src/routes/project_fields.rs` | 项目本地字段（项目模板）CRUD、项目本地别名 CRUD（`/api/project-aliases`），以及从全局字段库幂等复制字段+别名到本项目的 `/api/project-fields/copy`。 |
 | `src/routes/flows.rs` | 流程 CRUD、复制、运行、运行记录、静态校验、操作符目录、节点数据预览（`/steps/:index/rows`）。 |
 | `src/routes/pdf.rs` | PDF 模板 CRUD、复制、按已存模板渲染、按草稿模板预览。 |
 
@@ -95,15 +95,17 @@ SQLite（WAL 模式）
 | `flow_runs` | 流程运行记录：状态、消息、生成的 SQL、输出数据集 id。 |
 | `pdf_templates` | PDF 模板，`template` 列存 `TemplateBody` 的 JSON。 |
 | `project_fields` | 项目本地字段副本。由全局 `standard_fields` 挑选复制而来，`UNIQUE(project_id, name)`；修改只影响本项目，不回写全局字典。 |
+| `project_alias_mappings` | 项目本地别名。复制全局字段时连同别名单一起复制，`UNIQUE(project_id, alias)`；可独立增删，不写回 `alias_mappings`。 |
 
 索引：`datasets(project_id)`、`flows(project_id)`、`pdf_templates(project_id)`、
-`project_fields(project_id)`、`flow_runs(flow_id)`、`flow_runs(dataset_id)`，避免项目/流程列表全表扫描。
+`project_fields(project_id)`、`project_alias_mappings(project_id)`、`flow_runs(flow_id)`、
+`flow_runs(dataset_id)`，避免项目/流程列表全表扫描。
 
 `project_fields` 与 `standard_fields` 字段结构一致（`name / label / dtype / precision /
 group_id / description`），额外带 `project_id` 与 `source_id`（来源全局字段 id，仅作溯源）。
 
 作用域规则：**项目内只能引用本项目字段**。导入建议（`store::suggest_columns` 收到
-`project_id` 时）只查 `project_fields`，别名也仅在其目标标准名属于该项目时生效；
+`project_id` 时）只查 `project_fields`，别名只查 `project_alias_mappings`；
 流程编辑器、导入映射、项目 PDF 模板的字段候选同样只来自 `project_fields`。
 全局字段必须先在「项目模板」中复制到本项目，才能被项目内的数据集/流程/模板引用。
 
@@ -298,9 +300,16 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 - 使用 `INSERT ... ON CONFLICT(project_id, name) DO NOTHING`：
   **同项目中同名时跳过而不是报错**，因此重复点击「从全局添加」结果是幂等的，
   返回本次实际新增的条数；未知 `field_ids` 直接忽略；
+- **别名单一并复制**：按 `alias_mappings.standard = 字段名` 取出全局别名，
+  写入 `project_alias_mappings`（`UNIQUE(project_id, alias)`，冲突跳过），
+  因此项目字段卡片打开时就与全局别名页完全一致；
 - 复制后项目字段拥有独立主键，后续改名/改类型/删除只影响本项目，全局字典不变；
+  项目字段改名时同步更新 `project_alias_mappings.standard`，删除字段时连带删除其项目别名；
+- 项目别名通过 `GET /api/project-aliases?project_id=` 列出，
+  `POST /api/project-aliases` 新增/更新（只允许指向本项目已有字段），
+  `DELETE /api/project-aliases/:id` 删除；
 - 导入时的列映射建议（`store::suggest_columns(conn, names, project_id)`）在
-  `project_id` 非空时只匹配本项目字段，别名映射若指向项目里不存在的字段则不生效，
+  `project_id` 非空时只匹配本项目字段与**项目别名**，全局字段/全局别名不会穿透，
   因此项目数据集不会隐式引用全局字段。
 
 ---

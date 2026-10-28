@@ -140,6 +140,21 @@ export interface ProjectFieldUpdate {
   description: string;
 }
 
+/** 项目本地别名：复制全局字段时一并复制，之后可在项目内独立增删。 */
+export interface ProjectAlias {
+  id: string;
+  project_id: string;
+  alias: string;
+  standard: string;
+  updated_at: string;
+}
+
+export interface ProjectAliasInput {
+  project_id: string;
+  alias: string;
+  standard: string;
+}
+
 export interface FieldGroupInput {
   name: string;
   sort_order?: number;
