@@ -4612,3 +4612,157 @@ textarea.token-input {
     grid-template-columns: 220px minmax(0, 1fr);
   }
 }
+
+/* ====================================================================== */
+/* 表格显示选项：默认居中 + 边框（可在顶栏「选项」中切换）                   */
+/* ====================================================================== */
+.data-table.align-center th,
+.data-table.align-center td {
+  text-align: center;
+}
+
+/* 居中时让「列名 + 序号」也一起居中，避免表头错位 */
+.data-table.align-center th .col-name,
+.data-table.align-center th .col-index {
+  text-align: center;
+}
+
+.data-table.bordered th,
+.data-table.bordered td {
+  border: 1px solid var(--border);
+}
+
+.data-table.borderless th,
+.data-table.borderless td {
+  border: 0;
+}
+
+/* ---------------------- 数据导入：横向步骤条 ---------------------- */
+.import-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.import-steps {
+  padding: 6px 4px 2px;
+}
+
+.import-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.import-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.import-footer .footer-hint {
+  margin-right: auto;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+/* ---------------------- 项目模板 ---------------------- */
+.project-templates {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.template-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.template-tabs .tab-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 5px 16px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.template-tabs .tab-btn.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.project-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.project-template-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.project-template-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-template-card__name {
+  font-weight: 600;
+}
+
+.project-template-card__meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+
+.pick-row:hover {
+  background: var(--bg-zebra);
+}
+
+.pick-row.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

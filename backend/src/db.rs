@@ -61,6 +61,22 @@ CREATE TABLE IF NOT EXISTS standard_fields (
     system      INTEGER NOT NULL DEFAULT 0
 );
 
+-- 项目本地字段：从全局字段库挑选复制而来，可独立修改，不影响全局字典。
+CREATE TABLE IF NOT EXISTS project_fields (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    label       TEXT NOT NULL DEFAULT '',
+    dtype       TEXT NOT NULL DEFAULT 'text',
+    precision   INTEGER NOT NULL DEFAULT 2,
+    group_id    TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    source_id   TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE (project_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS alias_mappings (
     id          TEXT PRIMARY KEY,
     alias       TEXT NOT NULL UNIQUE,
@@ -108,6 +124,7 @@ CREATE TABLE IF NOT EXISTS pdf_templates (
 CREATE INDEX IF NOT EXISTS idx_datasets_project ON datasets(project_id);
 CREATE INDEX IF NOT EXISTS idx_flows_project ON flows(project_id);
 CREATE INDEX IF NOT EXISTS idx_pdf_templates_project ON pdf_templates(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_fields_project ON project_fields(project_id);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_dataset ON flow_runs(dataset_id);
 "#;

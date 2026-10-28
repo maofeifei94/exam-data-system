@@ -9,6 +9,7 @@ import {
   listFlows,
   listOperators,
   listPdfTemplates,
+  listProjectFields,
   listStandardFields,
   renderPdfTemplate,
   runFlow,
@@ -33,6 +34,7 @@ import { EmptyState } from '../components/EmptyState';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import { mergeFieldLists } from '../lib/projectFields';
 import { TokenEditor } from '../components/TokenEditor';
 import {
   NODE_H as FLOW_NODE_H,
@@ -291,18 +293,20 @@ export default function ProjectFlowPage() {
     (async () => {
       setLoading(true);
       try {
-        const [ops, datasetList, fields, flows, projectTpl, globalTpl] = await Promise.all([
-          listOperators(),
-          listDatasets(currentProjectId),
-          listStandardFields(),
-          listFlows({ projectId: currentProjectId }),
-          listPdfTemplates({ projectId: currentProjectId }),
-          listPdfTemplates({ scope: 'global' }),
-        ]);
+        const [ops, datasetList, fields, projectFields, flows, projectTpl, globalTpl] =
+          await Promise.all([
+            listOperators(),
+            listDatasets(currentProjectId),
+            listStandardFields(),
+            listProjectFields(currentProjectId),
+            listFlows({ projectId: currentProjectId }),
+            listPdfTemplates({ projectId: currentProjectId }),
+            listPdfTemplates({ scope: 'global' }),
+          ]);
         if (!active) return;
         setOperators(ops);
         setDatasets(datasetList);
-        setStandardFields(fields);
+        setStandardFields(mergeFieldLists(fields, projectFields));
         setProjectTemplates(projectTpl);
         setGlobalTemplates(globalTpl);
 

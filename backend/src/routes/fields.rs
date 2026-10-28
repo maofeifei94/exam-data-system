@@ -50,7 +50,7 @@ fn fetch_field(conn: &Connection, id: &str) -> AppResult<StandardField> {
         .ok_or_else(|| AppError::not_found("标准字段不存在"))
 }
 
-fn validate_field_name(raw: &str) -> AppResult<String> {
+pub(crate) fn validate_field_name(raw: &str) -> AppResult<String> {
     let name = raw.trim().to_string();
     if name.is_empty() {
         return Err(AppError::validation("标准字段名不能为空"));
@@ -61,7 +61,7 @@ fn validate_field_name(raw: &str) -> AppResult<String> {
     Ok(name)
 }
 
-fn normalize_dtype(raw: &str) -> AppResult<String> {
+pub(crate) fn normalize_dtype(raw: &str) -> AppResult<String> {
     let dtype = raw.trim().to_ascii_lowercase();
     if dtype.is_empty() {
         return Ok("text".to_string());

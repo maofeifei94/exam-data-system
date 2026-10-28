@@ -104,6 +104,42 @@ export interface FieldGroup {
   sort_order: number;
 }
 
+/** 项目本地字段副本：从全局字段库复制而来，修改只影响本项目。 */
+export interface ProjectField {
+  id: string;
+  project_id: string;
+  name: string;
+  label: string;
+  dtype: ColumnDtype;
+  precision: number;
+  group_id: string;
+  description: string;
+  /** 复制来源的全局字段 id；手工新建时为空 */
+  source_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectFieldInput {
+  project_id: string;
+  name: string;
+  label: string;
+  dtype: ColumnDtype;
+  precision?: number;
+  group_id?: string;
+  description: string;
+  source_id?: string;
+}
+
+export interface ProjectFieldUpdate {
+  name: string;
+  label: string;
+  dtype: ColumnDtype;
+  precision?: number;
+  group_id?: string;
+  description: string;
+}
+
 export interface FieldGroupInput {
   name: string;
   sort_order?: number;

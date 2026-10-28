@@ -7,6 +7,7 @@ import {
   duplicatePdfTemplate,
   listDatasets,
   listPdfTemplates,
+  listProjectFields,
   listStandardFields,
   previewPdfTemplate,
   renderPdfTemplate,
@@ -26,6 +27,7 @@ import { Spinner } from '../components/Spinner';
 import { TokenEditor } from '../components/TokenEditor';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import { mergeFieldLists } from '../lib/projectFields';
 import {
   DEFAULT_MATRIX,
   appendChild,
@@ -301,10 +303,13 @@ function saveBlob(blob: Blob, filename: string) {
 export default function TemplatePage({
   initialScope = 'global',
   initialTemplateId,
+  initialNew = false,
   onSaved,
 }: {
   initialScope?: 'global' | 'project';
   initialTemplateId?: string;
+  /** 为 true 时不载入已有模板，直接从空白模板开始新建 */
+  initialNew?: boolean;
   onSaved?: (template: PdfTemplate) => void;
 }) {
   const { show } = useToast();
@@ -348,6 +353,8 @@ export default function TemplatePage({
   } | null>(null);
 
   const hostRef = useRef<HTMLDivElement | null>(null);
+  /** 只在首次载入时使用「空白模板」；之后切换作用域正常载入已有模板。 */
+  const startBlankRef = useRef(initialNew);
   const appRef = useRef<App | null>(null);
   const viewportRef = useRef<Group | null>(null);
   const viewRef = useRef(view);
@@ -410,13 +417,14 @@ export default function TemplatePage({
     (async () => {
       setLoading(true);
       try {
-        const [datasetList, fieldList] = await Promise.all([
+        const [datasetList, fieldList, projectFields] = await Promise.all([
           listDatasets(currentProjectId || undefined),
           listStandardFields(),
+          listProjectFields(currentProjectId || ''),
         ]);
         if (!active) return;
         setDatasets(datasetList);
-        setFields(fieldList);
+        setFields(mergeFieldLists(fieldList, projectFields));
         if (datasetList.length > 0) setDatasetId(datasetList[0].id);
       } catch (err) {
         show(err instanceof Error ? err.message : '加载数据失败', 'error');
@@ -441,8 +449,10 @@ export default function TemplatePage({
           scope === 'project' && currentProjectId ? { projectId: currentProjectId } : { scope: 'global' },
         );
         if (!active) return;
-        const source =
-          (initialTemplateId && list.find((item) => item.id === initialTemplateId)) || list[0];
+        const source = startBlankRef.current
+          ? undefined
+          : (initialTemplateId && list.find((item) => item.id === initialTemplateId)) || list[0];
+        startBlankRef.current = false;
         setTemplates(list);
         setDraft(source ? toDraft(source) : { ...EMPTY_DRAFT, scope });
         setCollapsed(new Set());

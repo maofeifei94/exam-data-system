@@ -23,3 +23,6 @@ backend/tmp_scores.csv
 .idea/
 .DS_Store
 Thumbs.db
+
+# 项目本地 SSH 密钥（由 setup-ssh.sh 同步到 ~/.ssh）
+.ssh/

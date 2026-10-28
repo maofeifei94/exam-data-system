@@ -1,20 +1,24 @@
 import { useEffect, useState } from 'react';
-import { Button, Input, InputNumber, Select, Switch } from 'antd';
+import { Button, Input, InputNumber, Select, Steps, Switch } from 'antd';
 import {
   applyMapping,
   getDatasetRows,
   importDataset,
   listFlows,
+  listProjectFields,
   listStandardFields,
 } from '../api/client';
 import type { ColumnSuggestion, Dataset, ImportResult, RowPage, StandardField } from '../api/types';
 import { DataTable } from '../components/DataTable';
-import { Spinner } from '../components/Spinner';
+import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import { mergeFieldLists } from '../lib/projectFields';
 import type { ViewKey } from '../App';
 
 const KEEP_ORIGINAL = '__keep_original__';
+
+const STEP_TITLES = ['选择文件', '数据预览', '字段映射', '完成'];
 
 function matchedBadge(suggestion: ColumnSuggestion): { className: string; text: string } {
   switch (suggestion.matched_by) {
@@ -51,6 +55,10 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
   const [appliedDataset, setAppliedDataset] = useState<Dataset | null>(null);
   const [appliedRows, setAppliedRows] = useState<RowPage | null>(null);
 
+  /** 当前步骤；只有访问过的步骤才能通过顶部步骤条回跳 */
+  const [step, setStep] = useState(0);
+  const [maxStep, setMaxStep] = useState(0);
+
   // 数据导入只保留流程「必要字段校验」声明的字段，其余原始列在应用映射时删除。
   useEffect(() => {
     let active = true;
@@ -82,6 +90,22 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
     };
   }, [currentProjectId]);
 
+  const goTo = (next: number) => {
+    setMaxStep((prev) => Math.max(prev, next));
+    setStep(next);
+  };
+
+  const reset = () => {
+    setFile(null);
+    setName('');
+    setResult(null);
+    setMappings({});
+    setAppliedDataset(null);
+    setAppliedRows(null);
+    setStep(0);
+    setMaxStep(0);
+  };
+
   const handleImport = async () => {
     if (!file) {
       show('请先选择文件', 'error');
@@ -91,18 +115,20 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
     setAppliedDataset(null);
     setAppliedRows(null);
     try {
-      const [fields, imported] = await Promise.all([
+      const [fields, projectFields, imported] = await Promise.all([
         listStandardFields(),
+        listProjectFields(currentProjectId || ''),
         importDataset(file, name || undefined, headerRow, currentProjectId || undefined),
       ]);
-      setStandardFields(fields);
+      setStandardFields(mergeFieldLists(fields, projectFields));
       setResult(imported);
       const initial: Record<string, string> = {};
       for (const suggestion of imported.mapping) {
         initial[suggestion.source] = suggestion.standard ?? KEEP_ORIGINAL;
       }
       setMappings(initial);
-      show('导入成功，请确认字段映射', 'success');
+      goTo(1);
+      show('导入成功，请预览数据后确认字段映射', 'success');
     } catch (err) {
       show(err instanceof Error ? err.message : '导入失败', 'error');
     } finally {
@@ -127,6 +153,7 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
       );
       setAppliedDataset(dataset);
       setAppliedRows(await getDatasetRows(dataset.id, 0, 100));
+      goTo(3);
       show('映射已应用', 'success');
       onImported?.(dataset);
     } catch (err) {
@@ -139,167 +166,231 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
   return (
     <div className="page">
       <div className="page-header">
-        <h2 className="page-title">数据导入</h2>
+        <div>
+          <h2 className="page-title">数据导入</h2>
+          <p className="page-subtitle">
+            {currentProject ? `导入到考试项目「${currentProject.name}」` : '未归属项目，可先在顶部选择考试项目'}
+          </p>
+        </div>
       </div>
 
-      <section className="card">
-        <h3 className="card-title">第一步 · 选择文件</h3>
-        <label className="field">
-          <span className="field-label">Excel / CSV 文件</span>
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">数据集名称（可选）</span>
-          <Input
-            placeholder="留空则使用文件名"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="field">
-          <span className="field-label">表头行号</span>
-          <InputNumber
-            min={1}
-            style={{ width: 140 }}
-            value={headerRow}
-            onChange={(value) => setHeaderRow(Number(value) || 1)}
-          />
-        </label>
-        <p className="panel-hint">
-          导入的数据集将归属：
-          {currentProject ? `考试项目「${currentProject.name}」` : '未归属（可在顶部先选择考试项目）'}
-          {requiredFields.length > 0
-            ? `；应用映射后只保留流程声明的 ${requiredFields.length} 个必要字段，其余原始列与数据会被删除。`
-            : ''}
-        </p>
-        <Button type="primary" loading={importing} onClick={handleImport}>
-          开始导入
-        </Button>
-      </section>
+      <div className="import-wizard page-fill">
+        <Steps
+          className="import-steps"
+          size="small"
+          current={step}
+          onChange={(next) => {
+            if (next <= maxStep) setStep(next);
+          }}
+          items={STEP_TITLES.map((title) => ({ title }))}
+        />
 
-      {importing ? (
-        <div className="table-state">
-          <Spinner />
-          <span className="table-state-text">导入中…</span>
-        </div>
-      ) : null}
+        <div className="import-body">
+          {step === 0 ? (
+            <section className="card">
+              <h3 className="card-title">选择要导入的文件</h3>
+              <label className="field">
+                <span className="field-label">Excel / CSV 文件</span>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                />
+              </label>
+              <label className="field">
+                <span className="field-label">数据集名称（可选）</span>
+                <Input
+                  placeholder="留空则使用文件名"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span className="field-label">表头行号</span>
+                <InputNumber
+                  min={1}
+                  style={{ width: 140 }}
+                  value={headerRow}
+                  onChange={(value) => setHeaderRow(Number(value) || 1)}
+                />
+              </label>
+              <p className="panel-hint">
+                {requiredFields.length > 0
+                  ? `应用映射后只保留流程声明的 ${requiredFields.length} 个必要字段，其余原始列与数据会被删除。`
+                  : '支持 xlsx / xls / csv。导入后可先预览，再逐列确认字段映射。'}
+              </p>
+            </section>
+          ) : null}
 
-      {result ? (
-        <>
-          <section className="card">
-            <h3 className="card-title">导入预览（映射前）</h3>
-            <DataTable
-              columns={result.preview.columns.map((column) => column.name)}
-              rows={result.preview.rows}
-              emptyText="暂无预览数据"
-              maxHeight="320px"
-              stickyHeader
-            />
-          </section>
-
-          <section className="card">
-            <h3 className="card-title">第三步 · 字段映射</h3>
-            <table className="data-table">
-              <thead className="data-table__head">
-                <tr>
-                  <th>源字段</th>
-                  <th>标准字段</th>
-                  <th>匹配方式</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.mapping.map((suggestion, index) => {
-                  const badge = matchedBadge(suggestion);
-                  return (
-                    <tr key={suggestion.source} className={index % 2 === 1 ? 'even' : undefined}>
-                      <td>{suggestion.source}</td>
-                      <td>
-                        <Select
-                          style={{ width: '100%', minWidth: 220 }}
-                          value={mappings[suggestion.source] ?? KEEP_ORIGINAL}
-                          onChange={(value) =>
-                            setMappings((prev) => ({
-                              ...prev,
-                              [suggestion.source]: value,
-                            }))
-                          }
-                          options={[
-                            {
-                              value: KEEP_ORIGINAL,
-                              label: `保持原名（${suggestion.source}）`,
-                            },
-                            ...standardFields.map((field) => ({
-                              value: field.name,
-                              label: `${field.label}（${field.name}）${
-                                requiredFields.includes(field.name) ? ' · 必要' : ''
-                              }`,
-                            })),
-                          ]}
-                        />
-                      </td>
-                      <td>
-                        <span className={badge.className}>{badge.text}</span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-
-            <label className="checkbox-row">
-              <Switch
-                size="small"
-                checked={persistAliases}
-                onChange={setPersistAliases}
-                style={{ marginRight: 8 }}
-              />
-              保存为新别名
-            </label>
-
-            {requiredFields.length > 0 ? (
-              <div className="required-fields-note">
-                <span className="field-label">仅保留必要字段：</span>
-                <div className="chip-row">
-                  {requiredFields.map((field) => (
-                    <span key={field} className="token-chip">
-                      {field}
-                    </span>
-                  ))}
-                </div>
+          {step === 1 ? (
+            <section className="card card-fill">
+              <h3 className="card-title">导入预览（映射前）</h3>
+              <div className="card-scroll">
+                {result ? (
+                  <DataTable
+                    columns={result.preview.columns.map((column) => column.name)}
+                    rows={result.preview.rows}
+                    emptyText="暂无预览数据"
+                    maxHeight="100%"
+                    stickyHeader
+                  />
+                ) : (
+                  <EmptyState text="还没有导入数据" />
+                )}
               </div>
-            ) : null}
+            </section>
+          ) : null}
 
-            <Button type="primary" loading={applying} onClick={handleApply}>
-              应用映射
-            </Button>
-          </section>
-        </>
-      ) : null}
+          {step === 2 ? (
+            <section className="card card-fill">
+              <h3 className="card-title">字段映射</h3>
+              <p className="panel-hint">
+                为每个源字段选择对应的标准字段。默认「保持原名」，流程只能引用映射后的字段名。
+              </p>
+              <div className="card-scroll">
+                {result ? (
+                  <table className="data-table align-center bordered">
+                    <thead className="data-table__head sticky">
+                      <tr>
+                        <th>源字段</th>
+                        <th>标准字段</th>
+                        <th>匹配方式</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.mapping.map((suggestion, index) => {
+                        const badge = matchedBadge(suggestion);
+                        return (
+                          <tr key={suggestion.source} className={index % 2 === 1 ? 'even' : undefined}>
+                            <td>{suggestion.source}</td>
+                            <td>
+                              <Select
+                                style={{ width: '100%', minWidth: 220 }}
+                                value={mappings[suggestion.source] ?? KEEP_ORIGINAL}
+                                onChange={(value) =>
+                                  setMappings((prev) => ({
+                                    ...prev,
+                                    [suggestion.source]: value,
+                                  }))
+                                }
+                                options={[
+                                  {
+                                    value: KEEP_ORIGINAL,
+                                    label: `保持原名（${suggestion.source}）`,
+                                  },
+                                  ...standardFields.map((field) => ({
+                                    value: field.name,
+                                    label: `${field.label}（${field.name}）${
+                                      requiredFields.includes(field.name) ? ' · 必要' : ''
+                                    }`,
+                                  })),
+                                ]}
+                              />
+                            </td>
+                            <td>
+                              <span className={badge.className}>{badge.text}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : (
+                  <EmptyState text="还没有导入数据" />
+                )}
+              </div>
 
-      {appliedDataset ? (
-        <section className="card">
-          <h3 className="card-title">映射结果 · {appliedDataset.name}</h3>
-          <div className="detail-meta">共 {appliedDataset.row_count} 行</div>
-          <DataTable
-            columns={appliedDataset.columns.map((column) => column.name)}
-            rows={appliedRows?.rows ?? []}
-            emptyText="暂无数据"
-            maxHeight="320px"
-            stickyHeader
-          />
-          <div className="link-row">
-            {onNavigate ? (
-              <button className="link" onClick={() => onNavigate('flow')}>
-                前往项目流程 →
-              </button>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
+              <label className="checkbox-row">
+                <Switch
+                  size="small"
+                  checked={persistAliases}
+                  onChange={setPersistAliases}
+                  style={{ marginRight: 8 }}
+                />
+                保存为新别名
+              </label>
+
+              {requiredFields.length > 0 ? (
+                <div className="required-fields-note">
+                  <span className="field-label">仅保留必要字段：</span>
+                  <div className="chip-row">
+                    {requiredFields.map((field) => (
+                      <span key={field} className="token-chip">
+                        {field}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {step === 3 ? (
+            <section className="card card-fill">
+              <h3 className="card-title">
+                {appliedDataset ? `完成 · ${appliedDataset.name}` : '完成'}
+              </h3>
+              {appliedDataset ? (
+                <>
+                  <div className="detail-meta">共 {appliedDataset.row_count} 行</div>
+                  <div className="card-scroll">
+                    <DataTable
+                      columns={appliedDataset.columns.map((column) => column.name)}
+                      rows={appliedRows?.rows ?? []}
+                      emptyText="暂无数据"
+                      maxHeight="100%"
+                      stickyHeader
+                    />
+                  </div>
+                </>
+              ) : (
+                <EmptyState text="映射尚未应用" />
+              )}
+            </section>
+          ) : null}
+        </div>
+
+        <div className="import-footer">
+          {importing ? <span className="footer-hint">正在解析文件并写入数据集…</span> : null}
+          {step === 0 ? (
+            <>
+              <span className="footer-hint">支持 xlsx / xls / csv</span>
+              <Button type="primary" loading={importing} disabled={!file} onClick={handleImport}>
+                开始导入
+              </Button>
+            </>
+          ) : null}
+          {step === 1 ? (
+            <>
+              <Button onClick={() => setStep(0)}>上一步</Button>
+              <Button type="primary" onClick={() => setStep(2)}>
+                下一步：字段映射
+              </Button>
+            </>
+          ) : null}
+          {step === 2 ? (
+            <>
+              <Button onClick={() => setStep(1)}>上一步</Button>
+              <Button type="primary" loading={applying} onClick={handleApply}>
+                应用映射
+              </Button>
+            </>
+          ) : null}
+          {step === 3 ? (
+            <>
+              {onNavigate ? (
+                <button className="link" onClick={() => onNavigate('flow')}>
+                  前往项目流程 →
+                </button>
+              ) : null}
+              <Button onClick={() => onNavigate?.('files')}>查看项目文件</Button>
+              <Button type="primary" onClick={reset}>
+                再导入一个文件
+              </Button>
+            </>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

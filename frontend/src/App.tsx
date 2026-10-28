@@ -6,13 +6,22 @@ import { desktop } from './lib/native';
 import { ThemeProvider, useThemeMode } from './theme';
 import ProjectFilesPage from './pages/ProjectFilesPage';
 import ProjectFlowPage from './pages/ProjectFlowPage';
+import ProjectTemplatesPage from './pages/ProjectTemplatesPage';
 import DataFlowPage from './pages/DataFlowPage';
 import ImportPage from './pages/ImportPage';
 import AliasPage from './pages/AliasPage';
 import TemplatePage from './pages/TemplatePage';
 import { NewProjectDialog } from './components/NewProjectDialog';
+import { UiSettingsProvider, useUiSettings } from './context/UiSettingsContext';
 
-export type ViewKey = 'files' | 'flow' | 'dataflow' | 'import' | 'alias' | 'templates';
+export type ViewKey =
+  | 'projectTemplates'
+  | 'files'
+  | 'flow'
+  | 'dataflow'
+  | 'import'
+  | 'alias'
+  | 'templates';
 
 interface ViewMeta {
   key: ViewKey;
@@ -21,6 +30,7 @@ interface ViewMeta {
 }
 
 const VIEWS: Record<ViewKey, ViewMeta> = {
+  projectTemplates: { key: 'projectTemplates', label: '项目模板', icon: 'layers' },
   files: { key: 'files', label: '项目文件', icon: 'folder' },
   flow: { key: 'flow', label: '项目流程', icon: 'flow' },
   dataflow: { key: 'dataflow', label: '数据流', icon: 'dataflow' },
@@ -29,8 +39,8 @@ const VIEWS: Record<ViewKey, ViewMeta> = {
   templates: { key: 'templates', label: 'PDF 模板', icon: 'layout' },
 };
 
-/** 左侧边栏：项目文件、项目流程、数据流。字段别名 / PDF 模板属于全局配置，从顶栏菜单进入。 */
-const SIDEBAR_VIEWS: ViewKey[] = ['files', 'flow', 'dataflow'];
+/** 左侧边栏：项目模板、项目文件、项目流程、数据流。字段别名属于全局配置，从顶栏菜单进入。 */
+const SIDEBAR_VIEWS: ViewKey[] = ['projectTemplates', 'files', 'flow', 'dataflow'];
 
 const ICONS: Record<string, string> = {
   folder: 'M3 5.5A1.5 1.5 0 0 1 4.5 4h4l1.5 2H19a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 17H4.5A1.5 1.5 0 0 1 3 15.5z',
@@ -39,6 +49,7 @@ const ICONS: Record<string, string> = {
   flow: 'M6 4h5v5H6zM13 15h5v5h-5zM8.5 9v3.5a2 2 0 0 0 2 2H13M13 20.5H8.5',
   dataflow: 'M9 3h6v4H9zM4 17h6v4H4zM14 17h6v4h-6zM12 7v5M4 17v-3h16v3',
   layout: 'M3 4h18v16H3zM3 9h18M9 9v11',
+  layers: 'M12 3 3 8l9 5 9-5zM3 12.5l9 5 9-5M3 17l9 5 9-5',
   tag: 'M3 12 12 3h7a2 2 0 0 1 2 2v7l-9 9zM16 7h.01',
   close: 'M5 5l14 14M19 5 5 19',
   dot: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
@@ -150,14 +161,17 @@ interface MenuItem {
 
 function MenuBar({
   onOpenView,
+  onOpenTemplates,
   onNewProject,
 }: {
   onOpenView: (view: ViewKey) => void;
+  onOpenTemplates: (scope: 'global' | 'project', id?: string) => void;
   onNewProject: () => void;
 }) {
   const api = desktop();
   const { projects, currentProject, selectProject } = useProject();
   const { mode, toggle: toggleTheme } = useThemeMode();
+  const { tableCenter, tableBorder, setTableCenter, setTableBorder, reset } = useUiSettings();
   const [open, setOpen] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
 
@@ -193,9 +207,21 @@ function MenuBar({
       : [{ label: '暂无项目，先新建一个', disabled: true }],
     全局配置: [
       { label: '字段别名管理', onClick: () => onOpenView('alias') },
-      { label: 'PDF 模板库', onClick: () => onOpenView('templates') },
+      { label: 'PDF 模板库', onClick: () => onOpenTemplates('global') },
       { separator: true, label: '' },
       { label: mode === 'dark' ? '切换到浅色模式' : '切换到深色模式', onClick: toggleTheme },
+    ],
+    选项: [
+      {
+        label: `${tableCenter ? '✓' : '　'} 表格内容居中`,
+        onClick: () => setTableCenter(!tableCenter),
+      },
+      {
+        label: `${tableBorder ? '✓' : '　'} 显示表格边框`,
+        onClick: () => setTableBorder(!tableBorder),
+      },
+      { separator: true, label: '' },
+      { label: '恢复默认外观', onClick: reset },
     ],
     帮助: [{ label: '考试数据处理系统 v0.1.0', disabled: true }],
   };
@@ -257,6 +283,12 @@ function Workbench() {
 
   const [active, setActive] = useState<ViewKey>('files');
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  /** 打开 PDF 模板编辑器时的作用域与目标模板（项目模板页要求直接编辑项目副本）。 */
+  const [templateTarget, setTemplateTarget] = useState<{
+    scope: 'global' | 'project';
+    id?: string;
+    blank?: boolean;
+  }>({ scope: 'global' });
 
   // 首次启动且没有任何项目时，直接弹出「新建项目」窗口（IDE 常见行为）
   useEffect(() => {
@@ -268,8 +300,20 @@ function Workbench() {
 
   const openView = (view: ViewKey) => setActive(view);
 
+  const openTemplates = (scope: 'global' | 'project', id?: string, blank = false) => {
+    setTemplateTarget({ scope, id, blank });
+    setActive('templates');
+  };
+
   const renderView = (view: ViewKey) => {
     switch (view) {
+      case 'projectTemplates':
+        return (
+          <ProjectTemplatesPage
+            onEditTemplate={(id) => openTemplates('project', id)}
+            onNewTemplate={() => openTemplates('project', undefined, true)}
+          />
+        );
       case 'files':
         return (
           <ProjectFilesPage
@@ -287,7 +331,14 @@ function Workbench() {
       case 'alias':
         return <AliasPage />;
       case 'templates':
-        return <TemplatePage />;
+        return (
+          <TemplatePage
+            key={`${templateTarget.scope}:${templateTarget.id ?? (templateTarget.blank ? 'blank' : 'new')}`}
+            initialScope={templateTarget.scope}
+            initialTemplateId={templateTarget.id}
+            initialNew={templateTarget.blank}
+          />
+        );
       default:
         return null;
     }
@@ -295,7 +346,11 @@ function Workbench() {
 
   return (
     <div className="vscode">
-      <MenuBar onOpenView={openView} onNewProject={() => setNewProjectOpen(true)} />
+      <MenuBar
+        onOpenView={openView}
+        onOpenTemplates={openTemplates}
+        onNewProject={() => setNewProjectOpen(true)}
+      />
 
       {/* 项目切换工具条 */}
       <div className="toolbar">
@@ -377,9 +432,11 @@ function Workbench() {
 export default function App() {
   return (
     <ThemeProvider>
-      <ProjectProvider>
-        <Workbench />
-      </ProjectProvider>
+      <UiSettingsProvider>
+        <ProjectProvider>
+          <Workbench />
+        </ProjectProvider>
+      </UiSettingsProvider>
     </ThemeProvider>
   );
 }

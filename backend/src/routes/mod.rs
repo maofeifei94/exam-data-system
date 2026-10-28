@@ -2,6 +2,7 @@ pub mod datasets;
 pub mod fields;
 pub mod flows;
 pub mod pdf;
+pub mod project_fields;
 pub mod projects;
 
 use crate::state::AppState;
@@ -57,6 +58,19 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/api/aliases/:id", delete(fields::delete_alias))
         .route("/api/aliases/suggest", post(fields::suggest))
+        // 项目本地字段模板
+        .route(
+            "/api/project-fields",
+            get(project_fields::list).post(project_fields::create),
+        )
+        .route(
+            "/api/project-fields/copy",
+            post(project_fields::copy_from_global),
+        )
+        .route(
+            "/api/project-fields/:id",
+            put(project_fields::update).delete(project_fields::remove),
+        )
         // 流程
         .route("/api/operators", get(flows::operators))
         .route("/api/flows", get(flows::list).post(flows::create))

@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useUiSettings } from '../context/UiSettingsContext';
 import { Spinner } from './Spinner';
 import { EmptyState } from './EmptyState';
 
@@ -43,6 +44,7 @@ export function DataTable({
   maxHeight,
   stickyHeader = false,
 }: DataTableProps) {
+  const { tableCenter, tableBorder } = useUiSettings();
   const numericColumns = useMemo(
     () => columns.map((_, index) => isNumericColumn(rows, index)),
     [columns, rows],
@@ -62,10 +64,15 @@ export function DataTable({
   }
 
   const headerClass = stickyHeader ? 'data-table__head sticky' : 'data-table__head';
+  const tableClass = [
+    'data-table',
+    tableCenter ? 'align-center' : 'align-left',
+    tableBorder ? 'bordered' : 'borderless',
+  ].join(' ');
 
   return (
     <div className="table-wrap" style={maxHeight ? { maxHeight } : undefined}>
-      <table className="data-table">
+      <table className={tableClass}>
         <thead className={headerClass}>
           <tr>
             {columns.map((name, index) => (

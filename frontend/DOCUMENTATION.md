@@ -42,8 +42,9 @@ React 应用 src/main.tsx → App.tsx
 | 文件 | 职责 |
 | --- | --- |
 | `src/main.tsx` | React 挂载入口。 |
-| `src/App.tsx` | 应用外壳：顶栏菜单栏、项目切换工具条、左侧活动栏、编辑区、状态栏、窗口控制按钮；路由到 6 个页面；5 秒轮询 `/api/health` 显示后端连接状态。 |
+| `src/App.tsx` | 应用外壳：顶栏菜单栏（含「选项」下拉）、项目切换工具条、左侧活动栏、编辑区、状态栏、窗口控制按钮；路由到 7 个页面；5 秒轮询 `/api/health` 显示后端连接状态。 |
 | `src/theme.tsx` | 明暗主题上下文 `ThemeProvider` / `useThemeMode`，持久化到 localStorage，切换 `<html>` 上的主题属性。 |
+| `src/context/UiSettingsContext.tsx` | **外观选项**上下文 `UiSettingsProvider` / `useUiSettings`：`tableCenter`（表格内容居中，默认 true）、`tableBorder`（表格边框，默认 true）；持久化 `localStorage['exam.ui.settings.v1']`，解析失败回退默认值。 |
 | `src/styles.css` | 全量样式（VS Code 风格的布局与组件视觉），颜色全部走 CSS 变量。 |
 | `src/context/ProjectContext.tsx` | 「当前考试项目」全局上下文：项目列表、当前选中项目、切换、刷新、局部更新。选中项持久化到 `localStorage`。 |
 
@@ -74,7 +75,7 @@ React 应用 src/main.tsx → App.tsx
 | `src/components/Spinner.tsx` | 加载指示器。 |
 | `src/components/EmptyState.tsx` | 空状态占位。 |
 | `src/components/Field.tsx` | 表单字段外壳（标签 + 提示）。 |
-| `src/components/DataTable.tsx` | 数据表格：自动识别数值列右对齐、空值占位、单元格格式化。 |
+| `src/components/DataTable.tsx` | 数据表格：自动识别数值列右对齐、空值占位、单元格格式化；根据 `UiSettings` 追加 `align-center` / `bordered` class（默认居中 + 带边框，可在「选项」中关闭）。 |
 | `src/components/NewProjectDialog.tsx` | 新建考试项目对话框（名称、说明、文件夹选择）。 |
 | `src/components/TokenEditor.tsx` | **字段胶囊编辑器**：展示态把 `{{字段}}`/`[字段]` 渲染成彩色胶囊，双击进入编辑态；支持 template / expr 两种模式。 |
 
@@ -85,6 +86,7 @@ React 应用 src/main.tsx → App.tsx
 | `src/lib/templateModel.ts` | **PDF 模板的几何与元素树模型**（详见第 4 节）。 |
 | `src/lib/flowModel.ts` | 流程图画布布局算法：主链 / 分支节点坐标计算、相对插入、分支兄弟节点。 |
 | `src/lib/tokens.ts` | 字段胶囊解析与配色：表达式 token、模板 token、字段配色、hex→rgba。 |
+| `src/lib/projectFields.ts` | `mergeFieldLists(globals, projectFields)`：按字段名合并全局字段与项目本地字段，同名时项目字段优先，供导入映射 / 流程编辑器 / 模板字段建议共用。 |
 | `src/lib/native.ts` | 见上（桌面能力）。 |
 | `*.test.ts` | 上述模块的单元测试（vitest）。 |
 
@@ -92,8 +94,9 @@ React 应用 src/main.tsx → App.tsx
 
 | 文件 | 职责 |
 | --- | --- |
+| `ProjectTemplatesPage.tsx` | **项目模板**：左侧栏「项目文件」之前的栏目，默认空。分「字段模板 / PDF 模板」两个 tab，可从全局字段库勾选复制、从全局 PDF 模板复制、或新建空白模板，并就地编辑/移除；保存结果全部落在本项目（`project_fields` / project scope 模板），不依赖全局。 |
 | `ProjectFilesPage.tsx` | 项目文件总览：项目信息、关联数据集、快捷入口（导入 / 流程 / 模板）。 |
-| `ImportPage.tsx` | 数据导入：选择文件 → 上传解析 → 字段匹配确认（精确 / 别名 / 未匹配）→ 落库。 |
+| `ImportPage.tsx` | 数据导入：顶部横向步骤条（选择文件 → 数据预览 → 字段映射 → 完成），每步独立面板、内部滚动，底部固定上一步/下一步按钮，避免长表单溢出窗口。 |
 | `ProjectFlowPage.tsx` | 处理流程编辑器：画布节点、两级参数表单、静态校验、运行与运行日志。 |
 | `DataFlowPage.tsx` | **数据流**：左侧按 `branch_of` 还原的节点多级目录，右侧查看该节点数据表；终点节点展示 PDF 预览与下载。 |
 | `AliasPage.tsx` | 字段别名与标准字段管理：分组卡片、拖拽换组、改名、增删别名。 |
@@ -255,14 +258,57 @@ FlowStepData extends RowPage {
   得到 PDF Blob，用 `URL.createObjectURL` 交给 `<iframe>` 预览，并提供下载按钮；
   组件卸载或重新生成时 `URL.revokeObjectURL` 释放内存。
 
+### 4.8 导入向导（`ImportPage.tsx`）
+
+旧的「一页铺开全流程」在小窗口下会把第三步字段映射挤出可视区，导致按钮点不到。
+现改为单步向导：
+
+- `STEPS = ['选择文件','数据预览','字段映射','完成']`，`step` 为当前步、`maxStep` 为已解锁的最大步；
+  点击步骤条只能跳到 `<= maxStep` 的步骤，避免跳过未完成的校准；
+- 布局：`.page > .import-wizard.page-fill`，内部 `Steps` + `.import-body`（`flex:1; overflow:auto`）
+  + `.import-footer`（固定按钮区），因此**任何窗口高度下按钮都可见**；
+- 步骤 0 选择文件（名称、表头行）→ 上传成功后进入步骤 1 预览；
+- 步骤 2 映射表使用 `data-table align-center bordered`，列出「原名 / 建议标准字段 / 保存为新别名」，
+  必要字段以 chips 展示；点击「应用映射」后进入步骤 3；
+- 步骤 3 展示导入结果行数并向父组件回调 `onImported(dataset)`，「再导入一个文件」调用 `reset()`。
+- 字段候选取 `mergeFieldLists(listStandardFields(), listProjectFields(projectId))`，
+  因此导入时可直接选用项目模板里自定义的字段。
+
+### 4.9 项目模板的字段合并与作用域
+
+项目模板页（`ProjectTemplatesPage.tsx`）把全局资源「复制」为本项目资源，复制后完全本地可控：
+
+| 资源 | 复制来源 | 落地位置 |
+| --- | --- | --- |
+| 字段 | `listStandardFields()` 勾选 → `copyProjectFields(projectId, ids)` | `project_fields`（`UNIQUE(project_id, name)`，重复复制幂等） |
+| PDF 模板 | `listPdfTemplates({scope:'global'})` → `duplicatePdfTemplate(id, {project_id})` | `pdf_templates` 中 `scope='project'` 的新行 |
+
+- 编辑项目字段：`updateProjectField` 只改本项目副本，全局字典不变；
+- 移除项目字段：仅删本地副本，不影响全局与其他项目；
+- 「新建空白模板」通过 `TemplatePage` 的 `initialNew` 参数打开空白草稿，保存时 `scope='project'`；
+- 合并规则见 `mergeFieldLists`：同名时项目字段覆盖全局字段，保证项目自定义字段在同名时生效。
+
+### 4.10 外观选项（`选项` 菜单）
+
+顶栏「选项」下拉与 `UiSettings` 联动，勾选项以 `✓` 前缀表示当前状态：
+
+| 选项 | 默认 | 效果 |
+| --- | --- | --- |
+| 表格内容居中 | 开 | `DataTable` 追加 `align-center`；关闭后表头/单元格回到左对齐 |
+| 显示表格边框 | 开 | 追加 `bordered`（`1px solid var(--border)`）；关闭后移除全部单元格边框 |
+| 恢复默认外观 | — | `reset()` 恢复两个开关为默认值 |
+
+配置仅存于 `localStorage`，不写后端；刷新/重启后保持。
+
 ---
 
 ## 5. 状态与数据流
 
 - **当前项目**：`ProjectProvider` 管理，页面通过 `useProject()` 读取；
   项目切换会触发各页面重新拉取该项目的流程 / 数据集 / 模板。
-- **全局配置入口**：字段别名、PDF 模板库从顶栏「全局配置」菜单进入，左侧边栏只保留
-  项目文件、项目流程、数据流三个视图。
+- **全局配置入口**：字段别名、PDF 模板库从顶栏「全局配置」菜单进入；左侧边栏只保留
+  项目模板、项目文件、项目流程、数据流四个视图（`SIDEBAR_VIEWS`），「项目模板」在「项目文件」之前。
+- **外观选项**：顶栏「选项」菜单读写 `UiSettingsProvider`，只影响显示层。
 - **提示消息**：所有成功/失败反馈统一走 `useToast()`。
 - **后端状态**：App 每 5 秒轮询 `/api/health`，状态栏显示「后端已连接 / 未连接」。
 

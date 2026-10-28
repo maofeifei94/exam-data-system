@@ -176,6 +176,67 @@ pub struct SuggestInput {
     pub columns: Vec<String>,
 }
 
+// ---------------- 项目本地字段 ----------------
+
+/// 某个考试项目自己的字段副本。与全局 `standard_fields` 完全独立，
+/// 修改只影响本项目，不会回写全局字段库。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectField {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub label: String,
+    pub dtype: String,
+    pub precision: i64,
+    pub group_id: String,
+    pub description: String,
+    /// 从全局字段复制时的来源字段 id；手工新建时为空
+    pub source_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectFieldInput {
+    pub project_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default = "default_dtype")]
+    pub dtype: String,
+    #[serde(default)]
+    pub precision: Option<i64>,
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectFieldUpdate {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default = "default_dtype")]
+    pub dtype: String,
+    #[serde(default)]
+    pub precision: Option<i64>,
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// 把选中的全局字段复制到项目：按全局字段 id 挑选。
+#[derive(Debug, Deserialize)]
+pub struct CopyProjectFieldsInput {
+    pub project_id: String,
+    #[serde(default)]
+    pub field_ids: Vec<String>,
+}
+
 // ---------------- 流程 ----------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

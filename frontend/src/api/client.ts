@@ -20,6 +20,9 @@ import type {
   OperatorDef,
   PdfTemplate,
   PdfTemplateInput,
+  ProjectField,
+  ProjectFieldInput,
+  ProjectFieldUpdate,
   RowPage,
   RunResult,
   SavedResponse,
@@ -420,6 +423,48 @@ export async function downloadFile(
 
 export function listOperators(): Promise<OperatorDef[]> {
   return apiRequest<OperatorDef[]>('/api/operators');
+}
+
+// ---------------------------------------------------------------------------
+// 项目本地字段模板 Project Fields
+// ---------------------------------------------------------------------------
+
+export function listProjectFields(projectId: string): Promise<ProjectField[]> {
+  return apiRequest<ProjectField[]>(
+    `/api/project-fields?project_id=${encodeURIComponent(projectId)}`,
+  );
+}
+
+export function createProjectField(input: ProjectFieldInput): Promise<ProjectField> {
+  return apiRequest<ProjectField>('/api/project-fields', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateProjectField(
+  id: string,
+  input: ProjectFieldUpdate,
+): Promise<ProjectField> {
+  return apiRequest<ProjectField>(`/api/project-fields/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteProjectField(id: string): Promise<OkResponse> {
+  return apiRequest<OkResponse>(`/api/project-fields/${id}`, { method: 'DELETE' });
+}
+
+/** 把选中的全局字段复制到项目，返回实际复制数量。 */
+export function copyProjectFields(
+  projectId: string,
+  fieldIds: string[],
+): Promise<{ copied: number }> {
+  return apiRequest<{ copied: number }>('/api/project-fields/copy', {
+    method: 'POST',
+    body: JSON.stringify({ project_id: projectId, field_ids: fieldIds }),
+  });
 }
 
 // ---------------------------------------------------------------------------

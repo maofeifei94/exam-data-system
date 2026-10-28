@@ -73,6 +73,7 @@ SQLite（WAL 模式）
 | `src/routes/projects.rs` | 考试项目 CRUD。删除项目时解绑关联数据集；可把项目绑定写回配置文件。 |
 | `src/routes/datasets.rs` | 数据集列表/详情/删除、分页行读取、CSV 导出、文件导入、字段映射应用。 |
 | `src/routes/fields.rs` | 标准字段、字段分组、别名映射；导入列映射建议。 |
+| `src/routes/project_fields.rs` | 项目本地字段（项目模板）CRUD，以及从全局字段库幂等复制到本项目的 `/api/project-fields/copy`。 |
 | `src/routes/flows.rs` | 流程 CRUD、复制、运行、运行记录、静态校验、操作符目录、节点数据预览（`/steps/:index/rows`）。 |
 | `src/routes/pdf.rs` | PDF 模板 CRUD、复制、按已存模板渲染、按草稿模板预览。 |
 
@@ -93,9 +94,15 @@ SQLite（WAL 模式）
 | `flows` | 流程定义，`steps` 列存 JSON 数组；`scope` = global/project。 |
 | `flow_runs` | 流程运行记录：状态、消息、生成的 SQL、输出数据集 id。 |
 | `pdf_templates` | PDF 模板，`template` 列存 `TemplateBody` 的 JSON。 |
+| `project_fields` | 项目本地字段副本。由全局 `standard_fields` 挑选复制而来，`UNIQUE(project_id, name)`；修改只影响本项目，不回写全局字典。 |
 
 索引：`datasets(project_id)`、`flows(project_id)`、`pdf_templates(project_id)`、
-`flow_runs(flow_id)`、`flow_runs(dataset_id)`，避免项目/流程列表全表扫描。
+`project_fields(project_id)`、`flow_runs(flow_id)`、`flow_runs(dataset_id)`，避免项目/流程列表全表扫描。
+
+`project_fields` 与 `standard_fields` 字段结构一致（`name / label / dtype / precision /
+group_id / description`），额外带 `project_id` 与 `source_id`（来源全局字段 id，仅作溯源）。
+前端把两份列表按 `name` 合并后作为导入映射、流程编辑器、模板字段建议的候选集合，
+项目字段同名时优先，从而让项目模板脱离全局字典独立演进。
 
 ### 3.2 动态数据表 `data_<dataset_id>`
 
@@ -277,6 +284,18 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 
 新增照片元素的三个配置：`photo_dir`（目录，可由系统对话框选择）、
 `photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）。
+
+### 4.10 项目字段复制（`routes/project_fields.rs::copy_fields`）
+
+`POST /api/project-fields/copy` 接收 `{ project_id, field_ids }`，把全局字段复制为本项目字段：
+
+- 整个复制在 `db::with_tx` 事务中执行，任一条失败则整体回滚；
+- 逐 id 从 `standard_fields` 读取名称/类型/精度等，写入 `project_fields` 时带上
+  `source_id`（原全局字段 id）作为溯源，`project_id` 换成本项目；
+- 使用 `INSERT ... ON CONFLICT(project_id, name) DO NOTHING`：
+  **同项目中同名时跳过而不是报错**，因此重复点击「从全局添加」结果是幂等的，
+  返回本次实际新增的条数；未知 `field_ids` 直接忽略；
+- 复制后项目字段拥有独立主键，后续改名/改类型/删除只影响本项目，全局字典不变。
 
 ---
 
