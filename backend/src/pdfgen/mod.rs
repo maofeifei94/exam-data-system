@@ -857,6 +857,20 @@ impl<'a> Painter<'a> {
             return;
         }
 
+        // 显示条件：字段取值满足条件时才渲染该元素（含子元素）。
+        if !el.visible_field.trim().is_empty() {
+            let actual = ctx.value(&el.visible_field).trim();
+            let expected = el.visible_value.trim();
+            let visible = if expected.is_empty() {
+                !actual.is_empty()
+            } else {
+                actual == expected
+            };
+            if !visible {
+                return;
+            }
+        }
+
         // 「内容为空时隐藏」：文本/条码类元素在占位符取值为空时整体跳过，
         // 避免留白元素在证件/名单上出现空框。
         let skip_self = el.hide_if_empty
@@ -2450,6 +2464,11 @@ mod tests {
         empty.text = "{姓名}".into();
         empty.hide_if_empty = true;
         body.elements.push(empty);
+        let mut conditional = TemplateElement::empty("c", "text");
+        conditional.text = "仅张三显示".into();
+        conditional.visible_field = "姓名".into();
+        conditional.visible_value = "张三".into();
+        body.elements.push(conditional);
         // 第二行姓名为空，隐藏元素应整行跳过而不报错。
         let rows = vec![vec!["张三".into()], vec!["".into()]];
         let pdf =

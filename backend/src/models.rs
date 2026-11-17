@@ -645,6 +645,12 @@ pub struct TemplateElement {
     /// 渲染内容为空（占位符取值为空且无固定文字）时跳过该元素
     #[serde(default)]
     pub hide_if_empty: bool,
+    /// 显示条件字段：该字段取值满足条件时才渲染元素
+    #[serde(default)]
+    pub visible_field: String,
+    /// 显示条件值；留空表示字段非空即可显示
+    #[serde(default)]
+    pub visible_value: String,
     #[serde(default = "default_align")]
     pub align: String,
     #[serde(default = "default_color")]
@@ -701,6 +707,8 @@ impl TemplateElement {
             wrap: false,
             rotate: 0.0,
             hide_if_empty: false,
+            visible_field: String::new(),
+            visible_value: String::new(),
             align: default_align(),
             color: default_color(),
             fill: String::new(),
@@ -934,6 +942,7 @@ fn collect_element_fields(el: &TemplateElement, out: &mut Vec<String>) {
             }
         }
     }
+    push_field(out, &el.visible_field);
     for child in &el.children {
         collect_element_fields(child, out);
     }

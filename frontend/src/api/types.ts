@@ -380,6 +380,10 @@ export interface TemplateElement {
   rotate?: number;
   /** 渲染内容为空时隐藏该元素 */
   hide_if_empty?: boolean;
+  /** 显示条件字段：取值匹配时才渲染 */
+  visible_field?: string;
+  /** 显示条件值；留空表示字段非空即可显示 */
+  visible_value?: string;
   align: 'left' | 'center' | 'right';
   color: string;
   fill: string;

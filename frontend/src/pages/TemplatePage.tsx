@@ -3371,6 +3371,40 @@ function ElementEditor({
 
       {!isMatrix ? (
         <div className="tpl-section">
+          <div className="tpl-section-title">显示条件</div>
+          <label className="field">
+            <span className="field-label">条件字段（可空）</span>
+            <select
+              value={element.visible_field ?? ''}
+              onChange={(event) => onChange({ visible_field: event.target.value })}
+            >
+              <option value="">始终显示</option>
+              {columns.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {element.visible_field ? (
+            <label className="field">
+              <span className="field-label">条件值</span>
+              <input
+                type="text"
+                value={element.visible_value ?? ''}
+                placeholder="留空表示该字段非空时显示"
+                onChange={(event) => onChange({ visible_value: event.target.value })}
+              />
+            </label>
+          ) : null}
+          <p className="panel-hint">
+            仅当该字段取值等于条件值时渲染本元素（含子元素），可用于「缺考说明」等可选内容。
+          </p>
+        </div>
+      ) : null}
+
+      {!isMatrix ? (
+        <div className="tpl-section">
           <div className="tpl-section-title">外观</div>
           <div className="grid-2">
             <label className="field">

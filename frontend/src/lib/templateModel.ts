@@ -121,6 +121,8 @@ const BASE_ELEMENT: Omit<TemplateElement, 'id' | 'type' | 'x_mm' | 'y_mm' | 'w_m
   wrap: false,
   rotate: 0,
   hide_if_empty: false,
+  visible_field: '',
+  visible_value: '',
   align: 'left',
   color: '#000000',
   fill: '',
@@ -332,6 +334,7 @@ function collectElementFields(element: TemplateElement, out: string[]) {
   } else if (element.type === 'table') {
     (element.table?.columns ?? []).forEach((col) => add(col.field));
   }
+  add(element.visible_field);
   (element.children ?? []).forEach((child) => collectElementFields(child, out));
 }
 
