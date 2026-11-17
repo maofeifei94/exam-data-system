@@ -1,6 +1,8 @@
+pub mod auth;
 pub mod datasets;
 pub mod fields;
 pub mod flows;
+pub mod logs;
 pub mod pdf;
 pub mod project_fields;
 pub mod projects;
@@ -14,6 +16,12 @@ use std::sync::Arc;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/health", get(health))
+        // 登录与操作员
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/me", get(auth::me))
+        .route("/api/users", get(auth::list_users).post(auth::create_user))
+        .route("/api/operation-logs", get(logs::list))
         // 考试项目
         .route("/api/projects", get(projects::list).post(projects::create))
         .route(

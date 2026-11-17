@@ -30,7 +30,12 @@ import type {
   SavedResponse,
   StandardField,
   StandardFieldInput,
+  AuthUser,
+  LoginResponse,
+  OperationLogPage,
+  UserAccount,
 } from './types';
+import { emitUnauthorized, getToken } from './session';
 
 declare global {
   interface Window {
@@ -182,10 +187,15 @@ async function send<T>(
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
   const prepared = prepareRequest(init);
   try {
     const res = await fetch(`${BASE_URL}${path}`, { ...prepared.init, headers });
     if (!res.ok) {
+      if (res.status === 401 && path !== '/api/auth/login') {
+        emitUnauthorized();
+      }
       throw await parseError(res);
     }
     return await read(res);
@@ -631,4 +641,60 @@ export function previewPdfTemplate(
     body: JSON.stringify({ template, dataset_id: datasetId, limit, page }),
     timeoutMs: LONG_TIMEOUT_MS,
   });
+}
+
+// ---------------------------------------------------------------------------
+// 登录与操作日志
+// ---------------------------------------------------------------------------
+
+export function login(username: string, password: string): Promise<LoginResponse> {
+  return apiRequest<LoginResponse>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logout(): Promise<OkResponse> {
+  return apiRequest<OkResponse>('/api/auth/logout', { method: 'POST' });
+}
+
+export function getMe(): Promise<AuthUser> {
+  return apiRequest<AuthUser>('/api/auth/me');
+}
+
+export function listUsers(): Promise<UserAccount[]> {
+  return apiRequest<UserAccount[]>('/api/users');
+}
+
+export interface CreateUserInput {
+  username: string;
+  display_name: string;
+  password: string;
+  role: string;
+}
+
+export function createUser(input: CreateUserInput): Promise<UserAccount> {
+  return apiRequest<UserAccount>('/api/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export interface OperationLogQuery {
+  username?: string;
+  action?: string;
+  q?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export function listOperationLogs(q: OperationLogQuery = {}): Promise<OperationLogPage> {
+  const params = new URLSearchParams();
+  if (q.username) params.set('username', q.username);
+  if (q.action) params.set('action', q.action);
+  if (q.q) params.set('q', q.q);
+  if (q.offset !== undefined) params.set('offset', String(q.offset));
+  if (q.limit !== undefined) params.set('limit', String(q.limit));
+  const suffix = params.toString();
+  return apiRequest<OperationLogPage>(`/api/operation-logs${suffix ? `?${suffix}` : ''}`);
 }

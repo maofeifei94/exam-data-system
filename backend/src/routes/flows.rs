@@ -1,3 +1,4 @@
+use crate::auth::{self, AuthUser};
 use crate::db::{self, new_id, now};
 use crate::engine;
 use crate::error::{AppError, AppResult};
@@ -8,6 +9,7 @@ use crate::models::{
 use crate::state::AppState;
 use crate::store;
 use axum::extract::{Path, Query, State};
+use axum::Extension;
 use axum::Json;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -247,15 +249,51 @@ pub async fn remove(
 pub async fn run(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Extension(user): Extension<AuthUser>,
     Json(input): Json<RunFlowInput>,
 ) -> AppResult<Json<RunResult>> {
+    let dataset_id = input.dataset_id.clone();
+    let run_flow_id = id.clone();
+    let log_flow_id = id.clone();
     let result = state
         .db(move |conn| {
             // 提前校验数据集存在，避免把「数据集不存在」当成流程执行失败
             let _ = store::get_dataset(conn, &input.dataset_id)?;
-            engine::run_flow(conn, &id, &input.dataset_id)
+            engine::run_flow(conn, &run_flow_id, &input.dataset_id)
         })
         .await?;
+
+    // 业务日志：记录是谁在哪个数据集上运行了哪条流程。
+    let detail = format!(
+        "数据集：{dataset_id}；状态：{}；输出数据集：{}；{}",
+        result.status,
+        result
+            .output_dataset_id
+            .clone()
+            .unwrap_or_else(|| "无".to_string()),
+        result.message.clone().unwrap_or_default()
+    );
+    let _ = state
+        .db(move |conn| {
+            let flow: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT name, project_id FROM flows WHERE id = ?1",
+                    params![log_flow_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let (flow_name, project_id) = flow.unwrap_or_default();
+            auth::record(
+                conn,
+                &user,
+                "运行流程",
+                ("flow", &log_flow_id, &flow_name),
+                &project_id,
+                &detail,
+            )
+            .map_err(AppError::from)
+        })
+        .await;
     Ok(Json(result))
 }
 

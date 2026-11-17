@@ -534,3 +534,50 @@ export interface OkResponse {
 export interface SavedResponse {
   saved: number;
 }
+
+// ---------------------------------------------------------------------------
+// 登录与操作日志
+// ---------------------------------------------------------------------------
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  display_name: string;
+  role: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  expires_at: string;
+  user: AuthUser;
+}
+
+export interface UserAccount {
+  id: string;
+  username: string;
+  display_name: string;
+  role: string;
+  disabled: boolean;
+  created_at: string;
+  last_login_at: string;
+}
+
+export interface OperationLog {
+  id: string;
+  user_id: string;
+  username: string;
+  display_name: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  target_name: string;
+  project_id: string;
+  project_name: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface OperationLogPage {
+  total: number;
+  items: OperationLog[];
+}

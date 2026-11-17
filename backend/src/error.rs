@@ -41,6 +41,16 @@ impl AppError {
         Self::new(StatusCode::CONFLICT, "conflict", message)
     }
 
+    /// 未登录或登录已过期。
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", message)
+    }
+
+    /// 已登录但没有权限执行该操作。
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "forbidden", message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", message)
     }

@@ -131,6 +131,40 @@ CREATE TABLE IF NOT EXISTS pdf_templates (
     updated_at  TEXT NOT NULL
 );
 
+-- 登录用户：口令只保存加盐摘要，禁止明文
+CREATE TABLE IF NOT EXISTS users (
+    id             TEXT PRIMARY KEY,
+    username       TEXT NOT NULL UNIQUE,
+    display_name   TEXT NOT NULL DEFAULT '',
+    password_hash  TEXT NOT NULL,
+    role           TEXT NOT NULL DEFAULT 'operator',
+    disabled       INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL,
+    last_login_at  TEXT NOT NULL DEFAULT ''
+);
+
+-- 登录会话：token 随机生成，过期时间按固定格式字符串比较
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+-- 操作日志：谁在什么时间对哪个对象做了什么
+CREATE TABLE IF NOT EXISTS operation_logs (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL DEFAULT '',
+    username    TEXT NOT NULL DEFAULT '',
+    action      TEXT NOT NULL,
+    target_type TEXT NOT NULL DEFAULT '',
+    target_id   TEXT NOT NULL DEFAULT '',
+    target_name TEXT NOT NULL DEFAULT '',
+    project_id  TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
 -- 列表页都按项目 / 流程过滤，补上索引避免数据量增长后全表扫描。
 CREATE INDEX IF NOT EXISTS idx_datasets_project ON datasets(project_id);
 CREATE INDEX IF NOT EXISTS idx_flows_project ON flows(project_id);
@@ -139,6 +173,9 @@ CREATE INDEX IF NOT EXISTS idx_project_fields_project ON project_fields(project_
 CREATE INDEX IF NOT EXISTS idx_project_aliases_project ON project_alias_mappings(project_id);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_flow ON flow_runs(flow_id);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_dataset ON flow_runs(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON operation_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_user ON operation_logs(user_id);
 "#;
 
 pub fn new_id() -> String {
@@ -627,6 +664,7 @@ pub fn init(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
     migrate(conn)?;
     seed(conn)?;
+    crate::auth::seed_admin(conn)?;
     Ok(())
 }
 

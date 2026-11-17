@@ -42,11 +42,12 @@ React 应用 src/main.tsx → App.tsx
 | 文件 | 职责 |
 | --- | --- |
 | `src/main.tsx` | React 挂载入口。 |
-| `src/App.tsx` | 应用外壳：顶栏菜单栏（含「选项」下拉）、项目切换工具条、左侧活动栏、编辑区、状态栏、窗口控制按钮；路由到 7 个页面；5 秒轮询 `/api/health` 显示后端连接状态。 |
+| `src/App.tsx` | 应用外壳：登录门禁、顶栏菜单栏（含「选项」下拉）、项目切换工具条、左侧活动栏、编辑区、状态栏、窗口控制按钮；路由到 8 个页面（含操作日志）；5 秒轮询 `/api/health` 显示后端连接状态。 |
 | `src/theme.tsx` | 明暗主题上下文 `ThemeProvider` / `useThemeMode`，持久化到 localStorage，切换 `<html>` 上的主题属性。 |
 | `src/context/UiSettingsContext.tsx` | **外观选项**上下文 `UiSettingsProvider` / `useUiSettings`：`tableCenter`（表格内容居中，默认 true）、`tableBorder`（表格边框，默认 true）；持久化 `localStorage['exam.ui.settings.v1']`，解析失败回退默认值。 |
 | `src/styles.css` | 全量样式（VS Code 风格的布局与组件视觉），颜色全部走 CSS 变量。 |
 | `src/context/ProjectContext.tsx` | 「当前考试项目」全局上下文：项目列表、当前选中项目、切换、刷新、局部更新。选中项持久化到 `localStorage`。 |
+| `src/context/AuthContext.tsx` | 登录态上下文：启动时用本地 token 获取当前用户，任意接口 401 时自动退回登录页；提供 `login` / `logout`。 |
 
 ### 2.2 网络层
 
@@ -55,6 +56,7 @@ React 应用 src/main.tsx → App.tsx
 | `src/api/client.ts` | **统一请求层**。封装 `apiRequest` / `apiRequestBlob`，导出全部后端接口函数；超时、`AbortSignal`、错误码透传。 |
 | `src/api/types.ts` | 与后端一一对应的 TypeScript 类型；`normalizeDtype` 兼容历史 dtype；模板元素的照片字段定义。 |
 | `src/api/client.test.ts` | 请求层单元测试（成功解析、错误码、非 JSON 错误页、204、超时、取消等）。 |
+| `src/api/session.ts` | 登录 token 的本地存储与 401 全局事件，供请求层与认证上下文共享。 |
 | `src/lib/native.ts` | 桌面能力封装：窗口控制、`pickFolder`（系统文件夹选择）、`revealFolder`；浏览器环境优雅降级返回 null。 |
 
 **请求层关键行为**（`client.ts`）：
@@ -97,6 +99,8 @@ React 应用 src/main.tsx → App.tsx
 | 文件 | 职责 |
 | --- | --- |
 | `ProjectTemplatesPage.tsx` | **项目模板**：左侧栏「项目文件」之前的栏目，默认空。分「字段模板 / PDF 模板」两个 tab。字段以卡片展示（与全局「字段别名」页一致：卡片内联改名/改类型/改小数位/改说明），「从全局字段添加」按字段分组展示可点击矩形块（选中整块变色，无复选框），可复制/移除；PDF 模板可从全局复制或新建空白。保存结果全部落在本项目（`project_fields` / project scope 模板），不依赖全局。 |
+| `LoginPage.tsx` | 登录页：用户名 / 密码登录，默认管理员 `admin / admin123`，错误提示与登录中状态。 |
+| `LogsPage.tsx` | **操作日志**：按操作员、操作类型、关键字分页查询；展示时间、操作员、操作、对象、项目与详情；管理员可在此新增操作员。 |
 | `ProjectFilesPage.tsx` | 项目文件总览：项目信息、关联数据集、快捷入口（导入 / 流程 / 模板）。 |
 | `ImportPage.tsx` | 数据导入：顶部横向步骤条（选择文件 → 数据预览 → 字段映射 → 完成），每步独立面板、内部滚动，底部固定上一步/下一步按钮，避免长表单溢出窗口。 |
 | `ProjectFlowPage.tsx` | 处理流程编辑器：画布节点、两级参数表单、静态校验、运行与运行日志。左侧算子面板支持按名称/类型/说明搜索（`palette-search`）。右上角「流程模板」内置标准考试数据治理（必填/身份证/年龄校验 → 总分 → 范围与零分检查 → 重复标记 → 等级/排名）、考试成绩排名、考场随机编排、重复报名检测、缺考名单、成绩复核差异、成绩统计汇总、一分一段、账龄分析、考后参考统计、试算平衡、期末余额、发票校验、银行对账、预算执行、凭证校验等常用流程，一键套用后按实际字段调整。参数控件支持 `sorts`（多级排序：字段 + 升/降序）、`aggregations`（统计方式、字段、输出列名）、`mappings`（值映射），以及 `dataset` / `dataset_column` / `dataset_fields`（关联数据集选择、右表字段下拉与字段多选）。数值参数允许留空（如范围校验的最小/最大值表示不限制）。校验时带上 `project_id`，由后端核对必需字段（含 PDF 模板字段）是否仍在项目模板中。 |

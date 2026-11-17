@@ -1,3 +1,4 @@
+use crate::auth::{self, AuthUser};
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::importer;
@@ -10,6 +11,7 @@ use crate::util;
 use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, Response, StatusCode};
+use axum::Extension;
 use axum::Json;
 use rusqlite::params;
 use serde::Deserialize;
@@ -121,6 +123,7 @@ struct PreparedUpload {
 
 pub async fn import(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     mut multipart: Multipart,
 ) -> AppResult<Json<ImportResult>> {
     let mut file_bytes: Option<Vec<u8>> = None;
@@ -194,6 +197,20 @@ pub async fn import(
                     (!prepared.project_id.is_empty()).then_some(prepared.project_id.as_str());
                 let mapping = store::suggest_columns(tx, &names, project_scope)?;
                 let preview = store::read_rows(tx, &dataset.id, 0, 20)?;
+                auth::record(
+                    tx,
+                    &user,
+                    "导入数据",
+                    ("dataset", &dataset.id, &dataset.name),
+                    &prepared.project_id,
+                    &format!(
+                        "文件：{}；{} 行 / {} 列",
+                        prepared.filename,
+                        prepared.rows.len(),
+                        prepared.columns.len()
+                    ),
+                )
+                .map_err(AppError::from)?;
                 Ok(ImportResult {
                     dataset,
                     mapping,

@@ -6,6 +6,7 @@
 //!   EXAM_ADDR  监听地址（默认 127.0.0.1:8710）
 //!   EXAM_DATA_DIR   PDF 照片目录（默认当前目录下的 photos/）
 
+mod auth;
 mod db;
 mod engine;
 mod error;
@@ -38,7 +39,13 @@ async fn main() -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = routes::router().with_state(Arc::clone(&state)).layer(cors);
+    let app = routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            auth::require_auth,
+        ))
+        .with_state(Arc::clone(&state))
+        .layer(cors);
 
     let addr: SocketAddr = std::env::var("EXAM_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8710".to_string())

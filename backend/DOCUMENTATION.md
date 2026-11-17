@@ -61,6 +61,7 @@ SQLite（WAL 模式）
 | `src/engine/expr.rs` | 面向用户的表达式编译器：`[字段]*0.6 + [面试成绩]*0.4` → 安全 SQL。 |
 | `src/engine/operators.rs` | 原子操作符目录（类型、标签、参数 schema、默认值），前端据此渲染参数表单。 |
 | `src/pdfgen/mod.rs` | PDF 渲染引擎：坐标系换算、占位符插值、矩阵网格排版、照片文件解析。 |
+| `src/auth.rs` | 登录认证与操作日志：加盐多轮 SHA-256 口令、会话 token、鉴权中间件、写操作自动审计。 |
 
 ### 2.3 路由层
 
@@ -76,6 +77,12 @@ SQLite（WAL 模式）
 | `src/routes/project_fields.rs` | 项目本地字段（项目模板）CRUD、项目本地别名 CRUD（`/api/project-aliases`），以及从全局字段库幂等复制字段+别名到本项目的 `/api/project-fields/copy`。 |
 | `src/routes/flows.rs` | 流程 CRUD、复制、运行、运行记录、静态校验、操作符目录、节点数据预览（`/steps/:index/rows`）。 |
 | `src/routes/pdf.rs` | PDF 模板 CRUD、复制、按已存模板渲染、按草稿模板预览。 |
+| `src/routes/auth.rs` | 登录 / 退出 / 当前用户、操作员列表与新增操作员（仅管理员）。 |
+| `src/routes/logs.rs` | 操作日志分页查询，支持按操作员、操作类型与关键字过滤。 |
+
+除 `/api/health` 与 `/api/auth/login` 外，所有接口都需要
+`Authorization: Bearer <token>`。登录默认管理员为 `admin / admin123`，
+首次使用后建议在「操作日志」页新增个人账号。
 
 ---
 
@@ -96,10 +103,14 @@ SQLite（WAL 模式）
 | `pdf_templates` | PDF 模板，`template` 列存 `TemplateBody` 的 JSON。 |
 | `project_fields` | 项目本地字段副本。由全局 `standard_fields` 挑选复制而来，`UNIQUE(project_id, name)`；修改只影响本项目，不回写全局字典。 |
 | `project_alias_mappings` | 项目本地别名。复制全局字段时连同别名单一起复制，`UNIQUE(project_id, alias)`；可独立增删，不写回 `alias_mappings`。 |
+| `users` | 登录用户：用户名唯一、口令只存加盐摘要、角色（admin/operator）、禁用标记。 |
+| `sessions` | 登录会话：随机 token、所属用户、过期时间；登录时顺带清理过期会话。 |
+| `operation_logs` | 操作日志：操作员、操作类型、对象类型/ID/名称、项目、详情、时间。 |
 
 索引：`datasets(project_id)`、`flows(project_id)`、`pdf_templates(project_id)`、
 `project_fields(project_id)`、`project_alias_mappings(project_id)`、`flow_runs(flow_id)`、
-`flow_runs(dataset_id)`，避免项目/流程列表全表扫描。
+`flow_runs(dataset_id)`、`sessions(user_id)`、`operation_logs(created_at)`、
+`operation_logs(user_id)`，避免项目/流程列表与日志查询全表扫描。
 
 `project_fields` 与 `standard_fields` 字段结构一致（`name / label / dtype / precision /
 group_id / description`），额外带 `project_id` 与 `source_id`（来源全局字段 id，仅作溯源）。

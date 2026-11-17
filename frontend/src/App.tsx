@@ -2,9 +2,11 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Button, Select } from 'antd';
 import { getHealth } from './api/client';
 import { ProjectProvider, useProject } from './context/ProjectContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { desktop } from './lib/native';
 import { ThemeProvider, useThemeMode } from './theme';
 import ProjectFilesPage from './pages/ProjectFilesPage';
+import LoginPage from './pages/LoginPage';
 import { NewProjectDialog } from './components/NewProjectDialog';
 import { Spinner } from './components/Spinner';
 import { UiSettingsProvider, useUiSettings } from './context/UiSettingsContext';
@@ -17,12 +19,14 @@ const loadDataFlow = () => import('./pages/DataFlowPage');
 const loadImport = () => import('./pages/ImportPage');
 const loadAlias = () => import('./pages/AliasPage');
 const loadTemplate = () => import('./pages/TemplatePage');
+const loadLogs = () => import('./pages/LogsPage');
 const ProjectTemplatesPage = lazy(loadProjectTemplates);
 const ProjectFlowPage = lazy(loadProjectFlow);
 const DataFlowPage = lazy(loadDataFlow);
 const ImportPage = lazy(loadImport);
 const AliasPage = lazy(loadAlias);
 const TemplatePage = lazy(loadTemplate);
+const LogsPage = lazy(loadLogs);
 
 /** 鼠标悬停侧边栏时预取对应页面，点击后几乎即时打开。 */
 const VIEW_PRELOADS: Partial<Record<ViewKey, () => Promise<unknown>>> = {
@@ -32,6 +36,7 @@ const VIEW_PRELOADS: Partial<Record<ViewKey, () => Promise<unknown>>> = {
   import: loadImport,
   alias: loadAlias,
   templates: loadTemplate,
+  logs: loadLogs,
 };
 
 export type ViewKey =
@@ -41,7 +46,8 @@ export type ViewKey =
   | 'dataflow'
   | 'import'
   | 'alias'
-  | 'templates';
+  | 'templates'
+  | 'logs';
 
 interface ViewMeta {
   key: ViewKey;
@@ -57,10 +63,11 @@ const VIEWS: Record<ViewKey, ViewMeta> = {
   import: { key: 'import', label: '数据导入', icon: 'import' },
   alias: { key: 'alias', label: '字段别名', icon: 'tag' },
   templates: { key: 'templates', label: 'PDF 模板', icon: 'layout' },
+  logs: { key: 'logs', label: '操作日志', icon: 'log' },
 };
 
-/** 左侧边栏：项目模板、项目文件、项目流程、数据流。字段别名属于全局配置，从顶栏菜单进入。 */
-const SIDEBAR_VIEWS: ViewKey[] = ['projectTemplates', 'files', 'flow', 'dataflow'];
+/** 左侧边栏：项目模板、项目文件、项目流程、数据流、操作日志。 */
+const SIDEBAR_VIEWS: ViewKey[] = ['projectTemplates', 'files', 'flow', 'dataflow', 'logs'];
 
 const ICONS: Record<string, string> = {
   folder: 'M3 5.5A1.5 1.5 0 0 1 4.5 4h4l1.5 2H19a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 17H4.5A1.5 1.5 0 0 1 3 15.5z',
@@ -75,6 +82,7 @@ const ICONS: Record<string, string> = {
   dot: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
   folderOpen: 'M3 7h6l2 2h8v9H3zM3 7V5h6l2 2',
   refresh: 'M4 11a8 8 0 0 1 13.5-5.7L20 8M20 4v4h-4M20 13a8 8 0 0 1-13.5 5.7L4 16M4 20v-4h4',
+  log: 'M5 4h14v16H5zM8 8h8M8 12h8M8 16h5',
 };
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -298,6 +306,7 @@ function MenuBar({
 function Workbench() {
   const api = desktop();
   const { projects, currentProject, currentProjectId, selectProject, loading } = useProject();
+  const { user, logout } = useAuth();
   const connected = useBackendStatus();
   const { mode, toggle: toggleTheme } = useThemeMode();
 
@@ -359,6 +368,8 @@ function Workbench() {
             initialNew={templateTarget.blank}
           />
         );
+      case 'logs':
+        return <LogsPage />;
       default:
         return null;
     }
@@ -401,6 +412,12 @@ function Workbench() {
           <span className="toolbar-path muted">未指定项目文件夹</span>
         )}
         <div className="toolbar-fill" />
+        <span className="toolbar-user" title={`当前登录：${user?.username ?? ''}`}>
+          {user?.display_name || user?.username}
+        </span>
+        <Button size="small" onClick={() => void logout()}>
+          退出
+        </Button>
         <Button size="small" onClick={toggleTheme}>
           {mode === 'dark' ? '浅色模式' : '深色模式'}
         </Button>
@@ -465,10 +482,31 @@ export default function App() {
   return (
     <ThemeProvider>
       <UiSettingsProvider>
-        <ProjectProvider>
-          <Workbench />
-        </ProjectProvider>
+        <AuthProvider>
+          <AuthGate />
+        </AuthProvider>
       </UiSettingsProvider>
     </ThemeProvider>
+  );
+}
+
+/** 未登录时显示登录页；已登录才挂载项目上下文与工作台。 */
+function AuthGate() {
+  const { user, loading } = useAuth();
+  if (loading) {
+    return (
+      <div className="login-page">
+        <div className="login-loading">
+          <Spinner />
+          <span>正在验证登录状态…</span>
+        </div>
+      </div>
+    );
+  }
+  if (!user) return <LoginPage />;
+  return (
+    <ProjectProvider>
+      <Workbench />
+    </ProjectProvider>
   );
 }
