@@ -394,6 +394,10 @@ export interface PdfTemplate {
   watermark_tile: boolean;
   /** 页脚显示「第 X 页 / 共 Y 页」 */
   show_page_number: boolean;
+  /** 页面边框 */
+  page_border: boolean;
+  page_border_width_mm: number;
+  page_border_color: string;
   scope: Scope;
   project_id: string;
   source_id: string;
@@ -417,6 +421,9 @@ export interface PdfTemplateInput {
   watermark?: string;
   watermark_tile?: boolean;
   show_page_number?: boolean;
+  page_border?: boolean;
+  page_border_width_mm?: number;
+  page_border_color?: string;
   scope?: Scope;
   project_id?: string;
 }

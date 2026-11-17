@@ -644,6 +644,22 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "group_top_n",
+            "每组取前 N",
+            "分析",
+            "按分组和排序取每组前 N 行，例如每个考场前 10 名、每个部门金额前 5。",
+            vec![
+                p("group_by", "分组字段", "columns", true, json!([])),
+                p("order_by", "排序字段", "column", true, json!("")),
+                with_options(
+                    p("order", "排序方向", "enum", false, json!("desc")),
+                    &["desc", "asc"],
+                ),
+                p("n", "每组保留行数", "number", true, json!(10)),
+                p("rank_out", "组内排名字段名", "text", false, json!("组内排名")),
+            ],
+        ),
+        def(
             "balance_classes",
             "分班/分组",
             "计算",

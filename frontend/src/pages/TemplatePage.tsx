@@ -89,6 +89,10 @@ interface TemplateDraft {
   watermarkTile: boolean;
   /** 页脚显示页码 */
   showPageNumber: boolean;
+  /** 页面边框 */
+  pageBorder: boolean;
+  pageBorderWidth: number;
+  pageBorderColor: string;
   scope: 'global' | 'project';
 }
 
@@ -120,6 +124,9 @@ const EMPTY_DRAFT: TemplateDraft = {
   watermark: '',
   watermarkTile: false,
   showPageNumber: false,
+  pageBorder: false,
+  pageBorderWidth: 0.4,
+  pageBorderColor: '#000000',
   scope: 'global',
 };
 
@@ -1196,6 +1203,9 @@ export default function TemplatePage({
     watermark: draft.watermark.trim(),
     watermark_tile: draft.watermarkTile,
     show_page_number: draft.showPageNumber,
+    page_border: draft.pageBorder,
+    page_border_width_mm: draft.pageBorderWidth,
+    page_border_color: draft.pageBorderColor,
     scope: draft.id ? draft.scope : scope,
     project_id: draft.id
       ? draft.scope === 'project'
@@ -2028,6 +2038,9 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     watermark: template.watermark ?? '',
     watermarkTile: Boolean(template.watermark_tile),
     showPageNumber: Boolean(template.show_page_number),
+    pageBorder: Boolean(template.page_border),
+    pageBorderWidth: template.page_border_width_mm ?? 0.4,
+    pageBorderColor: template.page_border_color ?? '#000000',
     scope: template.scope === 'project' ? 'project' : 'global',
   };
 }
@@ -2297,6 +2310,36 @@ function PagePanel({
           />
           水印平铺整页（防复印）
         </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={draft.pageBorder}
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, pageBorder: event.target.checked }))
+            }
+          />
+          页面边框
+        </label>
+        {draft.pageBorder ? (
+          <div className="grid-2">
+            <NumberField
+              label="边框线宽 (mm)"
+              step={0.1}
+              value={draft.pageBorderWidth}
+              onChange={(value) => onDraft((prev) => ({ ...prev, pageBorderWidth: value }))}
+            />
+            <label className="field">
+              <span className="field-label">边框颜色</span>
+              <input
+                type="color"
+                value={toHex(draft.pageBorderColor)}
+                onChange={(event) =>
+                  onDraft((prev) => ({ ...prev, pageBorderColor: event.target.value }))
+                }
+              />
+            </label>
+          </div>
+        ) : null}
         <label className="checkbox-row">
           <input
             type="checkbox"

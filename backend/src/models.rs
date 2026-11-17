@@ -659,6 +659,19 @@ pub struct TemplateBody {
     /// 页脚右侧显示「第 X 页 / 共 Y 页」
     #[serde(default)]
     pub show_page_number: bool,
+    /// 在内容区外框绘制页面边框
+    #[serde(default)]
+    pub page_border: bool,
+    /// 页面边框线宽（mm）
+    #[serde(default = "default_page_border_width")]
+    pub page_border_width_mm: f32,
+    /// 页面边框颜色
+    #[serde(default = "default_color")]
+    pub page_border_color: String,
+}
+
+fn default_page_border_width() -> f32 {
+    0.4
 }
 fn default_page() -> PageSetup {
     PageSetup {
@@ -683,6 +696,9 @@ impl Default for TemplateBody {
             watermark: String::new(),
             watermark_tile: false,
             show_page_number: false,
+            page_border: false,
+            page_border_width_mm: default_page_border_width(),
+            page_border_color: default_color(),
         }
     }
 }
@@ -884,6 +900,10 @@ pub struct PdfTemplate {
     pub watermark: String,
     pub watermark_tile: bool,
     pub show_page_number: bool,
+    /// 是否绘制页面边框
+    pub page_border: bool,
+    pub page_border_width_mm: f32,
+    pub page_border_color: String,
     pub scope: String,
     pub project_id: String,
     pub source_id: String,
@@ -922,6 +942,12 @@ pub struct PdfTemplateInput {
     pub watermark_tile: bool,
     #[serde(default)]
     pub show_page_number: bool,
+    #[serde(default)]
+    pub page_border: bool,
+    #[serde(default = "default_page_border_width")]
+    pub page_border_width_mm: f32,
+    #[serde(default = "default_color")]
+    pub page_border_color: String,
     #[serde(default)]
     pub scope: Option<String>,
     #[serde(default)]

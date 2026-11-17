@@ -415,6 +415,7 @@ impl<'a> Compiler<'a> {
             "range_check" => self.op_range_check(step_index, step, &params),
             "shuffle" => self.op_shuffle(step_index, step, &params),
             "balance_classes" => self.op_balance_classes(step_index, step, &params),
+            "group_top_n" => self.op_group_top_n(step_index, step, &params),
             "assign_seats" => self.op_assign_seats(step_index, step, &params),
             "sum_check" => self.op_sum_check(step_index, step, &params),
             "voucher_check" => self.op_voucher_check(step_index, step, &params),
@@ -3116,6 +3117,70 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_group_top_n(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let groups = list_param(p, "group_by");
+        if groups.is_empty() {
+            return Err("分组字段不能为空".to_string());
+        }
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let order_by = str_param(p, "order_by");
+        if order_by.is_empty() {
+            return Err("排序字段不能为空".to_string());
+        }
+        if !self.has_column(&order_by) {
+            return Err(format!("排序字段 [{order_by}] 不存在"));
+        }
+        let n = num_param(p, "n").unwrap_or(10);
+        if n <= 0 {
+            return Err("每组保留行数必须大于 0".to_string());
+        }
+        let out = defaulted(str_param(p, "rank_out"), "组内排名");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let direction = if str_param(p, "order") == "asc" {
+            "ASC"
+        } else {
+            "DESC"
+        };
+        let rn = format!(
+            "ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {} {direction})",
+            groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", "),
+            q(&order_by)
+        );
+        let body = format!(
+            "SELECT * FROM (SELECT *, {rn} AS {} FROM {}) WHERE {} <= {n}",
+            q(&out),
+            self.cur,
+            q(&out)
+        );
+        let cte = self.push_cte(body);
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "按 {} 分组取 [{order_by}] 前 {n} 行 → [{out}]",
+                groups.join("、")
+            )),
+        ))
+    }
+
     fn op_balance_classes(
         &mut self,
         i: i64,
@@ -5734,6 +5799,32 @@ pub fn validate_steps_with(
                     step_errors.push("分隔符不能为空".into());
                 }
             }
+            "group_top_n" => {
+                let groups = list_param(&p, "group_by");
+                if groups.is_empty() {
+                    step_errors.push("分组字段不能为空".into());
+                }
+                for g in &groups {
+                    if !cols.contains(g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+                let order_by = str_param(&p, "order_by");
+                if order_by.is_empty() {
+                    step_errors.push("排序字段不能为空".into());
+                } else if !cols.contains(&order_by) {
+                    step_errors.push(format!("排序字段 [{order_by}] 不存在"));
+                }
+                if num_param(&p, "n").unwrap_or(10) <= 0 {
+                    step_errors.push("每组保留行数必须大于 0".into());
+                }
+                let out = defaulted(str_param(&p, "rank_out"), "组内排名");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "balance_classes" => {
                 if num_param(&p, "class_count").unwrap_or(2) <= 0 {
                     step_errors.push("班级/组数必须大于 0".into());
@@ -7229,6 +7320,67 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn group_top_n_keeps_best_rows_per_group() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("考场", "text"), ("姓名", "text"), ("成绩", "number")],
+            &[
+                vec!["A", "甲", "90"],
+                vec!["A", "乙", "80"],
+                vec!["A", "丙", "70"],
+                vec!["B", "丁", "60"],
+                vec!["B", "戊", "50"],
+                vec!["B", "己", "40"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_top_n",
+            json!([
+                { "id": "s1", "operator": "group_top_n",
+                  "params": { "group_by": ["考场"], "order_by": "成绩", "n": 2 } },
+                { "id": "s2", "operator": "output", "params": { "name": "每组前二" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows.len(), 4);
+        let a_scores: Vec<f64> = page
+            .rows
+            .iter()
+            .filter(|r| r[0] == json!("A"))
+            .map(|r| r[2].as_f64().unwrap())
+            .collect();
+        let b_scores: Vec<f64> = page
+            .rows
+            .iter()
+            .filter(|r| r[0] == json!("B"))
+            .map(|r| r[2].as_f64().unwrap())
+            .collect();
+        assert_eq!(a_scores.len(), 2);
+        assert!(!a_scores.contains(&70.0));
+        assert_eq!(b_scores.len(), 2);
+        assert!(!b_scores.contains(&40.0));
+        let mut a_ranks: Vec<f64> = page
+            .rows
+            .iter()
+            .filter(|r| r[0] == json!("A"))
+            .map(|r| r[3].as_f64().unwrap())
+            .collect();
+        a_ranks.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert_eq!(a_ranks, vec![1.0, 2.0]);
+        let mut b_ranks: Vec<f64> = page
+            .rows
+            .iter()
+            .filter(|r| r[0] == json!("B"))
+            .map(|r| r[3].as_f64().unwrap())
+            .collect();
+        b_ranks.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert_eq!(b_ranks, vec![1.0, 2.0]);
     }
 
     #[test]

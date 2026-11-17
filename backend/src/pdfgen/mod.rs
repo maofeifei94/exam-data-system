@@ -652,6 +652,21 @@ impl<'a> Painter<'a> {
     /// 页眉、页脚、页码与水印。每页绘制一次，支持页面分组字段（如考场号）。
     fn page_decoration(&self, body: &TemplateBody, ctx: &Ctx<'_>, page_w: f32, m: &Margins) {
         let content_w = (page_w - m.left - m.right).max(10.0);
+        if body.page_border {
+            let content_h = (self.page_h - m.top - m.bottom).max(10.0);
+            let llx = m.left;
+            let ury = self.page_h - m.top;
+            self.layer.set_outline_color(
+                color_of(&body.page_border_color)
+                    .unwrap_or(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))),
+            );
+            self.layer
+                .set_outline_thickness(body.page_border_width_mm.max(0.05) * PT_PER_MM);
+            self.layer.add_rect(
+                Rect::new(Mm(llx), Mm(ury - content_h), Mm(llx + content_w), Mm(ury))
+                    .with_mode(PaintMode::Stroke),
+            );
+        }
         let header = interpolate(&body.header_text, ctx);
         if !header.trim().is_empty() {
             let y = (m.top - 8.0).max(2.0);
@@ -1363,6 +1378,25 @@ mod tests {
         let rows = vec![vec!["2026001".into()]];
         let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
             .expect("render qr");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn page_border_renders_without_error() {
+        let cols = vec![DatasetColumn {
+            name: "姓名".into(),
+            dtype: "text".into(),
+        }];
+        let body = TemplateBody {
+            page_border: true,
+            page_border_width_mm: 0.6,
+            page_border_color: "#1E40AF".into(),
+            ..Default::default()
+        };
+        let rows = vec![vec!["张三".into()]];
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
+            .expect("render page border");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
     }

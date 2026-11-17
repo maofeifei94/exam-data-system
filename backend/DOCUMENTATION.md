@@ -289,6 +289,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `score_summary` | 成绩统计汇总：人数、平均分、最高/最低分、及格率、优秀率、标准差 |
 | `score_segment` | 分数段统计，可生成一分一段表并输出累计人数 |
 | `pivot` | 透视表：按某列取值展开成多列并汇总（科目成绩、月度收支） |
+| `group_top_n` | 每组取前 N：按分组和排序保留每组前 N 行，输出组内排名 |
 | `unpivot` | 逆透视：把多列指标展开为「指标 / 值」两列，宽表转长表 |
 | `fill_down` | 向下填充：用上方最近的非空值填充空白，修复合并单元格导出的空值 |
 
@@ -402,6 +403,8 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」。
   水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
+- **页面边框**：`page_border` 打开后沿内容区绘制边框，`page_border_width_mm` 与
+  `page_border_color` 控制线宽和颜色，适合证书、通知单等需要装裱边框的版式。
 
 新增照片元素的三个配置：`photo_dir`（目录，可由系统对话框选择）、
 `photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）。
