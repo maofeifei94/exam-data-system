@@ -379,6 +379,27 @@ describe('元素树操作', () => {
     ).toEqual(['考场号', '成绩']);
   });
 
+  it('自定义纸张使用配置的宽高并支持横向', () => {
+    expect(
+      pageSizeMm({
+        size: 'Custom',
+        orientation: 'portrait',
+        margin_mm: { top: 10, right: 10, bottom: 10, left: 10 },
+        width_mm: 210,
+        height_mm: 140,
+      }),
+    ).toEqual({ w: 210, h: 140 });
+    expect(
+      pageSizeMm({
+        size: 'Custom',
+        orientation: 'landscape',
+        margin_mm: { top: 10, right: 10, bottom: 10, left: 10 },
+        width_mm: 210,
+        height_mm: 140,
+      }),
+    ).toEqual({ w: 140, h: 210 });
+  });
+
   it('明细表列宽固定优先、剩余宽度均分', () => {
     const setup = {
       ...DEFAULT_TABLE,

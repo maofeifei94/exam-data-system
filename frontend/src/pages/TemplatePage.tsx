@@ -123,6 +123,8 @@ const DEFAULT_PAGE: PageSetup = {
   size: 'A4',
   orientation: 'portrait',
   margin_mm: { top: 15, right: 12, bottom: 12, left: 12 },
+  width_mm: 210,
+  height_mm: 297,
 };
 
 const EMPTY_DRAFT: TemplateDraft = {
@@ -2314,9 +2316,9 @@ function PagePanel({
               value={draft.page.size}
               onChange={(event) => onPage({ size: event.target.value as PageSetup['size'] })}
             >
-              {(['A4', 'A3', 'A5', 'Letter'] as const).map((item) => (
+              {(['A4', 'A3', 'A5', 'Letter', 'Custom'] as const).map((item) => (
                 <option key={item} value={item}>
-                  {item}
+                  {item === 'Custom' ? '自定义尺寸' : item}
                 </option>
               ))}
             </select>
@@ -2332,6 +2334,22 @@ function PagePanel({
             </select>
           </label>
         </div>
+        {draft.page.size === 'Custom' ? (
+          <div className="grid-2">
+            <NumberField
+              label="宽度 (mm)"
+              step={1}
+              value={draft.page.width_mm ?? 210}
+              onChange={(value) => onPage({ width_mm: Math.max(10, value) })}
+            />
+            <NumberField
+              label="高度 (mm)"
+              step={1}
+              value={draft.page.height_mm ?? 297}
+              onChange={(value) => onPage({ height_mm: Math.max(10, value) })}
+            />
+          </div>
+        ) : null}
         <div className="grid-4">
           {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
             <label key={side} className="field">

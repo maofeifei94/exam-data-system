@@ -1189,6 +1189,7 @@ fn page_size_mm(p: &PageSetup) -> (f32, f32) {
         "A3" => (297.0, 420.0),
         "A5" => (148.0, 210.0),
         "Letter" => (215.9, 279.4),
+        "Custom" if p.width_mm > 0.0 && p.height_mm > 0.0 => (p.width_mm, p.height_mm),
         _ => (210.0, 297.0),
     };
     if p.orientation == "landscape" {
@@ -1764,6 +1765,26 @@ mod tests {
             resolve_photo("报名照.png", dir.to_str(), &["jpg".to_string()]).expect("exact name");
         assert!(found.ends_with("报名照.png"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_page_size_uses_configured_dimensions() {
+        let p = PageSetup {
+            size: "Custom".into(),
+            orientation: "portrait".into(),
+            margin_mm: Margins {
+                top: 15.0,
+                right: 12.0,
+                bottom: 12.0,
+                left: 12.0,
+            },
+            width_mm: 210.0,
+            height_mm: 140.0,
+        };
+        assert_eq!(page_size_mm(&p), (210.0, 140.0));
+        let mut landscape = p.clone();
+        landscape.orientation = "landscape".into();
+        assert_eq!(page_size_mm(&landscape), (140.0, 210.0));
     }
 
     #[test]

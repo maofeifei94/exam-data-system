@@ -312,9 +312,13 @@ export interface FlowValidateResult {
 }
 
 export interface PageSetup {
-  size: 'A4' | 'A3' | 'A5' | 'Letter';
+  size: 'A4' | 'A3' | 'A5' | 'Letter' | 'Custom';
   orientation: 'portrait' | 'landscape';
   margin_mm: { top: number; right: number; bottom: number; left: number };
+  /** 自定义纸张宽度（mm），size=Custom 时生效 */
+  width_mm?: number;
+  /** 自定义纸张高度（mm），size=Custom 时生效 */
+  height_mm?: number;
 }
 
 export interface MatrixSetup {

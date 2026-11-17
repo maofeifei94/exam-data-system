@@ -49,7 +49,11 @@ export function pageSizeMm(page: PageSetup): { w: number; h: number } {
     A5: [148, 210],
     Letter: [215.9, 279.4],
   };
-  const [w, h] = sizes[page.size] ?? sizes.A4;
+  const custom =
+    page.size === 'Custom' && (page.width_mm ?? 0) > 0 && (page.height_mm ?? 0) > 0
+      ? [page.width_mm as number, page.height_mm as number]
+      : null;
+  const [w, h] = custom ?? sizes[page.size] ?? sizes.A4;
   return page.orientation === 'landscape' ? { w: h, h: w } : { w, h };
 }
 

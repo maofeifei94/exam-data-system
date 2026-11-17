@@ -426,6 +426,8 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   `chrome_font_size` 与 `chrome_color` 控制页眉页脚字号和颜色（默认 9pt 浅灰）。
   水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
+- **自定义纸张**：`page.size = "Custom"` 时使用 `page.width_mm` 与 `page.height_mm`
+  （均大于 0 才生效），适合准考证、桌贴等非标准尺寸；横向时宽高自动互换。
 - **渲染前排序**：`sort_field` + `sort_order`（asc / desc）在分页前对数据排序；
   与 `page_field` 同时使用时先按分组字段升序，再在组内按排序字段排列，
   适合「按考场分页、组内按成绩倒序」的名单与成绩单。

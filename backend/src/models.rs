@@ -487,6 +487,12 @@ pub struct PageSetup {
     pub orientation: String,
     #[serde(default = "default_margin")]
     pub margin_mm: Margins,
+    /// 自定义纸张宽度（mm），仅 size = "Custom" 且大于 0 时生效
+    #[serde(default)]
+    pub width_mm: f32,
+    /// 自定义纸张高度（mm），仅 size = "Custom" 且大于 0 时生效
+    #[serde(default)]
+    pub height_mm: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -796,6 +802,8 @@ fn default_page() -> PageSetup {
         size: default_page_size(),
         orientation: default_orientation(),
         margin_mm: default_margin(),
+        width_mm: 0.0,
+        height_mm: 0.0,
     }
 }
 
