@@ -222,6 +222,42 @@ const FLOW_PRESETS: Array<{
     ],
   },
   {
+    name: '成绩统计汇总',
+    description: '按班级汇总人数、平均分、及格率、优秀率与标准差',
+    steps: [
+      {
+        operator: 'score_summary',
+        params: {
+          column: '总成绩',
+          group_by: ['班级'],
+          pass_score: 60,
+          excellent_score: 85,
+          decimals: 2,
+        },
+      },
+    ],
+  },
+  {
+    name: '一分一段表',
+    description: '按 1 分一段统计人数并输出累计人数',
+    steps: [
+      {
+        operator: 'score_segment',
+        params: { column: '总成绩', step: 1, cumulative: true },
+      },
+    ],
+  },
+  {
+    name: '应收账龄分析',
+    description: '按应收日期划分 0-30、31-60、61-90、90 天以上账龄',
+    steps: [
+      {
+        operator: 'aging_bucket',
+        params: { column: '应收日期', mode: 'date', buckets: '30,60,90,180', out: '账龄' },
+      },
+    ],
+  },
+  {
     name: '成绩均衡检查',
     description: '比较各科成绩分差，标记偏科考生',
     steps: [
