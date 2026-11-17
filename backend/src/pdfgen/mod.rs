@@ -2337,6 +2337,91 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "2 万行明细表分页渲染压力测试，按需运行"]
+    fn stress_table_pdf_20k_rows() {
+        const N: usize = 20_000;
+        let names = [
+            "考场号",
+            "姓名",
+            "准考证号",
+            "语文",
+            "数学",
+            "英语",
+            "总成绩",
+        ];
+        let cols: Vec<DatasetColumn> = names
+            .iter()
+            .map(|n| DatasetColumn {
+                name: (*n).into(),
+                dtype: "text".into(),
+            })
+            .collect();
+        let rows: Vec<Vec<String>> = (0..N)
+            .map(|i| {
+                let chinese = 60 + i % 41;
+                let math = 50 + i % 51;
+                let english = 40 + i % 61;
+                vec![
+                    format!("{}", i / 30 + 1),
+                    format!("考生{i:06}"),
+                    format!("2026{:06}", i + 1),
+                    chinese.to_string(),
+                    math.to_string(),
+                    english.to_string(),
+                    (chinese + math + english).to_string(),
+                ]
+            })
+            .collect();
+
+        let mut table = TemplateElement::empty("tb", "table");
+        table.x_mm = 0.0;
+        table.y_mm = 10.0;
+        table.w_mm = 180.0;
+        table.h_mm = 240.0;
+        table.font_size = 8.0;
+        table.table = Some(TableSetup {
+            columns: names
+                .iter()
+                .map(|n| TableColumn {
+                    field: (*n).into(),
+                    label: (*n).into(),
+                    width_mm: if *n == "姓名" { 40.0 } else { 0.0 },
+                    align: "center".into(),
+                    summary: String::new(),
+                })
+                .collect(),
+            header_height_mm: 8.0,
+            row_height_mm: 8.0,
+            show_header: true,
+            show_grid: true,
+            summary_label: String::new(),
+            wrap: false,
+            header_fill: "#EEEEEE".into(),
+            row_band: true,
+        });
+        let mut body = TemplateBody {
+            header_text: "成绩明细表".into(),
+            footer_text: "{{page}} / {{pages}}".into(),
+            show_page_number: true,
+            ..Default::default()
+        };
+        body.elements.push(table);
+
+        let start = std::time::Instant::now();
+        let pdf = render_pdf_data(&cols, &rows, &body, "table", &RenderOpts::default())
+            .expect("渲染 2 万行明细表");
+        let elapsed = start.elapsed();
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 100_000, "PDF 体积异常: {} bytes", pdf.len());
+        assert!(elapsed.as_secs() < 180, "2 万行渲染耗时过长: {elapsed:?}");
+        println!(
+            "2 万行明细表 PDF 体积: {} MB, 耗时: {:?}",
+            pdf.len() / 1024 / 1024,
+            elapsed
+        );
+    }
+
+    #[test]
     fn render_table_groups_pages_by_page_field() {
         let cols = vec![
             DatasetColumn {
