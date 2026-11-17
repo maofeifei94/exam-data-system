@@ -256,6 +256,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `tax_calc` | 税额计算：按固定税率或税率字段拆分含税/不含税金额，支持价内税与价外税 |
 | `exchange_convert` | 汇率换算：按固定汇率或汇率字段乘/除换算金额 |
 | `loan_payment` | 等额本息月供：按本金、年利率、期限计算月供、总利息与还款总额 |
+| `income_tax` | 个人所得税：按月度七级超额累进税率计算个税与税后收入，支持减除费用与专项扣除字段 |
 | `compound_interest` | 复利终值/现值：支持按年/季/月复利，输出终值或现值 |
 | `interest_accrual` | 利息计算：按本金、起止日期与年利率计算计息天数与利息，支持实际/365、实际/360、30/360 |
 | `budget_variance` | 预算执行分析：按部门/科目汇总预算与实际，输出执行率、差额与超支预警 |

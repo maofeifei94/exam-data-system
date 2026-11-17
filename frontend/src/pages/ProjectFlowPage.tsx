@@ -106,6 +106,22 @@ const FLOW_PRESETS: Array<{
     ],
   },
   {
+    name: '工资个税计算',
+    description: '按月度七级超额累进税率计算个税与税后收入',
+    steps: [
+      {
+        operator: 'income_tax',
+        params: {
+          column: '应发工资',
+          deduction: 5000,
+          special_column: '专项扣除',
+          tax_out: '个人所得税',
+          net_out: '税后收入',
+        },
+      },
+    ],
+  },
+  {
     name: '预算执行分析',
     description: '按部门汇总预算与实际，输出执行率、差额与超支状态',
     steps: [

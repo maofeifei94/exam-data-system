@@ -487,6 +487,23 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "income_tax",
+            "个人所得税计算",
+            "计算",
+            "按月度七级超额累进税率计算工资个税与税后收入，支持每月减除费用和专项扣除字段。",
+            vec![
+                p("column", "收入字段", "column", true, json!("")),
+                with_help(p("deduction", "每月减除费用", "number", false, json!(5000)), "起征点，默认 5000 元"),
+                with_help(
+                    p("special_column", "专项扣除字段（可空）", "column", false, json!("")),
+                    "社保、公积金、专项附加扣除合计；留空按 0 计算",
+                ),
+                p("tax_out", "个税字段名", "text", false, json!("个人所得税")),
+                p("net_out", "税后收入字段名", "text", false, json!("税后收入")),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+            ],
+        ),
+        def(
             "reconcile",
             "对账核对",
             "分析",

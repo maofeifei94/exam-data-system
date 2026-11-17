@@ -424,6 +424,7 @@ impl<'a> Compiler<'a> {
             "reconcile" => self.op_reconcile(step_index, step, &params),
             "depreciation" => self.op_depreciation(step_index, step, &params),
             "allocate" => self.op_allocate(step_index, step, &params),
+            "income_tax" => self.op_income_tax(step_index, step, &params),
             "data_profile" => self.op_data_profile(step_index, step, &params),
             "not_null_check" => self.op_not_null_check(step_index, step, &params),
             "column_compare" => self.op_column_compare(step_index, step, &params),
@@ -2525,6 +2526,77 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("按 [{weight}] 分摊 [{amount}] → [{out}]")),
+        ))
+    }
+
+    /// 个人所得税：月度七级超额累进，税后收入 = 收入 - 个税（不再扣减专项，避免重复扣减）。
+    fn op_income_tax(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let special = str_param(p, "special_column");
+        if !special.is_empty() && !self.has_column(&special) {
+            return Err(format!("字段 [{special}] 不存在"));
+        }
+        let deduction = f64_param(p, "deduction").unwrap_or(5000.0).max(0.0);
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let tax_out = defaulted(str_param(p, "tax_out"), "个人所得税");
+        let net_out = defaulted(str_param(p, "net_out"), "税后收入");
+        for name in [&tax_out, &net_out] {
+            if self.has_column(name) {
+                return Err(format!("字段 [{name}] 已存在"));
+            }
+        }
+        let income = format!("COALESCE(CAST({} AS REAL), 0)", q(&col));
+        let special_expr = if special.is_empty() {
+            "0".to_string()
+        } else {
+            format!("COALESCE(CAST({} AS REAL), 0)", q(&special))
+        };
+        let taxable = format!("MAX(0.0, {income} - {deduction} - {special_expr})");
+        // 月度税率表：应纳税所得额上限 → (税率, 速算扣除数)
+        let brackets = [
+            (3000.0, 0.03, 0.0),
+            (12000.0, 0.10, 210.0),
+            (25000.0, 0.20, 1410.0),
+            (35000.0, 0.25, 2660.0),
+            (55000.0, 0.30, 4410.0),
+            (80000.0, 0.35, 7160.0),
+            (f64::INFINITY, 0.45, 15160.0),
+        ];
+        let mut case = String::from("CASE");
+        for (limit, rate, quick) in brackets {
+            if limit.is_finite() {
+                case.push_str(&format!(
+                    " WHEN {taxable} <= {limit} THEN {taxable} * {rate} - {quick}"
+                ));
+            } else {
+                case.push_str(&format!(" ELSE {taxable} * {rate} - {quick}"));
+            }
+        }
+        case.push_str(" END");
+        let tax = format!("ROUND({case}, {decimals})");
+        let net = format!("ROUND({income} - {tax}, {decimals})");
+        let cte = self.push_cte(format!(
+            "SELECT *, {tax} AS {}, {net} AS {} FROM {}",
+            q(&tax_out),
+            q(&net_out),
+            self.cur
+        ));
+        for name in [&tax_out, &net_out] {
+            self.add_column(DatasetColumn {
+                name: name.clone(),
+                dtype: "number".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("按月度七级累进税率计算 [{col}] 个税与税后收入")),
         ))
     }
 
@@ -6185,6 +6257,31 @@ pub fn validate_steps_with(
                     cols.push(out);
                 }
             }
+            "income_tax" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                let special = str_param(&p, "special_column");
+                if !special.is_empty() && !cols.contains(&special) {
+                    step_errors.push(format!("字段 [{special}] 不存在"));
+                }
+                for key in ["tax_out", "net_out"] {
+                    let out = defaulted(
+                        str_param(&p, key),
+                        if key == "tax_out" {
+                            "个人所得税"
+                        } else {
+                            "税后收入"
+                        },
+                    );
+                    if cols.contains(&out) {
+                        step_errors.push(format!("字段 [{out}] 已存在"));
+                    } else {
+                        cols.push(out);
+                    }
+                }
+            }
             "data_profile" => {
                 for c in list_param(&p, "columns") {
                     if !cols.contains(&c) {
@@ -8465,6 +8562,38 @@ mod tests {
                      "params": { "columns": ["语文", "数学"], "on_error": "warn" } }]),
         );
         assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn income_tax_uses_monthly_progressive_brackets() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("收入", "number")],
+            &[vec!["张三", "10000"], vec!["李四", "30000"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_income_tax",
+            json!([
+                { "id": "s1", "operator": "income_tax",
+                  "params": { "column": "收入", "deduction": 5000 } },
+                { "id": "s2", "operator": "output", "params": { "name": "个税结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let col = |name: &str| {
+            page.columns
+                .iter()
+                .position(|c| c.name == name)
+                .expect("column")
+        };
+        let (tax, net) = (col("个人所得税"), col("税后收入"));
+        assert_eq!(page.rows[0][tax], json!(290.0));
+        assert_eq!(page.rows[0][net], json!(9710.0));
+        assert_eq!(page.rows[1][tax], json!(3590.0));
+        assert_eq!(page.rows[1][net], json!(26410.0));
     }
 
     #[test]
