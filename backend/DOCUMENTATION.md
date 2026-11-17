@@ -422,8 +422,9 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
 - **明细表元素**：`type = "table"` 的元素用于多行表格展示，配置在 `table` 字段：
   `columns`（字段、表头、列宽、对齐）、`header_height_mm`、`row_height_mm`、
-  `show_header`、`show_grid`。模板类型为 `table` 时，数据按元素高度与行高自动分页，
-  每页重复表头；列宽填 0 时按剩余宽度均分。
+  `show_header`、`show_grid`、`summary_label`。模板类型为 `table` 时，数据按元素高度与行高自动分页，
+  每页重复表头；列宽填 0 时按剩余宽度均分。列可配置 `summary: sum / avg / count`，
+  在最后一页底部输出汇总行（首列显示 `summary_label`）。
 - **页面边框**：`page_border` 打开后沿内容区绘制边框，`page_border_width_mm` 与
   `page_border_color` 控制线宽和颜色，适合证书、通知单等需要装裱边框的版式。
 - **空内容隐藏**：元素设置 `hide_if_empty = true` 后，占位符插值结果为空时整体跳过，

@@ -541,6 +541,9 @@ pub struct TableColumn {
     pub width_mm: f32,
     #[serde(default = "default_align")]
     pub align: String,
+    /// 汇总方式：留空不汇总，可选 sum / avg / count
+    #[serde(default)]
+    pub summary: String,
 }
 
 /// 明细表配置：多行数据按行高自动分页，每页重复表头。
@@ -556,6 +559,9 @@ pub struct TableSetup {
     pub show_header: bool,
     #[serde(default = "default_true")]
     pub show_grid: bool,
+    /// 汇总行首列文字（任意列配置了汇总时生效）
+    #[serde(default = "default_summary_label")]
+    pub summary_label: String,
 }
 impl Default for TableSetup {
     fn default() -> Self {
@@ -565,8 +571,12 @@ impl Default for TableSetup {
             row_height_mm: default_row_h(),
             show_header: true,
             show_grid: true,
+            summary_label: default_summary_label(),
         }
     }
+}
+fn default_summary_label() -> String {
+    "合计".to_string()
 }
 fn default_header_h() -> f32 {
     8.0

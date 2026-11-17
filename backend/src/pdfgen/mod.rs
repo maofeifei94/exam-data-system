@@ -535,6 +535,59 @@ fn table_column_widths(setup: &TableSetup, total: f32) -> Vec<f32> {
         .collect()
 }
 
+/// 数字汇总的展示：最多两位小数，整数不带小数位。
+fn format_summary_number(value: f64) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    if (rounded - rounded.round()).abs() < 1e-9 {
+        format!("{}", rounded.round() as i64)
+    } else {
+        format!("{rounded:.2}")
+    }
+}
+
+/// 计算明细表汇总行；没有任何列配置汇总时返回 None。
+fn table_summary_row(
+    setup: &TableSetup,
+    rows: &[Vec<String>],
+    index: &HashMap<String, usize>,
+) -> Option<Vec<String>> {
+    if !setup.columns.iter().any(|c| !c.summary.trim().is_empty()) {
+        return None;
+    }
+    let mut out: Vec<String> = setup.columns.iter().map(|_| String::new()).collect();
+    for (i, col) in setup.columns.iter().enumerate() {
+        let func = col.summary.trim().to_ascii_lowercase();
+        if func.is_empty() {
+            if i == 0 {
+                out[i] = setup.summary_label.clone();
+            }
+            continue;
+        }
+        let Some(idx) = index.get(col.field.trim()).copied() else {
+            continue;
+        };
+        let non_empty = rows
+            .iter()
+            .filter_map(|r| r.get(idx))
+            .filter(|s| !s.trim().is_empty())
+            .count();
+        let nums: Vec<f64> = rows
+            .iter()
+            .filter_map(|r| r.get(idx))
+            .filter_map(|s| s.trim().parse::<f64>().ok())
+            .collect();
+        out[i] = match func.as_str() {
+            "sum" => format_summary_number(nums.iter().sum()),
+            "avg" if !nums.is_empty() => {
+                format_summary_number(nums.iter().sum::<f64>() / nums.len() as f64)
+            }
+            "count" => non_empty.to_string(),
+            _ => String::new(),
+        };
+    }
+    Some(out)
+}
+
 /// 矩阵网格的几何信息：宽度、高度、列数、行数。
 struct Grid {
     w: f32,
@@ -668,6 +721,38 @@ impl<'a> Painter<'a> {
                 x += w;
             }
             y += row_h;
+        }
+    }
+
+    /// 绘制汇总行，`geometry` 为（x, y_top, 行高）。
+    fn table_summary(
+        &self,
+        setup: &TableSetup,
+        el: &TemplateElement,
+        widths: &[f32],
+        summary: &[String],
+        geometry: (f32, f32, f32),
+    ) {
+        let (x, y_top, row_h) = geometry;
+        let mut cell = el.clone();
+        cell.children.clear();
+        cell.x_mm = 0.0;
+        cell.y_mm = 0.0;
+        cell.wrap = false;
+        cell.rotate = 0.0;
+        cell.bold = true;
+        let mut cx = x;
+        for (i, col) in setup.columns.iter().enumerate() {
+            let w = widths.get(i).copied().unwrap_or(0.0);
+            let text = summary.get(i).map(|s| s.as_str()).unwrap_or("");
+            self.table_cell(
+                text,
+                &mut cell,
+                &col.align,
+                (cx, y_top, w, row_h),
+                setup.show_grid,
+            );
+            cx += w;
         }
     }
 
@@ -1423,7 +1508,9 @@ pub fn render_pdf_data(
         } else {
             0.0
         };
-        let per_page = (((table_el.h_mm - header_h) / row_h).floor() as usize).max(1);
+        let summary = table_summary_row(&setup, rows, &index);
+        let summary_h = if summary.is_some() { row_h } else { 0.0 };
+        let per_page = (((table_el.h_mm - header_h - summary_h) / row_h).floor() as usize).max(1);
         let pages = rows.len().div_ceil(per_page).max(1) as i64;
         let widths = table_column_widths(&setup, table_el.w_mm.max(10.0));
         let start_page = opts.only_page.unwrap_or(1).max(1);
@@ -1475,6 +1562,19 @@ pub fn render_pdf_data(
             let to = (from + per_page).min(rows.len());
             let slice = &rows[from.min(rows.len())..to];
             painter.table(&setup, table_el, &widths, slice, &index, &table_origin);
+            if page == pages {
+                if let Some(summary) = &summary {
+                    // 汇总行固定在数据区底部，不随最后一页行数浮动。
+                    let summary_y = table_origin.y_top + header_h + per_page as f32 * row_h;
+                    painter.table_summary(
+                        &setup,
+                        table_el,
+                        &widths,
+                        summary,
+                        (table_origin.x, summary_y, row_h),
+                    );
+                }
+            }
             painter.page_decoration(body, &page_ctx, page_w, &body.page.margin_mm);
         }
     } else {
@@ -2004,18 +2104,21 @@ mod tests {
                     label: "姓名".into(),
                     width_mm: 60.0,
                     align: "left".into(),
+                    summary: String::new(),
                 },
                 TableColumn {
                     field: "成绩".into(),
                     label: "成绩".into(),
                     width_mm: 0.0,
                     align: "right".into(),
+                    summary: "sum".into(),
                 },
             ],
             header_height_mm: 8.0,
             row_height_mm: 8.0,
             show_header: true,
             show_grid: true,
+            summary_label: "合计".into(),
         });
         let mut body = TemplateBody::default();
         body.elements.push(table);
@@ -2030,6 +2133,58 @@ mod tests {
             .expect("render table");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn table_summary_row_computes_sum_avg_and_count() {
+        let setup = TableSetup {
+            columns: vec![
+                TableColumn {
+                    field: "姓名".into(),
+                    label: "姓名".into(),
+                    width_mm: 0.0,
+                    align: "left".into(),
+                    summary: String::new(),
+                },
+                TableColumn {
+                    field: "金额".into(),
+                    label: "金额".into(),
+                    width_mm: 0.0,
+                    align: "right".into(),
+                    summary: "sum".into(),
+                },
+                TableColumn {
+                    field: "成绩".into(),
+                    label: "成绩".into(),
+                    width_mm: 0.0,
+                    align: "right".into(),
+                    summary: "avg".into(),
+                },
+                TableColumn {
+                    field: "人数".into(),
+                    label: "人数".into(),
+                    width_mm: 0.0,
+                    align: "right".into(),
+                    summary: "count".into(),
+                },
+            ],
+            summary_label: "合计".into(),
+            ..Default::default()
+        };
+        let index: HashMap<String, usize> = [
+            ("姓名".to_string(), 0usize),
+            ("金额".to_string(), 1),
+            ("成绩".to_string(), 2),
+            ("人数".to_string(), 3),
+        ]
+        .into_iter()
+        .collect();
+        let rows = vec![
+            vec!["张三".into(), "100".into(), "80".into(), "1".into()],
+            vec!["李四".into(), "200".into(), "90".into(), "".into()],
+        ];
+        let summary = table_summary_row(&setup, &rows, &index).expect("summary");
+        assert_eq!(summary, vec!["合计", "300", "85", "1"]);
     }
 
     #[test]

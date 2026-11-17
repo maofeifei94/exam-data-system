@@ -338,6 +338,8 @@ export interface TableColumn {
   /** 列宽（mm），0 表示按剩余宽度均分 */
   width_mm: number;
   align: 'left' | 'center' | 'right';
+  /** 汇总方式：留空不汇总，可选 sum / avg / count */
+  summary?: string;
 }
 
 /** 明细表配置：数据按行高自动分页，每页重复表头。 */
@@ -347,6 +349,8 @@ export interface TableSetup {
   row_height_mm: number;
   show_header: boolean;
   show_grid: boolean;
+  /** 汇总行首列文字 */
+  summary_label?: string;
 }
 
 export interface TemplateElement {

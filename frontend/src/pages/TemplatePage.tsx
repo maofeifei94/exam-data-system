@@ -889,6 +889,24 @@ export default function TemplatePage({
           });
           top += rowH;
         }
+        if (setup.columns.some((col) => col.summary)) {
+          const summaryY = Math.max(0, h - rowH);
+          let x = 0;
+          setup.columns.forEach((col, i) => {
+            const cw = widths[i] ?? 0;
+            const text = col.summary
+              ? col.summary === 'count'
+                ? '#'
+                : col.summary === 'avg'
+                  ? 'x̄'
+                  : 'Σ'
+              : i === 0
+                ? (setup.summary_label ?? '合计')
+                : '';
+            cell(x, summaryY, cw, rowH, text, col.align, true);
+            x += cw;
+          });
+        }
         if (setup.show_grid) {
           node.add(
             new Rect({
@@ -2720,7 +2738,13 @@ function ElementEditor({
                 patchTable({
                   columns: [
                     ...table.columns,
-                    { field: columns[0] ?? '', label: columns[0] ?? '', width_mm: 0, align: 'left' },
+                    {
+                      field: columns[0] ?? '',
+                      label: columns[0] ?? '',
+                      width_mm: 0,
+                      align: 'left',
+                      summary: '',
+                    },
                   ],
                 })
               }
@@ -2778,6 +2802,18 @@ function ElementEditor({
                   <option value="right">右</option>
                 </select>
               </label>
+              <label className="field">
+                <span className="field-label">汇总</span>
+                <select
+                  value={col.summary ?? ''}
+                  onChange={(event) => patchColumn(index, { summary: event.target.value })}
+                >
+                  <option value="">不汇总</option>
+                  <option value="sum">求和</option>
+                  <option value="avg">平均值</option>
+                  <option value="count">计数</option>
+                </select>
+              </label>
               <button
                 type="button"
                 className="btn btn-sm"
@@ -2789,8 +2825,19 @@ function ElementEditor({
               </button>
             </div>
           ))}
+          {table.columns.some((col) => col.summary) ? (
+            <label className="field">
+              <span className="field-label">汇总行首列文字</span>
+              <input
+                type="text"
+                value={table.summary_label ?? '合计'}
+                onChange={(event) => patchTable({ summary_label: event.target.value })}
+              />
+            </label>
+          ) : null}
           <p className="panel-hint">
             列宽填 0 自动均分；表格高度决定每页行数，超出后自动分页并在每页重复表头。
+            配置「汇总」后会在最后一页底部输出合计 / 平均 / 计数行。
           </p>
         </div>
       ) : null}
