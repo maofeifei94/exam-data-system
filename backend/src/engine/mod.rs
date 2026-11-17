@@ -427,6 +427,7 @@ impl<'a> Compiler<'a> {
             "allocate" => self.op_allocate(step_index, step, &params),
             "income_tax" => self.op_income_tax(step_index, step, &params),
             "balance_rollforward" => self.op_balance_rollforward(step_index, step, &params),
+            "amount_unit" => self.op_amount_unit(step_index, step, &params),
             "data_profile" => self.op_data_profile(step_index, step, &params),
             "not_null_check" => self.op_not_null_check(step_index, step, &params),
             "column_compare" => self.op_column_compare(step_index, step, &params),
@@ -2583,6 +2584,43 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("按 [{weight}] 分摊 [{amount}] → [{out}]")),
+        ))
+    }
+
+    /// 金额单位换算：元 ↔ 万元。
+    fn op_amount_unit(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = defaulted(str_param(p, "out"), "换算金额");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let factor = if str_param(p, "mode") == "wan_to_yuan" {
+            10000.0
+        } else {
+            0.0001
+        };
+        let e = format!("ROUND(CAST({} AS REAL) * {factor}, {decimals})", q(&col));
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("金额单位换算：[{col}] → [{out}]")),
         ))
     }
 
@@ -6704,6 +6742,18 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "amount_unit" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                let out = defaulted(str_param(&p, "out"), "换算金额");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "balance_rollforward" => {
                 for key in ["debit", "credit"] {
                     let c = str_param(&p, key);
@@ -9124,6 +9174,38 @@ mod tests {
         assert_eq!(page.rows[0][flag], json!(""));
         assert_eq!(page.rows[1][flag], json!("偏科"));
         assert_eq!(page.rows[2][flag], json!(""));
+    }
+
+    #[test]
+    fn amount_unit_converts_between_yuan_and_wan() {
+        let (mut conn, ds_id) =
+            setup_custom(&[("金额", "number")], &[vec!["12345.67"], vec!["1.5"]]);
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_amount_unit",
+            json!([
+                { "id": "s1", "operator": "amount_unit",
+                  "params": { "column": "金额", "mode": "yuan_to_wan", "out": "万元" } },
+                { "id": "s2", "operator": "amount_unit",
+                  "params": { "column": "金额", "mode": "wan_to_yuan", "out": "元" } },
+                { "id": "s3", "operator": "output", "params": { "name": "单位换算" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let col = |name: &str| {
+            page.columns
+                .iter()
+                .position(|c| c.name == name)
+                .expect("column")
+        };
+        let (wan, yuan) = (col("万元"), col("元"));
+        assert_eq!(page.rows[0][wan], json!(1.23));
+        assert_eq!(page.rows[0][yuan], json!(123456700.0));
+        assert_eq!(page.rows[1][wan], json!(0.0));
+        assert_eq!(page.rows[1][yuan], json!(15000.0));
     }
 
     #[test]

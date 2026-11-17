@@ -498,6 +498,18 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "amount_unit",
+            "金额单位换算",
+            "计算",
+            "在元与万元之间换算金额，便于财务报表与汇总表按不同单位展示。",
+            vec![
+                p("column", "金额字段", "column", true, json!("")),
+                with_options(p("mode", "换算方式", "enum", false, json!("yuan_to_wan")), &["yuan_to_wan", "wan_to_yuan"]),
+                p("out", "输出字段名", "text", false, json!("换算金额")),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+            ],
+        ),
+        def(
             "balance_rollforward",
             "期末余额计算",
             "计算",
