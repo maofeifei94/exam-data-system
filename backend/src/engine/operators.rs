@@ -309,6 +309,17 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "date_normalize",
+            "日期标准化",
+            "字段",
+            "把 2026/3/5、2026年3月5日 等写法统一成 YYYY-MM-DD，并提示无法识别的日期。",
+            vec![
+                p("column", "日期字段", "column", true, json!("")),
+                p("out", "输出字段名", "text", false, json!("标准日期")),
+                with_options(p("on_error", "遇到非法日期时", "enum", false, json!("warn")), &["fail", "warn"]),
+            ],
+        ),
+        def(
             "parse_id_card",
             "身份证解析",
             "校验",

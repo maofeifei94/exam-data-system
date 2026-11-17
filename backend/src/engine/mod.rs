@@ -412,6 +412,7 @@ impl<'a> Compiler<'a> {
             "text_replace" => self.op_text_replace(step_index, step, &params),
             "conditional" => self.op_conditional(step_index, step, &params),
             "date_calc" => self.op_date_calc(step_index, step, &params),
+            "date_normalize" => self.op_date_normalize(step_index, step, &params),
             "parse_id_card" => self.op_parse_id_card(step_index, step, &params),
             "amount_upper" => self.op_amount_upper(step_index, step, &params),
             "percentage" => self.op_percentage(step_index, step, &params),
@@ -1625,6 +1626,57 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("{desc} → [{out}]")),
+        ))
+    }
+
+    /// 日期标准化：多种写法统一为 YYYY-MM-DD，并统计无法识别的行。
+    fn op_date_normalize(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = defaulted(str_param(p, "out"), "标准日期");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let f = q(&col);
+        let sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM {} WHERE TRIM(COALESCE(CAST({f} AS TEXT), '')) <> '' \
+             AND norm_date({f}) IS NULL",
+            self.cur
+        ));
+        let bad: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("日期标准化失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") == "fail" {
+            return Err(format!("字段 [{col}] 有 {bad} 行日期无法识别"));
+        }
+        let cte = self.push_cte(format!(
+            "SELECT *, norm_date({f}) AS {} FROM {}",
+            q(&out),
+            self.cur
+        ));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(if bad == 0 {
+                format!("[{col}] 已标准化为 [{out}]")
+            } else {
+                format!("[{col}] 有 {bad} 行日期无法识别，其余已标准化为 [{out}]")
+            }),
         ))
     }
 
@@ -6198,6 +6250,18 @@ pub fn validate_steps_with(
                     cols.push(out);
                 }
             }
+            "date_normalize" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                let out = defaulted(str_param(&p, "out"), "标准日期");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "parse_id_card" => {
                 let col = str_param(&p, "column");
                 if !cols.contains(&col) {
@@ -8945,6 +9009,50 @@ mod tests {
         assert_eq!(page.rows[0][flag], json!(""));
         assert_eq!(page.rows[1][flag], json!("偏科"));
         assert_eq!(page.rows[2][flag], json!(""));
+    }
+
+    #[test]
+    fn date_normalize_unifies_formats_and_flags_invalid() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("日期", "text")],
+            &[
+                vec!["2026/3/5"],
+                vec!["2026-03-06"],
+                vec![""],
+                vec!["不是日期"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_date_fail",
+            json!([{ "id": "s1", "operator": "date_normalize",
+                     "params": { "column": "日期", "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_date_warn",
+            json!([
+                { "id": "s1", "operator": "date_normalize",
+                  "params": { "column": "日期", "on_error": "warn" } },
+                { "id": "s2", "operator": "output", "params": { "name": "标准日期" } }
+            ]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+        let page = store::read_rows(&conn, warned.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let idx = page
+            .columns
+            .iter()
+            .position(|c| c.name == "标准日期")
+            .expect("column");
+        assert_eq!(page.rows[0][idx], json!("2026-03-05"));
+        assert_eq!(page.rows[1][idx], json!("2026-03-06"));
+        assert_eq!(page.rows[2][idx], json!(null));
+        assert_eq!(page.rows[3][idx], json!(null));
     }
 
     #[test]

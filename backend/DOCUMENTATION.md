@@ -248,6 +248,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `text_replace` | 文本查找替换 |
 | `conditional` | 条件赋值（CASE WHEN），可直接写中文结果 |
 | `date_calc` | 年龄、日期加减、相差天数、年/月/日/星期提取 |
+| `date_normalize` | 日期标准化：把 `2026/3/5`、`2026年3月5日` 等写法统一为 `YYYY-MM-DD`，可对非法日期警告或终止 |
 | `parse_id_card` | 身份证解析：出生日期、性别、年龄、校验位，可配置非法号码直接终止 |
 | `amount_upper` | 金额转中文大写（财务凭证） |
 | `percentage` | 占合计百分比，支持按分组分别计算 |
