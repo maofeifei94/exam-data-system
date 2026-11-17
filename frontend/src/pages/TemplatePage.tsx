@@ -180,6 +180,151 @@ const INSERT_TYPES: ElementType[] = [
   'table',
 ];
 
+/** A4 纵向内容区宽度（mm），页面预设按该宽度排版。 */
+const PRESET_W = 186;
+
+function presetText(
+  text: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  font = 10,
+  align: 'left' | 'center' | 'right' = 'left',
+  bold = false,
+): TemplateElement {
+  const el = createElement('text', { x, y, w, h });
+  el.text = text;
+  el.font_size = font;
+  el.align = align;
+  el.bold = bold;
+  return el;
+}
+
+/** 内置 PDF 模板预设：一键生成准考证、成绩单、考场名单等常用版式。 */
+const TEMPLATE_PRESETS: Array<{
+  id: string;
+  name: string;
+  build: () => Partial<TemplateDraft>;
+}> = [
+  {
+    id: 'admission',
+    name: '准考证',
+    build: () => {
+      const photo = createElement('image', { x: 146, y: 34, w: 30, h: 40 });
+      photo.photo_name = '{{照片}}';
+      photo.photo_fit = 'contain';
+      photo.border = true;
+      const qr = createElement('qrcode', { x: 12, y: 104, w: 28, h: 28 });
+      qr.text = '{准考证号}';
+      return {
+        name: '准考证',
+        kind: 'single',
+        elements: [
+          presetText('准考证', 0, 8, PRESET_W, 12, 20, 'center', true),
+          presetText('{考试名称}', 0, 22, PRESET_W, 8, 11, 'center'),
+          photo,
+          presetText('姓名：{姓名}', 12, 40, 90, 8, 11),
+          presetText('准考证号：{准考证号}', 12, 54, 120, 8, 11),
+          presetText('考场号：{考场号}', 12, 68, 120, 8, 11),
+          presetText('座位号：{座位号}', 12, 82, 120, 8, 11),
+          qr,
+          presetText('打印日期：{{date}}', 12, 142, 100, 6, 8),
+        ],
+      };
+    },
+  },
+  {
+    id: 'score-sheet',
+    name: '成绩单',
+    build: () => ({
+      name: '成绩单',
+      kind: 'single',
+      elements: [
+        presetText('成绩单', 0, 8, PRESET_W, 12, 20, 'center', true),
+        presetText('姓名：{姓名}', 12, 36, 100, 8, 11),
+        presetText('准考证号：{准考证号}', 12, 50, 120, 8, 11),
+        presetText('总分：{总分}', 12, 64, 100, 8, 11),
+        presetText('排名：{排名}', 12, 78, 100, 8, 11),
+        presetText('打印日期：{{date}}', 12, 100, 100, 6, 8),
+      ],
+    }),
+  },
+  {
+    id: 'room-list',
+    name: '考场名单（明细表）',
+    build: () => {
+      const table = createElement('table', { x: 0, y: 16, w: PRESET_W, h: 240 });
+      table.table = {
+        ...DEFAULT_TABLE,
+        columns: [
+          { field: '姓名', label: '姓名', width_mm: 50, align: 'left' },
+          { field: '准考证号', label: '准考证号', width_mm: 76, align: 'center' },
+          { field: '座位号', label: '座位号', width_mm: 0, align: 'center' },
+        ],
+        header_fill: '#F2F2F2',
+        row_band: true,
+      };
+      table.children = [];
+      return {
+        name: '考场名单',
+        kind: 'table',
+        pageField: '考场号',
+        headerText: '{考点} · 第 {考场号} 考场名单',
+        showPageNumber: true,
+        elements: [table],
+      };
+    },
+  },
+  {
+    id: 'desk-label',
+    name: '桌贴（矩阵）',
+    build: () => {
+      const mx = { ...DEFAULT_MATRIX };
+      const matrix = createElement('matrix', { x: 0, y: 0, w: PRESET_W, h: mx.rows * mx.cell_h_mm });
+      matrix.matrix = mx;
+      const name = presetText('{姓名}', 0, 12, PRESET_W / mx.cols, 10, 16, 'center', true);
+      const seat = presetText(
+        '{考场号}-{座位号}',
+        0,
+        22,
+        PRESET_W / mx.cols,
+        8,
+        8,
+        'center',
+      );
+      matrix.children = [name, seat];
+      return { name: '桌贴', kind: 'matrix', elements: [matrix] };
+    },
+  },
+  {
+    id: 'score-analysis',
+    name: '成绩分析（明细表）',
+    build: () => {
+      const table = createElement('table', { x: 0, y: 16, w: PRESET_W, h: 200 });
+      table.table = {
+        ...DEFAULT_TABLE,
+        columns: [
+          { field: '班级', label: '班级', width_mm: 40, align: 'left' },
+          { field: '人数', label: '人数', width_mm: 0, align: 'right' },
+          { field: '平均分', label: '平均分', width_mm: 0, align: 'right' },
+          { field: '及格率', label: '及格率', width_mm: 0, align: 'right' },
+        ],
+        header_fill: '#F2F2F2',
+        row_band: true,
+      };
+      table.children = [];
+      return {
+        name: '成绩分析',
+        kind: 'table',
+        headerText: '{考试名称} · 成绩分析',
+        showPageNumber: true,
+        elements: [presetText('成绩分析', 0, 4, PRESET_W, 10, 16, 'center', true), table],
+      };
+    },
+  },
+];
+
 type RibbonTab = 'home' | 'insert' | 'layout' | 'view';
 
 const RIBBON_TABS: Array<{ id: RibbonTab; label: string }> = [
@@ -1330,6 +1475,15 @@ export default function TemplatePage({
     }
   };
 
+  const applyPreset = (id: string) => {
+    const preset = TEMPLATE_PRESETS.find((item) => item.id === id);
+    if (!preset) return;
+    setDraft({ ...EMPTY_DRAFT, ...preset.build(), scope: draft.scope });
+    setSelection({ type: 'page' });
+    setEditRequestId(null);
+    show(`已载入「${preset.name}」预设，可继续调整后保存`, 'success');
+  };
+
   const selectTemplate = (id: string) => {
     if (!id) {
       setDraft({ ...EMPTY_DRAFT, scope });
@@ -1618,6 +1772,18 @@ export default function TemplatePage({
             {templates.map((template) => (
               <option key={template.id} value={template.id}>
                 {template.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value=""
+            title="从内置预设创建新模板"
+            onChange={(event) => applyPreset(event.target.value)}
+          >
+            <option value="">从预设创建…</option>
+            {TEMPLATE_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.name}
               </option>
             ))}
           </select>
