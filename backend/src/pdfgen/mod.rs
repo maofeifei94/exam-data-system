@@ -15,7 +15,7 @@ use crate::models::{
 use crate::util;
 use printpdf::path::PaintMode;
 use printpdf::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const FONT_BYTES: &[u8] = include_bytes!("../../assets/NotoSansSC.ttf");
 const MM_PER_PT: f32 = 0.352778;
@@ -31,6 +31,8 @@ pub struct RenderOpts {
 struct Ctx<'a> {
     row: &'a [String],
     index: &'a HashMap<String, usize>,
+    /// 全部数据行，用于 `{{sum:字段}}` 等统计占位符
+    all_rows: &'a [Vec<String>],
     index_no: i64,
     no: i64,
     page: i64,
@@ -58,8 +60,80 @@ impl<'a> Ctx<'a> {
             "page" => self.page.to_string(),
             "pages" => self.pages.to_string(),
             "count" => self.count.to_string(),
-            other => self.value(other).to_string(),
+            "total" => self.all_rows.len().to_string(),
+            other => self
+                .stat(other)
+                .unwrap_or_else(|| self.value(other).to_string()),
         }
+    }
+
+    /// 统计占位符：`sum/avg/min/max/std/count/distinct:字段`、`rate:字段:阈值`。
+    fn stat(&self, key: &str) -> Option<String> {
+        let mut parts = key.splitn(3, ':');
+        let func = parts.next()?.trim();
+        let field = parts.next()?.trim();
+        let idx = *self.index.get(field)?;
+        let values: Vec<&str> = self
+            .all_rows
+            .iter()
+            .filter_map(|r| r.get(idx))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        match func {
+            "count" => Some(values.len().to_string()),
+            "distinct" => {
+                let set: HashSet<&str> = values.into_iter().collect();
+                Some(set.len().to_string())
+            }
+            "sum" | "avg" | "min" | "max" | "std" => {
+                let nums: Vec<f64> = values
+                    .iter()
+                    .filter_map(|s| s.parse::<f64>().ok())
+                    .collect();
+                if nums.is_empty() {
+                    return Some(String::new());
+                }
+                let value = match func {
+                    "sum" => nums.iter().sum(),
+                    "avg" => nums.iter().sum::<f64>() / nums.len() as f64,
+                    "min" => nums.iter().copied().fold(f64::INFINITY, f64::min),
+                    "max" => nums.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                    _ => {
+                        let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+                        let var = nums.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+                            / nums.len() as f64;
+                        var.sqrt()
+                    }
+                };
+                Some(fmt_num(value))
+            }
+            "rate" => {
+                let threshold: f64 = parts.next()?.trim().parse().ok()?;
+                let nums: Vec<f64> = values
+                    .iter()
+                    .filter_map(|s| s.parse::<f64>().ok())
+                    .collect();
+                if nums.is_empty() {
+                    return Some(String::new());
+                }
+                let hit = nums.iter().filter(|v| **v >= threshold).count();
+                Some(fmt_num(hit as f64 * 100.0 / nums.len() as f64))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// 统计结果保留最多两位小数，整数不显示 `.0`。
+fn fmt_num(value: f64) -> String {
+    if (value - value.round()).abs() < 1e-9 {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.2}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -810,6 +884,7 @@ pub fn render_pdf_data(
             let page_ctx = Ctx {
                 row: &page_row,
                 index: &index,
+                all_rows: rows,
                 index_no: 0,
                 no: slice.rows.first().map(|i| *i as i64 + 1).unwrap_or(0),
                 page,
@@ -861,6 +936,7 @@ pub fn render_pdf_data(
                     let ctx = Ctx {
                         row,
                         index: &index,
+                        all_rows: rows,
                         index_no: k as i64 + 1,
                         no: row_no as i64 + 1,
                         page,
@@ -914,6 +990,7 @@ pub fn render_pdf_data(
             let ctx = Ctx {
                 row,
                 index: &index,
+                all_rows: rows,
                 index_no: page,
                 no: row_no.map(|i| i as i64 + 1).unwrap_or(0),
                 page,
@@ -1081,6 +1158,56 @@ mod tests {
             .expect("render qr");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn statistics_placeholders_aggregate_all_rows() {
+        let rows = vec![
+            vec!["张三".to_string(), "90".to_string(), "1".to_string()],
+            vec!["李四".to_string(), "70".to_string(), "1".to_string()],
+            vec!["王五".to_string(), "".to_string(), "2".to_string()],
+        ];
+        let index: HashMap<String, usize> = [
+            ("姓名".to_string(), 0usize),
+            ("成绩".to_string(), 1usize),
+            ("考场号".to_string(), 2usize),
+        ]
+        .into_iter()
+        .collect();
+        let ctx = Ctx {
+            row: &rows[0],
+            index: &index,
+            all_rows: &rows,
+            index_no: 1,
+            no: 1,
+            page: 1,
+            pages: 1,
+            count: 3,
+        };
+        assert_eq!(ctx.lookup("total"), "3");
+        assert_eq!(ctx.lookup("count:姓名"), "3");
+        assert_eq!(ctx.lookup("count:成绩"), "2");
+        assert_eq!(ctx.lookup("distinct:考场号"), "2");
+        assert_eq!(ctx.lookup("sum:成绩"), "160");
+        assert_eq!(ctx.lookup("avg:成绩"), "80");
+        assert_eq!(ctx.lookup("min:成绩"), "70");
+        assert_eq!(ctx.lookup("max:成绩"), "90");
+        assert_eq!(ctx.lookup("std:成绩"), "10");
+        assert_eq!(ctx.lookup("rate:成绩:80"), "50");
+        // 未知函数仍按普通字段取值，未知字段返回空串。
+        assert_eq!(ctx.lookup("姓名"), "张三");
+        assert_eq!(ctx.lookup("不存在"), "");
+    }
+
+    #[test]
+    fn statistics_placeholder_fields_bubble_into_required_fields() {
+        let body = TemplateBody {
+            header_text: "总分 {{sum:成绩}}".into(),
+            footer_text: "及格率 {{rate:成绩:60}}".into(),
+            watermark: "共 {{total}} 人 · {{distinct:考场号}} 个考场".into(),
+            ..Default::default()
+        };
+        assert_eq!(body.all_required_fields(), vec!["成绩", "考场号"]);
     }
 
     #[test]

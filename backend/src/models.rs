@@ -676,7 +676,25 @@ impl Default for TemplateBody {
 }
 
 /// `{{index}}` 等内置变量不属于数据字段。
-const BUILTIN_TOKENS: &[&str] = &["index", "no", "page", "pages", "count"];
+const BUILTIN_TOKENS: &[&str] = &["index", "no", "page", "pages", "count", "total"];
+
+/// 统计占位符（如 `sum:金额`、`rate:成绩:60`）依赖的仍然是数据字段。
+fn push_token_field(out: &mut Vec<String>, token: &str) {
+    let token = token.trim();
+    if let Some((func, rest)) = token.split_once(':') {
+        let field = match func.trim() {
+            "rate" => rest.split(':').next().unwrap_or(""),
+            "sum" | "avg" | "min" | "max" | "std" | "count" | "distinct" => rest,
+            _ => {
+                push_field(out, token);
+                return;
+            }
+        };
+        push_field(out, field);
+        return;
+    }
+    push_field(out, token);
+}
 
 fn push_field(out: &mut Vec<String>, name: &str) {
     let name = name.trim();
@@ -711,7 +729,7 @@ fn collect_placeholders(text: &str, out: &mut Vec<String>) {
         }
         if let Some(end) = found {
             let key: String = chars[start..end].iter().collect();
-            push_field(out, &key);
+            push_token_field(out, &key);
             i = end + close.len();
         } else {
             i += 1;

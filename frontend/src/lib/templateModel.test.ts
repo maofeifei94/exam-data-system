@@ -342,6 +342,16 @@ describe('元素树操作', () => {
     ).toEqual(['考场号', '座位号', '考试名称', '考点', '姓名']);
   });
 
+  it('统计占位符只把字段名计入必需字段', () => {
+    expect(
+      collectRequiredFields({
+        elements: [element('t', { text: '总分 {{sum:成绩}} / 及格率 {{rate:成绩:60}}' })],
+        header_text: '共 {{total}} 人 · {{distinct:考场号}} 个考场',
+        footer_text: '{{count}} 条记录',
+      }),
+    ).toEqual(['考场号', '成绩']);
+  });
+
   it('isContainer 只把矩阵与矩形视为容器', () => {
     expect(isContainer(element('m', { type: 'matrix' }))).toBe(true);
     expect(isContainer(element('r', { type: 'rect' }))).toBe(true);

@@ -239,14 +239,24 @@ export function normalizeTemplate(template: PdfTemplate): TemplateElement[] {
   return normalizeTree([...pageElements, matrix]);
 }
 
-const BUILTIN_TOKENS = new Set(['index', 'no', 'page', 'pages', 'count']);
+const BUILTIN_TOKENS = new Set(['index', 'no', 'page', 'pages', 'count', 'total']);
+
+/** 统计占位符（`sum:金额`、`rate:成绩:60`）依赖的是其中的数据字段名。 */
+const STAT_TOKENS = new Set(['sum', 'avg', 'min', 'max', 'std', 'count', 'distinct', 'rate']);
+
+function tokenField(name: string): string {
+  const [func, ...rest] = name.split(':');
+  if (!STAT_TOKENS.has(func.trim())) return name;
+  const field = func.trim() === 'rate' ? rest[0] ?? '' : rest.join(':');
+  return field.trim();
+}
 
 function scanPlaceholders(text: string, out: string[]) {
   if (!text) return;
   const re = /\{\{([^{}]+)\}\}|\{([^{}]+)\}/g;
   let match: RegExpExecArray | null = re.exec(text);
   while (match) {
-    const name = (match[1] ?? match[2] ?? '').trim();
+    const name = tokenField((match[1] ?? match[2] ?? '').trim());
     if (name && !BUILTIN_TOKENS.has(name) && !out.includes(name)) out.push(name);
     match = re.exec(text);
   }
