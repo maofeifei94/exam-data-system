@@ -715,6 +715,12 @@ pub struct TemplateBody {
     /// 页面分组/排序依据字段（如考场号）：每个不同取值一页，页面按该值排序
     #[serde(default)]
     pub page_field: String,
+    /// 渲染前的排序字段（如成绩），在同组内按该字段排序
+    #[serde(default)]
+    pub sort_field: String,
+    /// 排序方向：asc / desc
+    #[serde(default = "default_asc")]
+    pub sort_order: String,
     /// 矩阵单元格索引依据字段（如座位号）：取值 N 的行放进第 N 个格子
     #[serde(default)]
     pub matrix_index_field: String,
@@ -772,6 +778,10 @@ fn default_page_number_start() -> i64 {
     1
 }
 
+fn default_asc() -> String {
+    "asc".to_string()
+}
+
 fn default_page_border_width() -> f32 {
     0.4
 }
@@ -796,6 +806,8 @@ impl Default for TemplateBody {
             matrix: default_matrix(),
             elements: Vec::new(),
             page_field: String::new(),
+            sort_field: String::new(),
+            sort_order: default_asc(),
             matrix_index_field: String::new(),
             required_fields: Vec::new(),
             background_image: String::new(),
@@ -1012,6 +1024,9 @@ pub struct PdfTemplate {
     pub matrix: MatrixSetup,
     pub elements: Vec<TemplateElement>,
     pub page_field: String,
+    /// 渲染前排序字段与方向
+    pub sort_field: String,
+    pub sort_order: String,
     pub matrix_index_field: String,
     /// 模板显式声明的必需字段
     pub required_fields: Vec<String>,
@@ -1060,6 +1075,10 @@ pub struct PdfTemplateInput {
     pub elements: Vec<TemplateElement>,
     #[serde(default)]
     pub page_field: String,
+    #[serde(default)]
+    pub sort_field: String,
+    #[serde(default = "default_asc")]
+    pub sort_order: String,
     #[serde(default)]
     pub matrix_index_field: String,
     #[serde(default)]

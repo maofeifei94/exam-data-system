@@ -408,6 +408,9 @@ export interface PdfTemplate {
   elements: TemplateElement[];
   /** 页面分组/排序依据（如考场号）：每个取值一页，页面按取值排序 */
   page_field: string;
+  /** 渲染前排序字段与方向 */
+  sort_field: string;
+  sort_order: 'asc' | 'desc';
   /** 矩阵格子索引依据（如座位号）：取值 N 放入第 N 个格子 */
   matrix_index_field: string;
   /** 模板显式声明的必需字段 */
@@ -456,6 +459,8 @@ export interface PdfTemplateInput {
   matrix: MatrixSetup;
   elements: TemplateElement[];
   page_field?: string;
+  sort_field?: string;
+  sort_order?: 'asc' | 'desc';
   matrix_index_field?: string;
   required_fields?: string[];
   background_image?: string;

@@ -77,6 +77,9 @@ interface TemplateDraft {
   elements: TemplateElement[];
   /** 页面分组/排序依据字段（如考场号） */
   pageField: string;
+  /** 渲染前排序字段与方向 */
+  sortField: string;
+  sortOrder: 'asc' | 'desc';
   /** 矩阵格子索引依据字段（如座位号） */
   matrixIndexField: string;
   /** 模板显式声明的必需字段 */
@@ -130,6 +133,8 @@ const EMPTY_DRAFT: TemplateDraft = {
   page: DEFAULT_PAGE,
   elements: [],
   pageField: '',
+  sortField: '',
+  sortOrder: 'asc',
   matrixIndexField: '',
   requiredFields: [],
   backgroundImage: '',
@@ -1343,6 +1348,8 @@ export default function TemplatePage({
     matrix: matrixElement?.matrix ?? DEFAULT_MATRIX,
     elements: draft.elements,
     page_field: draft.pageField.trim(),
+    sort_field: draft.sortField.trim(),
+    sort_order: draft.sortOrder,
     matrix_index_field: draft.matrixIndexField.trim(),
     required_fields: draft.requiredFields,
     background_image: draft.backgroundImage.trim(),
@@ -2179,11 +2186,14 @@ function toDraft(template: PdfTemplate): TemplateDraft {
   return {
     id: template.id,
     name: template.name,
-    kind: template.kind === 'matrix' ? 'matrix' : 'single',
+    kind:
+      template.kind === 'matrix' ? 'matrix' : template.kind === 'table' ? 'table' : 'single',
     description: template.description,
     page: template.page,
     elements: normalizeTemplate(template),
     pageField: template.page_field ?? '',
+    sortField: template.sort_field ?? '',
+    sortOrder: template.sort_order === 'desc' ? 'desc' : 'asc',
     matrixIndexField: template.matrix_index_field ?? '',
     requiredFields: template.required_fields ?? [],
     backgroundImage: template.background_image ?? '',
@@ -2364,6 +2374,34 @@ function PagePanel({
         <p className="panel-hint">
           设置后按该字段的值分组，每个取值单独成页，页序按取值自然排序（2 排在 10 之前）。
         </p>
+        <div className="grid-2">
+          <label className="field">
+            <span className="field-label">排序字段（可空）</span>
+            <input
+              list="tpl-field-options"
+              value={draft.sortField}
+              placeholder="如 成绩：同组内按该字段排序"
+              onChange={(event) =>
+                onDraft((prev) => ({ ...prev, sortField: event.target.value }))
+              }
+            />
+          </label>
+          <label className="field">
+            <span className="field-label">排序方向</span>
+            <select
+              value={draft.sortOrder}
+              onChange={(event) =>
+                onDraft((prev) => ({
+                  ...prev,
+                  sortOrder: event.target.value as 'asc' | 'desc',
+                }))
+              }
+            >
+              <option value="asc">升序</option>
+              <option value="desc">降序</option>
+            </select>
+          </label>
+        </div>
         {draft.kind === 'matrix' ? (
           <label className="field">
             <span className="field-label">矩阵格子索引字段</span>

@@ -1249,6 +1249,20 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     Ordering::Equal
 }
 
+/// 多级行比较：按（字段下标, 是否倒序）依次比较，全部相等时保持原顺序。
+fn row_cmp(rows: &[Vec<String>], a: usize, b: usize, keys: &[(usize, bool)]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for (idx, desc) in keys {
+        let sa = rows[a].get(*idx).map(|s| s.as_str()).unwrap_or("");
+        let sb = rows[b].get(*idx).map(|s| s.as_str()).unwrap_or("");
+        let ord = natural_cmp(sa, sb);
+        if ord != Ordering::Equal {
+            return if *desc { ord.reverse() } else { ord };
+        }
+    }
+    Ordering::Equal
+}
+
 /// 按页面字段把行切成页；未指定字段时按每页格子数顺序切分。
 /// 同组数据超过一页时顺延到下一页（页面字段值保持不变），避免丢数据。
 fn build_matrix_slices(
@@ -1379,6 +1393,21 @@ pub fn render_pdf_data(
         .get(body.matrix_index_field.trim())
         .copied()
         .filter(|_| !body.matrix_index_field.trim().is_empty());
+    let sort_idx = index
+        .get(body.sort_field.trim())
+        .copied()
+        .filter(|_| !body.sort_field.trim().is_empty());
+    // 排序键：先按页面分组字段升序，再按模板排序字段（可倒序）。
+    let sort_keys: Vec<(usize, bool)> = {
+        let mut keys = Vec::new();
+        if let Some(pi) = page_idx {
+            keys.push((pi, false));
+        }
+        if let Some(si) = sort_idx {
+            keys.push((si, body.sort_order == "desc"));
+        }
+        keys
+    };
 
     if kind == "matrix" {
         let matrix_el = body.elements.iter().find(|e| e.etype == "matrix");
@@ -1533,18 +1562,14 @@ pub fn render_pdf_data(
         let per_page = (((table_el.h_mm - header_h - summary_h) / row_h).floor() as usize).max(1);
         let widths = table_column_widths(&setup, table_el.w_mm.max(10.0));
 
-        // 设置页面字段时按该字段分组，每组另起一页；组内再按行高分页。
-        let order: Vec<usize> = if let Some(pi) = page_idx {
-            let mut v: Vec<usize> = (0..rows.len()).collect();
-            v.sort_by(|&a, &b| {
-                natural_cmp(
-                    rows[a].get(pi).map(|s| s.as_str()).unwrap_or(""),
-                    rows[b].get(pi).map(|s| s.as_str()).unwrap_or(""),
-                )
-            });
-            v
-        } else {
+        // 设置页面字段时按该字段分组，每组另起一页；组内再按行高分页，
+        // 组内顺序由模板排序字段决定。
+        let order: Vec<usize> = if sort_keys.is_empty() {
             (0..rows.len()).collect()
+        } else {
+            let mut v: Vec<usize> = (0..rows.len()).collect();
+            v.sort_by(|&a, &b| row_cmp(rows, a, b, &sort_keys));
+            v
         };
         let mut page_groups: Vec<(Vec<usize>, String)> = Vec::new();
         let mut current: Vec<usize> = Vec::new();
@@ -1641,17 +1666,12 @@ pub fn render_pdf_data(
         }
     } else {
         // 单页模板：默认一行一页；设置页面字段后按该字段自然排序，使同考场的页面聚在一起。
-        let order: Vec<usize> = if let Some(pi) = page_idx {
-            let mut v: Vec<usize> = (0..rows.len()).collect();
-            v.sort_by(|&a, &b| {
-                natural_cmp(
-                    rows[a].get(pi).map(|s| s.as_str()).unwrap_or(""),
-                    rows[b].get(pi).map(|s| s.as_str()).unwrap_or(""),
-                )
-            });
-            v
-        } else {
+        let order: Vec<usize> = if sort_keys.is_empty() {
             (0..rows.len()).collect()
+        } else {
+            let mut v: Vec<usize> = (0..rows.len()).collect();
+            v.sort_by(|&a, &b| row_cmp(rows, a, b, &sort_keys));
+            v
         };
         let pages = order.len().max(1) as i64;
         let start_page = opts.only_page.unwrap_or(1).max(1);
@@ -1744,6 +1764,18 @@ mod tests {
             resolve_photo("报名照.png", dir.to_str(), &["jpg".to_string()]).expect("exact name");
         assert!(found.ends_with("报名照.png"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn row_cmp_sorts_by_page_then_numeric_field() {
+        let rows = vec![
+            vec!["2".into(), "张三".into(), "90".into()],
+            vec!["1".into(), "李四".into(), "100".into()],
+            vec!["1".into(), "王五".into(), "80".into()],
+        ];
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        order.sort_by(|&a, &b| row_cmp(&rows, a, b, &[(0, false), (2, true)]));
+        assert_eq!(order, vec![1, 2, 0]);
     }
 
     #[test]

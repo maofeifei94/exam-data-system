@@ -408,6 +408,8 @@ describe('normalizeTemplate', () => {
     matrix: DEFAULT_MATRIX,
     elements: [],
     page_field: '',
+    sort_field: '',
+    sort_order: 'asc',
     matrix_index_field: '',
     required_fields: [],
     all_required_fields: [],

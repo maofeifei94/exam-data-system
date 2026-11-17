@@ -53,6 +53,8 @@ fn row_to_template(r: &rusqlite::Row<'_>) -> rusqlite::Result<(PdfTemplate, Stri
             matrix: body.matrix,
             elements: body.elements,
             page_field,
+            sort_field: body.sort_field,
+            sort_order: body.sort_order,
             matrix_index_field,
             required_fields,
             all_required_fields,
@@ -160,6 +162,12 @@ fn body_from_input(input: &PdfTemplateInput, kind: &str) -> TemplateBody {
         matrix: input.matrix.clone(),
         elements: input.elements.clone(),
         page_field: input.page_field.trim().to_string(),
+        sort_field: input.sort_field.trim().to_string(),
+        sort_order: if input.sort_order.trim() == "desc" {
+            "desc".to_string()
+        } else {
+            "asc".to_string()
+        },
         matrix_index_field: input.matrix_index_field.trim().to_string(),
         required_fields: input
             .required_fields

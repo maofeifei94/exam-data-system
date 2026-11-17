@@ -426,6 +426,9 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   `chrome_font_size` 与 `chrome_color` 控制页眉页脚字号和颜色（默认 9pt 浅灰）。
   水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
+- **渲染前排序**：`sort_field` + `sort_order`（asc / desc）在分页前对数据排序；
+  与 `page_field` 同时使用时先按分组字段升序，再在组内按排序字段排列，
+  适合「按考场分页、组内按成绩倒序」的名单与成绩单。
 - **明细表元素**：`type = "table"` 的元素用于多行表格展示，配置在 `table` 字段：
   `columns`（字段、表头、列宽、对齐）、`header_height_mm`、`row_height_mm`、
   `show_header`、`show_grid`、`summary_label`、`wrap`。模板类型为 `table` 时，数据按元素高度与行高自动分页，
