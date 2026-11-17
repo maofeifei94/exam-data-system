@@ -448,6 +448,10 @@ export interface PdfTemplate {
   watermark: string;
   /** 水印平铺整页（默认单个居中水印） */
   watermark_tile: boolean;
+  /** 水印颜色 / 角度 / 字号 */
+  watermark_color: string;
+  watermark_angle: number;
+  watermark_font_size: number;
   /** 页脚显示「第 X 页 / 共 Y 页」 */
   show_page_number: boolean;
   /** 页面边框 */
@@ -487,6 +491,9 @@ export interface PdfTemplateInput {
   chrome_color?: string;
   watermark?: string;
   watermark_tile?: boolean;
+  watermark_color?: string;
+  watermark_angle?: number;
+  watermark_font_size?: number;
   show_page_number?: boolean;
   page_border?: boolean;
   page_border_width_mm?: number;

@@ -430,7 +430,9 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   `header_right_text` 在页眉右侧补充文字（如考场号、日期），始终右对齐；
   `header_align` / `footer_align` 控制页眉页脚的对齐方式（left / center / right）；
   `chrome_font_size` 与 `chrome_color` 控制页眉页脚字号和颜色（默认 9pt 浅灰）。
-  水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
+  水印默认浅灰、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
+  `watermark_color` / `watermark_angle` / `watermark_font_size` 可调整颜色、角度与字号
+  （字号 0 表示单个水印 32pt、平铺水印 14pt）；
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
 - **自定义纸张**：`page.size = "Custom"` 时使用 `page.width_mm` 与 `page.height_mm`
   （均大于 0 才生效），适合准考证、桌贴等非标准尺寸；横向时宽高自动互换。

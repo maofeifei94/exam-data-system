@@ -779,6 +779,15 @@ pub struct TemplateBody {
     /// 水印是否平铺整页（默认单个居中水印）
     #[serde(default)]
     pub watermark_tile: bool,
+    /// 水印颜色（十六进制），留空使用默认浅灰
+    #[serde(default)]
+    pub watermark_color: String,
+    /// 水印旋转角度（度）
+    #[serde(default = "default_watermark_angle")]
+    pub watermark_angle: f32,
+    /// 水印字号（pt），0 表示按平铺/单个自动选择
+    #[serde(default)]
+    pub watermark_font_size: f32,
     /// 页脚右侧显示「第 X 页 / 共 Y 页」
     #[serde(default)]
     pub show_page_number: bool,
@@ -805,6 +814,10 @@ fn default_page_number_start() -> i64 {
 
 fn default_asc() -> String {
     "asc".to_string()
+}
+
+fn default_watermark_angle() -> f32 {
+    30.0
 }
 
 fn default_page_border_width() -> f32 {
@@ -847,6 +860,9 @@ impl Default for TemplateBody {
             chrome_color: default_chrome_color(),
             watermark: String::new(),
             watermark_tile: false,
+            watermark_color: String::new(),
+            watermark_angle: default_watermark_angle(),
+            watermark_font_size: 0.0,
             show_page_number: false,
             page_border: false,
             page_border_width_mm: default_page_border_width(),
@@ -1076,6 +1092,10 @@ pub struct PdfTemplate {
     pub chrome_color: String,
     pub watermark: String,
     pub watermark_tile: bool,
+    /// 水印颜色 / 角度 / 字号
+    pub watermark_color: String,
+    pub watermark_angle: f32,
+    pub watermark_font_size: f32,
     pub show_page_number: bool,
     /// 是否绘制页面边框
     pub page_border: bool,
@@ -1135,6 +1155,12 @@ pub struct PdfTemplateInput {
     pub watermark: String,
     #[serde(default)]
     pub watermark_tile: bool,
+    #[serde(default)]
+    pub watermark_color: String,
+    #[serde(default = "default_watermark_angle")]
+    pub watermark_angle: f32,
+    #[serde(default)]
+    pub watermark_font_size: f32,
     #[serde(default)]
     pub show_page_number: bool,
     #[serde(default)]

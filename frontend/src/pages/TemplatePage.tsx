@@ -102,6 +102,10 @@ interface TemplateDraft {
   watermark: string;
   /** 水印平铺整页 */
   watermarkTile: boolean;
+  /** 水印颜色 / 角度 / 字号 */
+  watermarkColor: string;
+  watermarkAngle: number;
+  watermarkFontSize: number;
   /** 页脚显示页码 */
   showPageNumber: boolean;
   /** 页码起始值 */
@@ -151,6 +155,9 @@ const EMPTY_DRAFT: TemplateDraft = {
   chromeColor: '#6B7280',
   watermark: '',
   watermarkTile: false,
+  watermarkColor: '',
+  watermarkAngle: 30,
+  watermarkFontSize: 0,
   showPageNumber: false,
   pageNumberStart: 1,
   pageNumberSkipFirst: false,
@@ -1521,6 +1528,9 @@ export default function TemplatePage({
     chrome_color: draft.chromeColor,
     watermark: draft.watermark.trim(),
     watermark_tile: draft.watermarkTile,
+    watermark_color: draft.watermarkColor,
+    watermark_angle: draft.watermarkAngle,
+    watermark_font_size: draft.watermarkFontSize,
     show_page_number: draft.showPageNumber,
     page_number_start: draft.pageNumberStart,
     page_number_skip_first: draft.pageNumberSkipFirst,
@@ -2378,6 +2388,9 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     chromeColor: template.chrome_color ?? '#6B7280',
     watermark: template.watermark ?? '',
     watermarkTile: Boolean(template.watermark_tile),
+    watermarkColor: template.watermark_color ?? '',
+    watermarkAngle: template.watermark_angle ?? 30,
+    watermarkFontSize: template.watermark_font_size ?? 0,
     showPageNumber: Boolean(template.show_page_number),
     pageNumberStart: template.page_number_start ?? 1,
     pageNumberSkipFirst: Boolean(template.page_number_skip_first),
@@ -2766,6 +2779,39 @@ function PagePanel({
           />
           水印平铺整页（防复印）
         </label>
+        {draft.watermark.trim() ? (
+          <div className="grid-2">
+            <label className="field">
+              <span className="field-label">水印颜色</span>
+              <input
+                type="color"
+                value={toHex(draft.watermarkColor || '#D9D9D9')}
+                onChange={(event) =>
+                  onDraft((prev) => ({ ...prev, watermarkColor: event.target.value }))
+                }
+              />
+            </label>
+            <NumberField
+              label="水印角度 (°)"
+              step={5}
+              value={draft.watermarkAngle}
+              onChange={(value) => onDraft((prev) => ({ ...prev, watermarkAngle: value }))}
+            />
+            <NumberField
+              label="水印字号 (pt，0=自动)"
+              step={1}
+              value={draft.watermarkFontSize}
+              onChange={(value) => onDraft((prev) => ({ ...prev, watermarkFontSize: value }))}
+            />
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => onDraft((prev) => ({ ...prev, watermarkColor: '' }))}
+            >
+              恢复默认颜色
+            </button>
+          </div>
+        ) : null}
         <label className="checkbox-row">
           <input
             type="checkbox"
