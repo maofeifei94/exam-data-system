@@ -2669,6 +2669,21 @@ function ElementEditor({
               自动换行（超出元素宽度时折行）
             </label>
           ) : null}
+          {element.type === 'text' || element.type === 'field' ? (
+            <label className="field">
+              <span className="field-label">旋转角度</span>
+              <select
+                value={element.rotate ?? 0}
+                onChange={(event) => onChange({ rotate: Number(event.target.value) })}
+              >
+                <option value={0}>0°</option>
+                <option value={90}>90°</option>
+                <option value={180}>180°</option>
+                <option value={270}>270°</option>
+              </select>
+              <span className="field-hint">绕元素中心旋转，适合桌贴、门签侧边文字</span>
+            </label>
+          ) : null}
         </div>
       ) : null}
 

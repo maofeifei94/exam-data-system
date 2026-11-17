@@ -88,6 +88,7 @@ const BASE_ELEMENT: Omit<TemplateElement, 'id' | 'type' | 'x_mm' | 'y_mm' | 'w_m
   font_size: 11,
   bold: false,
   wrap: false,
+  rotate: 0,
   align: 'left',
   color: '#000000',
   fill: '',

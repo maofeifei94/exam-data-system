@@ -344,6 +344,8 @@ export interface TemplateElement {
   bold: boolean;
   /** 文本超出元素宽度时自动换行 */
   wrap?: boolean;
+  /** 文本旋转角度：0 / 90 / 180 / 270 */
+  rotate?: number;
   align: 'left' | 'center' | 'right';
   color: string;
   fill: string;

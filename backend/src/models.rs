@@ -565,6 +565,9 @@ pub struct TemplateElement {
     /// type = "text" / "field" 时：超出元素宽度自动换行
     #[serde(default)]
     pub wrap: bool,
+    /// 文本旋转角度（0/90/180/270），绕元素中心旋转，适合桌贴、门签侧边文字
+    #[serde(default)]
+    pub rotate: f32,
     #[serde(default = "default_align")]
     pub align: String,
     #[serde(default = "default_color")]
@@ -609,6 +612,7 @@ impl TemplateElement {
             font_size: default_font_size(),
             bold: false,
             wrap: false,
+            rotate: 0.0,
             align: default_align(),
             color: default_color(),
             fill: String::new(),

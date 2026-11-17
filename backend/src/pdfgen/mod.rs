@@ -249,6 +249,36 @@ fn draw_text(
     let (x0, w) = (origin.x + el.x_mm, el.w_mm.max(0.0));
     layer.set_fill_color(color_of(&el.color).unwrap_or(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))));
 
+    // 旋转文字：绕元素中心旋转，适合桌贴/门签的侧边文字；旋转时不折行。
+    if el.rotate.abs() > 0.1 {
+        let cx = origin.x + el.x_mm + el.w_mm / 2.0;
+        let cy = page_h - (origin.y_top + el.y_mm + el.h_mm / 2.0);
+        let tw = text_width_mm(text, el.font_size);
+        let local_x = match el.align.as_str() {
+            "left" => -el.w_mm / 2.0,
+            "right" => el.w_mm / 2.0 - tw,
+            _ => -tw / 2.0,
+        };
+        layer.save_graphics_state();
+        layer.set_ctm(CurTransMat::TranslateRotate(
+            Pt(cx * PT_PER_MM),
+            Pt(cy * PT_PER_MM),
+            el.rotate,
+        ));
+        layer.use_text(text, el.font_size, Mm(local_x), Mm(-fs_mm * 0.30), font);
+        if el.bold {
+            layer.use_text(
+                text,
+                el.font_size,
+                Mm(local_x + 0.18),
+                Mm(-fs_mm * 0.30),
+                font,
+            );
+        }
+        layer.restore_graphics_state();
+        return;
+    }
+
     let draw_line = |line: &str, top: f32| {
         let tw = text_width_mm(line, el.font_size);
         let x = match el.align.as_str() {
@@ -1475,6 +1505,26 @@ mod tests {
         assert!(lines.iter().all(|line| text_width_mm(line, 10.0) <= 20.01));
         assert_eq!(wrap_text("甲\n乙", 10.0, 100.0), vec!["甲", "乙"]);
         assert_eq!(wrap_text("不限宽", 10.0, 0.0), vec!["不限宽"]);
+    }
+
+    #[test]
+    fn rotated_text_element_renders_without_error() {
+        let cols = vec![DatasetColumn {
+            name: "姓名".into(),
+            dtype: "text".into(),
+        }];
+        let mut body = TemplateBody::default();
+        let mut text = TemplateElement::empty("t", "text");
+        text.text = "{姓名}".into();
+        text.w_mm = 30.0;
+        text.h_mm = 60.0;
+        text.rotate = 90.0;
+        body.elements.push(text);
+        let rows = vec![vec!["张三".into()]];
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
+            .expect("render rotated text");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
     }
 
     #[test]
