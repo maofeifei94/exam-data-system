@@ -620,10 +620,15 @@ export function renderPdfTemplate(id: string, datasetId: string, limit?: number,
   });
 }
 
-export function previewPdfTemplate(template: PdfTemplateInput, datasetId: string, limit?: number): Promise<Blob> {
+export function previewPdfTemplate(
+  template: PdfTemplateInput,
+  datasetId: string,
+  limit?: number,
+  page?: number,
+): Promise<Blob> {
   return apiRequestBlob('/api/pdf-templates/preview', {
     method: 'POST',
-    body: JSON.stringify({ template, dataset_id: datasetId, limit }),
+    body: JSON.stringify({ template, dataset_id: datasetId, limit, page }),
     timeoutMs: LONG_TIMEOUT_MS,
   });
 }

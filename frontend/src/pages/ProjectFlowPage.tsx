@@ -30,6 +30,7 @@ import type {
 } from '../api/types';
 import { DialogWindow } from '../components/DialogWindow';
 import { EmptyState } from '../components/EmptyState';
+import { PdfPreviewDialog } from '../components/PdfPreviewDialog';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
@@ -408,17 +409,6 @@ function branchEdgePath(from: Point, to: Point): string {
   return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
 }
 
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
 export default function ProjectFlowPage() {
   const { show } = useToast();
   const { currentProject, currentProjectId, patchCurrentProject, refresh } = useProject();
@@ -447,6 +437,13 @@ export default function ProjectFlowPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // 前台 PDF 预览：后台生成后在窗口内查看，底部提供下载入口。
+  const [pdfOpen, setPdfOpen] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfFilename, setPdfFilename] = useState('输出.pdf');
+  const [pdfTitle, setPdfTitle] = useState('PDF 预览');
+  const [pdfHint, setPdfHint] = useState('');
 
   const [canvasSize, setCanvasSize] = useState({ w: 760, h: 520 });
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -965,6 +962,19 @@ export default function ProjectFlowPage() {
     await bindTemplate(template.id);
   };
 
+  // Blob URL 变化时释放旧的，避免长时间编辑流程后内存堆积。
+  useEffect(
+    () => () => {
+      if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+    },
+    [pdfUrl],
+  );
+
+  const closePdf = () => {
+    setPdfOpen(false);
+    setPdfUrl(null);
+  };
+
   const handleExportPdf = async () => {
     const templateId = currentProject?.pdf_template_id;
     if (!templateId) {
@@ -976,14 +986,21 @@ export default function ProjectFlowPage() {
       return;
     }
     setExporting(true);
+    setPdfLoading(true);
+    setPdfOpen(true);
+    setPdfTitle(`${boundTemplate?.name ?? '输出'} · PDF`);
+    setPdfHint('由 Rust 后台按当前模板与流程结果生成，确认无误后点击「下载 PDF」');
     try {
       const blob = await renderPdfTemplate(templateId, runDataset.id);
-      saveBlob(blob, `${boundTemplate?.name ?? '输出'}.pdf`);
-      show('已生成 PDF', 'success');
+      setPdfUrl(URL.createObjectURL(blob));
+      setPdfFilename(`${boundTemplate?.name ?? '输出'}.pdf`);
+      show('PDF 已生成', 'success');
     } catch (err) {
+      setPdfOpen(false);
       show(err instanceof Error ? err.message : '生成 PDF 失败', 'error');
     } finally {
       setExporting(false);
+      setPdfLoading(false);
     }
   };
 
@@ -1666,6 +1683,16 @@ export default function ProjectFlowPage() {
           onSaved={handleTemplateSaved}
         />
       </DialogWindow>
+
+      <PdfPreviewDialog
+        open={pdfOpen}
+        title={pdfTitle}
+        url={pdfUrl}
+        filename={pdfFilename}
+        loading={pdfLoading}
+        hint={pdfHint}
+        onClose={closePdf}
+      />
     </div>
   );
 }

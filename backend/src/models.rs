@@ -1199,6 +1199,9 @@ pub struct PreviewInput {
     pub dataset_id: String,
     #[serde(default)]
     pub limit: Option<i64>,
+    /// 只渲染指定页；为空时渲染全部（受 limit 行数限制）。
+    #[serde(default)]
+    pub page: Option<i64>,
     #[serde(default)]
     pub photo_dir: Option<String>,
 }

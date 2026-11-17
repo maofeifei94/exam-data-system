@@ -400,12 +400,12 @@ pub async fn render_preview(
         template,
         dataset_id,
         limit,
+        page,
         photo_dir,
     } = input;
     let kind = validate_kind(&template.kind)?;
     let body = body_from_input(&template, &kind);
     let name = template.name;
-    let limit = limit.or(Some(60));
 
     let (cols, rows) = state
         .db(move |conn| load_render_data(conn, &dataset_id, limit))
@@ -413,7 +413,7 @@ pub async fn render_preview(
 
     let opts = RenderOpts {
         photo_dir,
-        only_page: Some(1),
+        only_page: page,
     };
     let bytes = state
         .blocking(move || pdfgen::render_pdf_data(&cols, &rows, &body, &kind, &opts))

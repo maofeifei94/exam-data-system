@@ -10,7 +10,6 @@ import {
   listProjectFields,
   listStandardFields,
   previewPdfTemplate,
-  renderPdfTemplate,
   updatePdfTemplate,
 } from '../api/client';
 import type {
@@ -25,6 +24,7 @@ import type {
   TemplateElement,
 } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
+import { PdfPreviewDialog } from '../components/PdfPreviewDialog';
 import { Spinner } from '../components/Spinner';
 import { TokenEditor } from '../components/TokenEditor';
 import { useToast } from '../components/Toast';
@@ -519,16 +519,6 @@ function buildRichContent(
   return output;
 }
 
-function saveBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
 export default function TemplatePage({
   initialScope = 'global',
   initialTemplateId,
@@ -550,6 +540,13 @@ export default function TemplatePage({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 前台 PDF 预览窗口：模板由前台编辑，后台生成后在此内嵌查看与下载。
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewTitle, setPreviewTitle] = useState('PDF 预览');
+  const [previewFilename, setPreviewFilename] = useState('预览.pdf');
+  const [previewHint, setPreviewHint] = useState('');
   const [datasetId, setDatasetId] = useState('');
   const [scope, setScope] = useState<'project' | 'global'>(initialScope);
 
@@ -1616,41 +1613,75 @@ export default function TemplatePage({
     }
   };
 
+  // 预览地址变化时释放上一个 Blob URL，避免内存泄漏。
+  useEffect(
+    () => () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    },
+    [previewUrl],
+  );
+
+  const closePreview = () => {
+    setPreviewOpen(false);
+    setPreviewUrl(null);
+  };
+
+  const openPreview = (blob: Blob, filename: string, title: string, hint: string) => {
+    setPreviewUrl(URL.createObjectURL(blob));
+    setPreviewFilename(filename);
+    setPreviewTitle(title);
+    setPreviewHint(hint);
+    setPreviewOpen(true);
+  };
+
   const handlePreview = async () => {
     if (!datasetId) {
       show('请选择用于预览的数据集', 'error');
       return;
     }
     setBusy(true);
+    setPreviewLoading(true);
+    setPreviewOpen(true);
+    setPreviewTitle(`${draft.name || '模板'} · 预览`);
+    setPreviewHint('预览最多 60 行数据；滚动、缩放和翻页由前台阅读器完成');
     try {
       const blob = await previewPdfTemplate(buildPayload(), datasetId, 60);
-      saveBlob(blob, `${draft.name}_预览.pdf`);
-      show('已生成预览 PDF（仅第 1 页）', 'success');
+      openPreview(blob, `${draft.name}_预览.pdf`, `${draft.name || '模板'} · 预览`, '');
     } catch (err) {
+      setPreviewOpen(false);
       show(err instanceof Error ? err.message : '生成预览失败', 'error');
     } finally {
       setBusy(false);
+      setPreviewLoading(false);
     }
   };
 
   const handleRender = async () => {
-    if (!draft.id) {
-      show('请先保存模板后再导出完整 PDF', 'error');
-      return;
-    }
     if (!datasetId) {
       show('请选择数据集', 'error');
       return;
     }
     setBusy(true);
+    setPreviewLoading(true);
+    setPreviewOpen(true);
+    setPreviewTitle(`${draft.name || '模板'} · 完整 PDF`);
+    setPreviewHint('完整数据由 Rust 后台生成，确认无误后点击「下载 PDF」');
     try {
-      const blob = await renderPdfTemplate(draft.id, datasetId);
-      saveBlob(blob, `${draft.name}.pdf`);
-      show('已导出 PDF', 'success');
+      // 直接发送当前草稿模板，无需先保存即可导出最新修改。
+      const blob = await previewPdfTemplate(buildPayload(), datasetId);
+      openPreview(
+        blob,
+        `${draft.name || '导出'}.pdf`,
+        `${draft.name || '模板'} · 完整 PDF`,
+        '完整数据由 Rust 后台生成，确认无误后点击「下载 PDF」',
+      );
+      show('PDF 已生成', 'success');
     } catch (err) {
-      show(err instanceof Error ? err.message : '导出失败', 'error');
+      setPreviewOpen(false);
+      show(err instanceof Error ? err.message : '生成 PDF 失败', 'error');
     } finally {
       setBusy(false);
+      setPreviewLoading(false);
     }
   };
 
@@ -1831,7 +1862,7 @@ export default function TemplatePage({
           <button className="btn btn-sm" onClick={handlePreview} disabled={busy}>
             预览
           </button>
-          <button className="btn btn-sm" onClick={handleRender} disabled={busy || !draft.id}>
+          <button className="btn btn-sm" onClick={handleRender} disabled={busy}>
             导出 PDF
           </button>
           <button className="btn btn-sm btn-primary" onClick={handleSave} disabled={saving}>
@@ -2362,6 +2393,16 @@ export default function TemplatePage({
           </aside>
         </div>
       </div>
+
+      <PdfPreviewDialog
+        open={previewOpen}
+        title={previewTitle}
+        url={previewUrl}
+        filename={previewFilename}
+        loading={previewLoading}
+        hint={previewHint}
+        onClose={closePreview}
+      />
     </div>
   );
 }
@@ -2895,7 +2936,7 @@ function PagePanel({
         </label>
         <div className="row-actions">
           <button className="btn" onClick={onPreview} disabled={busy}>
-            预览第 1 页
+            预览
           </button>
           <button className="btn btn-primary" onClick={onRender} disabled={busy}>
             导出完整 PDF
