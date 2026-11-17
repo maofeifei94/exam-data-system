@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PdfTemplate, TemplateElement } from '../api/types';
 import {
   DEFAULT_MATRIX,
+  DEFAULT_TABLE,
   DEFAULT_PHOTO_EXTS,
   DEFAULT_PHOTO_NAME,
   appendChild,
@@ -16,6 +17,7 @@ import {
   pageSizeMm,
   removeElement,
   resizeRect,
+  tableColumnWidths,
   toParentBox,
   updateElement,
   walkElements,
@@ -375,6 +377,18 @@ describe('元素树操作', () => {
         footer_text: '{{count}} 条记录',
       }),
     ).toEqual(['考场号', '成绩']);
+  });
+
+  it('明细表列宽固定优先、剩余宽度均分', () => {
+    const setup = {
+      ...DEFAULT_TABLE,
+      columns: [
+        { field: '姓名', label: '姓名', width_mm: 40, align: 'left' as const },
+        { field: '成绩', label: '成绩', width_mm: 0, align: 'right' as const },
+        { field: '备注', label: '备注', width_mm: 0, align: 'left' as const },
+      ],
+    };
+    expect(tableColumnWidths(setup, 100)).toEqual([40, 30, 30]);
   });
 
   it('isContainer 只把矩阵与矩形视为容器', () => {

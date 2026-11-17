@@ -420,6 +420,10 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   `chrome_font_size` 与 `chrome_color` 控制页眉页脚字号和颜色（默认 9pt 浅灰）。
   水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
+- **明细表元素**：`type = "table"` 的元素用于多行表格展示，配置在 `table` 字段：
+  `columns`（字段、表头、列宽、对齐）、`header_height_mm`、`row_height_mm`、
+  `show_header`、`show_grid`。模板类型为 `table` 时，数据按元素高度与行高自动分页，
+  每页重复表头；列宽填 0 时按剩余宽度均分。
 - **页面边框**：`page_border` 打开后沿内容区绘制边框，`page_border_width_mm` 与
   `page_border_color` 控制线宽和颜色，适合证书、通知单等需要装裱边框的版式。
 - **空内容隐藏**：元素设置 `hide_if_empty = true` 后，占位符插值结果为空时整体跳过，

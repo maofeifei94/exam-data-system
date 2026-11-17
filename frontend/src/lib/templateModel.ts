@@ -1,4 +1,10 @@
-import type { MatrixSetup, PageSetup, PdfTemplate, TemplateElement } from '../api/types';
+import type {
+  MatrixSetup,
+  PageSetup,
+  PdfTemplate,
+  TableSetup,
+  TemplateElement,
+} from '../api/types';
 
 export type ElementType = TemplateElement['type'];
 
@@ -12,6 +18,23 @@ export const DEFAULT_MATRIX: MatrixSetup = {
   show_grid: true,
   show_border: true,
 };
+
+/** 明细表默认配置：表头 8mm、行高 8mm，均分列宽。 */
+export const DEFAULT_TABLE: TableSetup = {
+  columns: [],
+  header_height_mm: 8,
+  row_height_mm: 8,
+  show_header: true,
+  show_grid: true,
+};
+
+/** 按固定列宽优先、剩余均分的方式计算各列实际宽度。 */
+export function tableColumnWidths(setup: TableSetup, total: number): number[] {
+  const fixed = setup.columns.reduce((sum, col) => sum + Math.max(0, col.width_mm), 0);
+  const flexible = setup.columns.filter((col) => col.width_mm <= 0).length;
+  const share = flexible > 0 ? Math.max(1, total - fixed) / flexible : 0;
+  return setup.columns.map((col) => (col.width_mm > 0 ? col.width_mm : share));
+}
 
 export function newElementId(): string {
   return `el_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -297,6 +320,8 @@ function collectElementFields(element: TemplateElement, out: string[]) {
     else add(element.field);
   } else if (element.type === 'qrcode' || element.type === 'barcode') {
     scanPlaceholders(element.text, out);
+  } else if (element.type === 'table') {
+    (element.table?.columns ?? []).forEach((col) => add(col.field));
   }
   (element.children ?? []).forEach((child) => collectElementFields(child, out));
 }
@@ -441,6 +466,7 @@ export function elementLabel(element: TemplateElement): string {
     const name = (element.photo_name ?? element.field ?? '').replace(/\{\{?([^}]+)\}?\}/g, '$1');
     return `图片 · ${name || '照片'}`;
   }
+  if (element.type === 'table') return `明细表 · ${element.table?.columns.length ?? 0} 列`;
   if (element.type === 'rect') return '矩形框';
   if (element.type === 'line') return '线条';
   if (element.type === 'qrcode') {
@@ -460,6 +486,8 @@ export function elementIcon(type: ElementType): string {
   switch (type) {
     case 'matrix':
       return '▦';
+    case 'table':
+      return '☰';
     case 'rect':
       return '▭';
     case 'image':

@@ -331,9 +331,27 @@ export interface MatrixSetup {
   show_border: boolean;
 }
 
+/** 明细表列：绑定字段并设置表头、列宽与对齐。 */
+export interface TableColumn {
+  field: string;
+  label: string;
+  /** 列宽（mm），0 表示按剩余宽度均分 */
+  width_mm: number;
+  align: 'left' | 'center' | 'right';
+}
+
+/** 明细表配置：数据按行高自动分页，每页重复表头。 */
+export interface TableSetup {
+  columns: TableColumn[];
+  header_height_mm: number;
+  row_height_mm: number;
+  show_header: boolean;
+  show_grid: boolean;
+}
+
 export interface TemplateElement {
   id: string;
-  type: 'text' | 'field' | 'image' | 'qrcode' | 'barcode' | 'line' | 'rect' | 'matrix';
+  type: 'text' | 'field' | 'image' | 'qrcode' | 'barcode' | 'line' | 'rect' | 'matrix' | 'table';
   x_mm: number;
   y_mm: number;
   w_mm: number;
@@ -357,6 +375,8 @@ export interface TemplateElement {
   children: TemplateElement[];
   /** type=matrix 时的网格配置 */
   matrix?: MatrixSetup;
+  /** type=table 时的明细表配置 */
+  table?: TableSetup;
   /** 兼容旧模板：整页元素标记，新结构不再使用 */
   page_level?: boolean;
   /** type=image：照片所在目录，空则回退到渲染请求的 photo_dir */
@@ -373,7 +393,7 @@ export interface TemplateElement {
 export interface PdfTemplate {
   id: string;
   name: string;
-  kind: 'single' | 'matrix';
+  kind: 'single' | 'matrix' | 'table';
   description: string;
   page: PageSetup;
   matrix: MatrixSetup;
@@ -419,7 +439,7 @@ export interface PdfTemplate {
 
 export interface PdfTemplateInput {
   name: string;
-  kind: 'single' | 'matrix';
+  kind: 'single' | 'matrix' | 'table';
   description: string;
   page: PageSetup;
   matrix: MatrixSetup;

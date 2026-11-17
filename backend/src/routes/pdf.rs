@@ -146,7 +146,7 @@ fn validate_kind(raw: &str) -> AppResult<String> {
     if kind.is_empty() {
         return Ok("single".to_string());
     }
-    if !matches!(kind.as_str(), "single" | "matrix") {
+    if !matches!(kind.as_str(), "single" | "matrix" | "table") {
         return Err(AppError::validation(format!("不支持的模板类型 [{kind}]")));
     }
     Ok(kind)

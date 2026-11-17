@@ -528,6 +528,52 @@ impl Default for MatrixSetup {
 fn default_true() -> bool {
     true
 }
+
+/// 明细表列：绑定数据字段，可单独设置表头和宽度。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableColumn {
+    #[serde(default)]
+    pub field: String,
+    #[serde(default)]
+    pub label: String,
+    /// 列宽（mm）；0 表示按剩余宽度平均分配
+    #[serde(default)]
+    pub width_mm: f32,
+    #[serde(default = "default_align")]
+    pub align: String,
+}
+
+/// 明细表配置：多行数据按行高自动分页，每页重复表头。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableSetup {
+    #[serde(default)]
+    pub columns: Vec<TableColumn>,
+    #[serde(default = "default_header_h")]
+    pub header_height_mm: f32,
+    #[serde(default = "default_row_h")]
+    pub row_height_mm: f32,
+    #[serde(default = "default_true")]
+    pub show_header: bool,
+    #[serde(default = "default_true")]
+    pub show_grid: bool,
+}
+impl Default for TableSetup {
+    fn default() -> Self {
+        Self {
+            columns: Vec::new(),
+            header_height_mm: default_header_h(),
+            row_height_mm: default_row_h(),
+            show_header: true,
+            show_grid: true,
+        }
+    }
+}
+fn default_header_h() -> f32 {
+    8.0
+}
+fn default_row_h() -> f32 {
+    8.0
+}
 fn default_matrix_rows() -> i64 {
     5
 }
@@ -587,6 +633,9 @@ pub struct TemplateElement {
     /// type = "matrix" 时的网格配置
     #[serde(default)]
     pub matrix: Option<MatrixSetup>,
+    /// type = "table" 时的明细表配置
+    #[serde(default)]
+    pub table: Option<TableSetup>,
     /// 兼容旧模板：true 表示整页元素（每页只画一次）
     #[serde(default)]
     pub page_level: bool,
@@ -624,6 +673,7 @@ impl TemplateElement {
             border_radius_mm: 0.0,
             children: Vec::new(),
             matrix: None,
+            table: None,
             page_level: false,
             photo_dir: String::new(),
             photo_name: String::new(),
@@ -815,6 +865,12 @@ fn collect_element_fields(el: &TemplateElement, out: &mut Vec<String>) {
         }
     } else if el.etype == "qrcode" || el.etype == "barcode" {
         collect_placeholders(&el.text, out);
+    } else if el.etype == "table" {
+        if let Some(table) = &el.table {
+            for col in &table.columns {
+                push_field(out, &col.field);
+            }
+        }
     }
     for child in &el.children {
         collect_element_fields(child, out);

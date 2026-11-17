@@ -10,7 +10,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DatasetColumn, Margins, MatrixSetup, PageSetup, TemplateBody, TemplateElement,
+    DatasetColumn, Margins, MatrixSetup, PageSetup, TableSetup, TemplateBody, TemplateElement,
 };
 use crate::util;
 use printpdf::path::PaintMode;
@@ -519,6 +519,22 @@ fn draw_barcode(
     }
 }
 
+/// 计算明细表各列宽度：固定宽度优先，剩余宽度由未设置宽度的列平均分配。
+fn table_column_widths(setup: &TableSetup, total: f32) -> Vec<f32> {
+    let fixed: f32 = setup.columns.iter().map(|c| c.width_mm.max(0.0)).sum();
+    let flexible = setup.columns.iter().filter(|c| c.width_mm <= 0.0).count();
+    let share = if flexible > 0 {
+        (total - fixed).max(1.0) / flexible as f32
+    } else {
+        0.0
+    };
+    setup
+        .columns
+        .iter()
+        .map(|c| if c.width_mm > 0.0 { c.width_mm } else { share })
+        .collect()
+}
+
 /// 矩阵网格的几何信息：宽度、高度、列数、行数。
 struct Grid {
     w: f32,
@@ -584,6 +600,108 @@ impl<'a> Painter<'a> {
                     is_closed: false,
                 });
             }
+        }
+    }
+
+    /// 绘制明细表：先画表头，再逐行绘制数据，网格可选。
+    fn table(
+        &self,
+        setup: &TableSetup,
+        el: &TemplateElement,
+        widths: &[f32],
+        rows: &[Vec<String>],
+        index: &HashMap<String, usize>,
+        origin: &Origin,
+    ) {
+        let row_h = setup.row_height_mm.max(3.0);
+        let header_h = if setup.show_header {
+            setup.header_height_mm.max(3.0)
+        } else {
+            0.0
+        };
+        let mut cell = el.clone();
+        cell.children.clear();
+        cell.x_mm = 0.0;
+        cell.y_mm = 0.0;
+        cell.wrap = false;
+        cell.rotate = 0.0;
+
+        let mut y = origin.y_top;
+        if setup.show_header {
+            let mut x = origin.x;
+            for (i, col) in setup.columns.iter().enumerate() {
+                let w = widths.get(i).copied().unwrap_or(0.0);
+                let label = if col.label.trim().is_empty() {
+                    col.field.trim()
+                } else {
+                    col.label.trim()
+                };
+                cell.bold = true;
+                self.table_cell(
+                    label,
+                    &mut cell,
+                    &col.align,
+                    (x, y, w, header_h),
+                    setup.show_grid,
+                );
+                x += w;
+            }
+            y += header_h;
+        }
+        for row in rows {
+            let mut x = origin.x;
+            for (i, col) in setup.columns.iter().enumerate() {
+                let w = widths.get(i).copied().unwrap_or(0.0);
+                let text = index
+                    .get(col.field.trim())
+                    .and_then(|idx| row.get(*idx))
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                cell.bold = el.bold;
+                self.table_cell(
+                    text,
+                    &mut cell,
+                    &col.align,
+                    (x, y, w, row_h),
+                    setup.show_grid,
+                );
+                x += w;
+            }
+            y += row_h;
+        }
+    }
+
+    /// `rect` 为单元格矩形（x, y_top, 宽, 高）。
+    fn table_cell(
+        &self,
+        text: &str,
+        cell: &mut TemplateElement,
+        align: &str,
+        rect: (f32, f32, f32, f32),
+        grid: bool,
+    ) {
+        let (x, y_top, w, h) = rect;
+        cell.align = align.to_string();
+        cell.w_mm = w;
+        cell.h_mm = h;
+        draw_text(
+            self.layer,
+            self.font,
+            text,
+            cell,
+            &Origin { x, y_top },
+            self.page_h,
+        );
+        if grid {
+            let llx = x;
+            let ury = self.page_h - y_top;
+            let lly = ury - h;
+            self.layer
+                .set_outline_color(Color::Rgb(Rgb::new(0.55, 0.55, 0.55, None)));
+            self.layer.set_outline_thickness(0.25);
+            self.layer.add_rect(
+                Rect::new(Mm(llx), Mm(lly), Mm(llx + w), Mm(ury)).with_mode(PaintMode::Stroke),
+            );
         }
     }
 
@@ -1277,6 +1395,88 @@ pub fn render_pdf_data(
             }
             painter.page_decoration(body, &page_ctx, page_w, &body.page.margin_mm);
         }
+    } else if kind == "table" {
+        // 明细表：数据按行高铺满元素区域，超出自动分页并重复表头。
+        let table_el = body
+            .elements
+            .iter()
+            .find(|e| e.etype == "table")
+            .ok_or_else(|| AppError::bad_request("明细表模板需要插入一个「明细表」元素"))?;
+        let setup = table_el.table.clone().unwrap_or_default();
+        if setup.columns.is_empty() {
+            return Err(AppError::bad_request("明细表至少需要配置一列"));
+        }
+        for col in &setup.columns {
+            let f = col.field.trim();
+            if f.is_empty() {
+                return Err(AppError::bad_request("明细表存在未绑定字段的列"));
+            }
+            if !index.contains_key(f) {
+                return Err(AppError::bad_request(format!(
+                    "明细表字段 [{f}] 在输入数据中不存在"
+                )));
+            }
+        }
+        let row_h = setup.row_height_mm.max(3.0);
+        let header_h = if setup.show_header {
+            setup.header_height_mm.max(3.0)
+        } else {
+            0.0
+        };
+        let per_page = (((table_el.h_mm - header_h) / row_h).floor() as usize).max(1);
+        let pages = rows.len().div_ceil(per_page).max(1) as i64;
+        let widths = table_column_widths(&setup, table_el.w_mm.max(10.0));
+        let start_page = opts.only_page.unwrap_or(1).max(1);
+        let end_page = if opts.only_page.is_some() {
+            start_page
+        } else {
+            pages
+        };
+        let mut first_used = false;
+        for page in start_page..=end_page.min(pages) {
+            let (pi, li) = if !first_used {
+                first_used = true;
+                (first_page, first_layer)
+            } else {
+                doc.add_page(Mm(page_w), Mm(page_h), format!("P{page}"))
+            };
+            let layer = doc.get_page(pi).get_layer(li);
+            let painter = Painter {
+                doc: &doc,
+                layer: &layer,
+                font: &font,
+                page_h,
+                photo_dir: photo_dir.as_deref(),
+            };
+            let empty_row: Vec<String> = Vec::new();
+            let page_ctx = Ctx {
+                row: &empty_row,
+                index: &index,
+                all_rows: rows,
+                index_no: 0,
+                no: (page - 1) * per_page as i64 + 1,
+                page,
+                pages,
+                count: total_rows,
+            };
+            let page_origin = Origin {
+                x: content_x,
+                y_top: content_y_top,
+            };
+            painter.background(&body.background_image, &page_ctx, page_w, page_h);
+            for el in body.elements.iter().filter(|e| e.etype != "table") {
+                painter.element(el, &page_ctx, &page_origin);
+            }
+            let table_origin = Origin {
+                x: content_x + table_el.x_mm,
+                y_top: content_y_top + table_el.y_mm,
+            };
+            let from = (page - 1) as usize * per_page;
+            let to = (from + per_page).min(rows.len());
+            let slice = &rows[from.min(rows.len())..to];
+            painter.table(&setup, table_el, &widths, slice, &index, &table_origin);
+            painter.page_decoration(body, &page_ctx, page_w, &body.page.margin_mm);
+        }
     } else {
         // 单页模板：默认一行一页；设置页面字段后按该字段自然排序，使同考场的页面聚在一起。
         let order: Vec<usize> = if let Some(pi) = page_idx {
@@ -1349,6 +1549,7 @@ pub fn render_pdf_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::TableColumn;
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("exam_pdfgen_{tag}_{}", std::process::id()));
@@ -1775,6 +1976,78 @@ mod tests {
             render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default()).expect("render");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn render_table_paginates_rows_and_repeats_header() {
+        let cols = vec![
+            DatasetColumn {
+                name: "姓名".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "成绩".into(),
+                dtype: "number".into(),
+            },
+        ];
+        let mut table = TemplateElement::empty("tb", "table");
+        table.x_mm = 0.0;
+        table.y_mm = 10.0;
+        table.w_mm = 180.0;
+        // 表头 8mm、行高 8mm：30mm 高可容纳 2 行数据，5 条数据应分成 3 页。
+        table.h_mm = 30.0;
+        table.font_size = 9.0;
+        table.table = Some(TableSetup {
+            columns: vec![
+                TableColumn {
+                    field: "姓名".into(),
+                    label: "姓名".into(),
+                    width_mm: 60.0,
+                    align: "left".into(),
+                },
+                TableColumn {
+                    field: "成绩".into(),
+                    label: "成绩".into(),
+                    width_mm: 0.0,
+                    align: "right".into(),
+                },
+            ],
+            header_height_mm: 8.0,
+            row_height_mm: 8.0,
+            show_header: true,
+            show_grid: true,
+        });
+        let mut body = TemplateBody::default();
+        body.elements.push(table);
+        let rows = vec![
+            vec!["张三".into(), "90".into()],
+            vec!["李四".into(), "85".into()],
+            vec!["王五".into(), "78".into()],
+            vec!["赵六".into(), "66".into()],
+            vec!["孙七".into(), "59".into()],
+        ];
+        let pdf = render_pdf_data(&cols, &rows, &body, "table", &RenderOpts::default())
+            .expect("render table");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn render_table_requires_columns() {
+        let cols = vec![DatasetColumn {
+            name: "姓名".into(),
+            dtype: "text".into(),
+        }];
+        let mut table = TemplateElement::empty("tb", "table");
+        table.w_mm = 100.0;
+        table.h_mm = 50.0;
+        table.table = Some(TableSetup::default());
+        let mut body = TemplateBody::default();
+        body.elements.push(table);
+        let rows = vec![vec!["张三".into()]];
+        let err = render_pdf_data(&cols, &rows, &body, "table", &RenderOpts::default())
+            .expect_err("empty columns rejected");
+        assert_eq!(err.to_string(), "明细表至少需要配置一列");
     }
 
     #[test]

@@ -20,6 +20,8 @@ import type {
   PdfTemplate,
   PdfTemplateInput,
   StandardField,
+  TableColumn,
+  TableSetup,
   TemplateElement,
 } from '../api/types';
 import { EmptyState } from '../components/EmptyState';
@@ -30,6 +32,7 @@ import { useProject } from '../context/ProjectContext';
 import { projectFieldsAsStandard } from '../lib/projectFields';
 import {
   DEFAULT_MATRIX,
+  DEFAULT_TABLE,
   appendChild,
   collectRequiredFields,
   contentSizeMm,
@@ -44,6 +47,7 @@ import {
   removeElement,
   resizeRect,
   round1,
+  tableColumnWidths,
   toParentBox,
   updateElement,
   walkElements,
@@ -67,7 +71,7 @@ type InsertTarget = 'container' | 'page';
 interface TemplateDraft {
   id: string | null;
   name: string;
-  kind: 'single' | 'matrix';
+  kind: 'single' | 'matrix' | 'table';
   description: string;
   page: PageSetup;
   elements: TemplateElement[];
@@ -150,6 +154,7 @@ const ELEMENT_LABELS: Record<ElementType, string> = {
   line: '线条',
   rect: '矩形',
   matrix: '矩阵',
+  table: '明细表',
 };
 
 const INSERT_TYPES: ElementType[] = [
@@ -160,6 +165,7 @@ const INSERT_TYPES: ElementType[] = [
   'barcode',
   'line',
   'rect',
+  'table',
 ];
 
 type RibbonTab = 'home' | 'insert' | 'layout' | 'view';
@@ -820,6 +826,82 @@ export default function TemplatePage({
             hittable: false,
           }),
         );
+      } else if (element.type === 'table') {
+        const setup = { ...DEFAULT_TABLE, ...(element.table ?? {}) };
+        const widths = tableColumnWidths(setup, w);
+        const headerH = setup.show_header ? Math.max(3, setup.header_height_mm) : 0;
+        const rowH = Math.max(3, setup.row_height_mm);
+        const bodyRows = Math.max(1, Math.floor((h - headerH) / rowH));
+        const cell = (
+          x: number,
+          top: number,
+          cw: number,
+          ch: number,
+          text: string,
+          align: 'left' | 'center' | 'right',
+          header: boolean,
+        ) => {
+          node.add(
+            new Rect({
+              x,
+              y: top,
+              width: cw,
+              height: ch,
+              fill: header ? '#f1f5f9' : undefined,
+              stroke: setup.show_grid ? '#cbd5e1' : undefined,
+              strokeWidth: strokeMm,
+              hittable: false,
+            }),
+          );
+          if (text) {
+            node.add(
+              new Text({
+                x: x + 0.6,
+                y: top,
+                width: Math.max(0.5, cw - 1.2),
+                height: ch,
+                text,
+                fontSize: Math.min(element.font_size * MM_PER_PT, 3.2),
+                fill: header ? '#334155' : '#94a3b8',
+                align,
+                verticalAlign: 'middle',
+                hittable: false,
+              }),
+            );
+          }
+        };
+        let top = 0;
+        if (setup.show_header) {
+          let x = 0;
+          setup.columns.forEach((col, i) => {
+            const cw = widths[i] ?? 0;
+            cell(x, top, cw, headerH, col.label || col.field, col.align, true);
+            x += cw;
+          });
+          top += headerH;
+        }
+        for (let r = 0; r < Math.min(bodyRows, 4); r += 1) {
+          let x = 0;
+          setup.columns.forEach((col, i) => {
+            const cw = widths[i] ?? 0;
+            cell(x, top, cw, rowH, `{{${col.field}}}`, col.align, false);
+            x += cw;
+          });
+          top += rowH;
+        }
+        if (setup.show_grid) {
+          node.add(
+            new Rect({
+              x: 0,
+              y: 0,
+              width: w,
+              height: h,
+              stroke: element.color || '#94a3b8',
+              strokeWidth: strokeMm,
+              hittable: false,
+            }),
+          );
+        }
       } else {
         if (element.fill) {
           node.add(new Rect({ x: 0, y: 0, width: w, height: h, fill: element.fill, cornerRadius: radius, hittable: false }));
@@ -1111,6 +1193,38 @@ export default function TemplatePage({
         ...prev,
         kind: 'matrix',
         elements: [...prev.elements, element],
+      }));
+      setSelection({ type: 'element', id: element.id });
+      setEditRequestId(null);
+      return;
+    }
+
+    if (type === 'table') {
+      if (draft.elements.some((el) => el.type === 'table')) {
+        show('模板中已经存在明细表，可直接在属性面板中编辑列', 'error');
+        return;
+      }
+      const fields = (columnNames.length > 0 ? columnNames : ['姓名', '准考证号', '成绩']).slice(0, 5);
+      const element = createElement('table', {
+        x: 0,
+        y: 8,
+        w: content.w,
+        h: Math.max(40, Math.min(140, content.h - 16)),
+      });
+      element.table = {
+        ...DEFAULT_TABLE,
+        columns: fields.map((name) => ({
+          field: name,
+          label: name,
+          width_mm: 0,
+          align: 'left' as const,
+        })),
+      };
+      element.children = [];
+      setDraft((prev) => ({
+        ...prev,
+        kind: 'table',
+        elements: [...prev.elements.filter((el) => el.type !== 'table'), element],
       }));
       setSelection({ type: 'element', id: element.id });
       setEditRequestId(null);
@@ -2125,11 +2239,15 @@ function PagePanel({
           <select
             value={draft.kind}
             onChange={(event) =>
-              onDraft((prev) => ({ ...prev, kind: event.target.value as 'single' | 'matrix' }))
+              onDraft((prev) => ({
+                ...prev,
+                kind: event.target.value as 'single' | 'matrix' | 'table',
+              }))
             }
           >
             <option value="single">单人单页（每行数据一页）</option>
             <option value="matrix">矩阵分页（每页铺满多行数据）</option>
+            <option value="table">明细表（多行表格自动分页）</option>
           </select>
         </label>
         <label className="field">
@@ -2143,6 +2261,10 @@ function PagePanel({
         </label>
         {draft.kind === 'matrix' && !hasMatrix ? (
           <p className="panel-hint warn">矩阵分页需要插入一个「矩阵」元素，数据才会按单元格铺排。</p>
+        ) : null}
+        {draft.kind === 'table' &&
+        !draft.elements.some((el) => el.type === 'table') ? (
+          <p className="panel-hint warn">明细表模式需要插入一个「明细表」元素，并至少配置一列。</p>
         ) : null}
       </div>
 
@@ -2446,7 +2568,7 @@ function PagePanel({
 interface ElementEditorProps {
   element: TemplateElement;
   parentType: ElementType | null;
-  kind: 'single' | 'matrix';
+  kind: 'single' | 'matrix' | 'table';
   columns: string[];
   autoEdit?: boolean;
   onChange: (patch: Partial<TemplateElement>) => void;
@@ -2470,6 +2592,14 @@ function ElementEditor({
   const matrix = { ...DEFAULT_MATRIX, ...(element.matrix ?? {}) };
   const rows = Math.max(1, Math.round(matrix.rows));
   const cols = Math.max(1, Math.round(matrix.cols));
+  const isTable = element.type === 'table';
+  const table = { ...DEFAULT_TABLE, ...(element.table ?? {}) };
+  const patchTable = (patch: Partial<TableSetup>) =>
+    onChange({ table: { ...table, ...patch } });
+  const patchColumn = (index: number, patch: Partial<TableColumn>) =>
+    patchTable({
+      columns: table.columns.map((col, i) => (i === index ? { ...col, ...patch } : col)),
+    });
   const geometryLabel = parentType === 'matrix' ? '相对单元格' : parentType === 'rect' ? '相对父元素' : '页面坐标';
   const numeric: [string, keyof TemplateElement, number][] = [
     ['X (mm)', 'x_mm', 0.5],
@@ -2545,6 +2675,123 @@ function ElementEditor({
               </button>
             ))}
           </div>
+        </div>
+      ) : null}
+
+      {isTable ? (
+        <div className="tpl-section">
+          <div className="tpl-section-title">明细表</div>
+          <div className="grid-2">
+            <NumberField
+              label="表头高 (mm)"
+              step={0.5}
+              value={table.header_height_mm}
+              onChange={(value) => patchTable({ header_height_mm: Math.max(3, value) })}
+            />
+            <NumberField
+              label="行高 (mm)"
+              step={0.5}
+              value={table.row_height_mm}
+              onChange={(value) => patchTable({ row_height_mm: Math.max(3, value) })}
+            />
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={table.show_header}
+              onChange={(event) => patchTable({ show_header: event.target.checked })}
+            />
+            显示表头（每页重复）
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={table.show_grid}
+              onChange={(event) => patchTable({ show_grid: event.target.checked })}
+            />
+            显示网格线
+          </label>
+          <div className="tpl-mini-actions">
+            <span>列配置</span>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() =>
+                patchTable({
+                  columns: [
+                    ...table.columns,
+                    { field: columns[0] ?? '', label: columns[0] ?? '', width_mm: 0, align: 'left' },
+                  ],
+                })
+              }
+            >
+              ＋添加列
+            </button>
+          </div>
+          {table.columns.map((col, index) => (
+            <div key={`${col.field}-${index}`} className="grid-2">
+              <label className="field">
+                <span className="field-label">字段</span>
+                <select
+                  value={col.field}
+                  onChange={(event) =>
+                    patchColumn(index, {
+                      field: event.target.value,
+                      label: col.label || event.target.value,
+                    })
+                  }
+                >
+                  <option value="">选择字段…</option>
+                  {columns.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">表头文字</span>
+                <input
+                  type="text"
+                  value={col.label}
+                  onChange={(event) => patchColumn(index, { label: event.target.value })}
+                />
+              </label>
+              <NumberField
+                label="列宽 (mm)"
+                step={1}
+                value={col.width_mm}
+                onChange={(value) => patchColumn(index, { width_mm: Math.max(0, value) })}
+              />
+              <label className="field">
+                <span className="field-label">对齐</span>
+                <select
+                  value={col.align}
+                  onChange={(event) =>
+                    patchColumn(index, {
+                      align: event.target.value as TableColumn['align'],
+                    })
+                  }
+                >
+                  <option value="left">左</option>
+                  <option value="center">居中</option>
+                  <option value="right">右</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() =>
+                  patchTable({ columns: table.columns.filter((_, i) => i !== index) })
+                }
+              >
+                删除该列
+              </button>
+            </div>
+          ))}
+          <p className="panel-hint">
+            列宽填 0 自动均分；表格高度决定每页行数，超出后自动分页并在每页重复表头。
+          </p>
         </div>
       ) : null}
 
