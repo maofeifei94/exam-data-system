@@ -613,6 +613,39 @@ impl<'a> Painter<'a> {
             return;
         }
 
+        // 「内容为空时隐藏」：文本/条码类元素在占位符取值为空时整体跳过，
+        // 避免留白元素在证件/名单上出现空框。
+        let skip_self = el.hide_if_empty
+            && match el.etype.as_str() {
+                "text" | "field" | "qrcode" | "barcode" => {
+                    let content = if el.text.trim().is_empty() {
+                        ctx.value(&el.field).to_string()
+                    } else {
+                        interpolate(&el.text, ctx)
+                    };
+                    content.trim().is_empty()
+                }
+                "image" => {
+                    let name = if el.photo_name.trim().is_empty() {
+                        ctx.value(&el.field).to_string()
+                    } else {
+                        interpolate(&el.photo_name, ctx)
+                    };
+                    name.trim().is_empty()
+                }
+                _ => false,
+            };
+        if skip_self {
+            if !el.children.is_empty() {
+                let child_origin = Origin {
+                    x: origin.x + el.x_mm,
+                    y_top: origin.y_top + el.y_mm,
+                };
+                self.elements(&el.children, ctx, &child_origin);
+            }
+            return;
+        }
+
         match el.etype.as_str() {
             "rect" => draw_rect(self.layer, el, origin, self.page_h),
             "line" => {
@@ -733,8 +766,10 @@ impl<'a> Painter<'a> {
                 (chrome_size, chrome_color),
             );
         }
-        if body.show_page_number {
-            let text = format!("第 {} 页 / 共 {} 页", ctx.page, ctx.pages.max(ctx.page));
+        if body.show_page_number && !(body.page_number_skip_first && ctx.page == 1) {
+            let start = body.page_number_start.max(1);
+            let total = ctx.pages.max(ctx.page) + start - 1;
+            let text = format!("第 {} 页 / 共 {} 页", ctx.page + start - 1, total);
             let y = self.page_h - m.bottom + 1.5;
             let x = m.left + content_w * 0.72;
             self.chrome_text(
@@ -1738,6 +1773,32 @@ mod tests {
             render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default()).expect("render");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn render_supports_page_number_offset_and_empty_hiding() {
+        let cols = vec![DatasetColumn {
+            name: "姓名".into(),
+            dtype: "text".into(),
+        }];
+        let mut body = TemplateBody {
+            show_page_number: true,
+            page_number_start: 3,
+            page_number_skip_first: true,
+            ..Default::default()
+        };
+        let mut name = TemplateElement::empty("t", "text");
+        name.text = "{姓名}".into();
+        body.elements.push(name);
+        let mut empty = TemplateElement::empty("e", "text");
+        empty.text = "{姓名}".into();
+        empty.hide_if_empty = true;
+        body.elements.push(empty);
+        // 第二行姓名为空，隐藏元素应整行跳过而不报错。
+        let rows = vec![vec!["张三".into()], vec!["".into()]];
+        let pdf =
+            render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default()).expect("render");
+        assert!(pdf.starts_with(b"%PDF"));
     }
 
     #[test]

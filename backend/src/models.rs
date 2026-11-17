@@ -568,6 +568,9 @@ pub struct TemplateElement {
     /// 文本旋转角度（0/90/180/270），绕元素中心旋转，适合桌贴、门签侧边文字
     #[serde(default)]
     pub rotate: f32,
+    /// 渲染内容为空（占位符取值为空且无固定文字）时跳过该元素
+    #[serde(default)]
+    pub hide_if_empty: bool,
     #[serde(default = "default_align")]
     pub align: String,
     #[serde(default = "default_color")]
@@ -613,6 +616,7 @@ impl TemplateElement {
             bold: false,
             wrap: false,
             rotate: 0.0,
+            hide_if_empty: false,
             align: default_align(),
             color: default_color(),
             fill: String::new(),
@@ -678,6 +682,16 @@ pub struct TemplateBody {
     /// 页面边框颜色
     #[serde(default = "default_color")]
     pub page_border_color: String,
+    /// 页码起始值：首页显示为「第 N 页」中的 N
+    #[serde(default = "default_page_number_start")]
+    pub page_number_start: i64,
+    /// 首页不显示页码（封面页常用）
+    #[serde(default)]
+    pub page_number_skip_first: bool,
+}
+
+fn default_page_number_start() -> i64 {
+    1
 }
 
 fn default_page_border_width() -> f32 {
@@ -717,6 +731,8 @@ impl Default for TemplateBody {
             page_border: false,
             page_border_width_mm: default_page_border_width(),
             page_border_color: default_color(),
+            page_number_start: default_page_number_start(),
+            page_number_skip_first: false,
         }
     }
 }
@@ -927,6 +943,10 @@ pub struct PdfTemplate {
     pub page_border: bool,
     pub page_border_width_mm: f32,
     pub page_border_color: String,
+    /// 页码起始值
+    pub page_number_start: i64,
+    /// 首页是否隐藏页码
+    pub page_number_skip_first: bool,
     pub scope: String,
     pub project_id: String,
     pub source_id: String,
@@ -975,6 +995,10 @@ pub struct PdfTemplateInput {
     pub page_border_width_mm: f32,
     #[serde(default = "default_color")]
     pub page_border_color: String,
+    #[serde(default = "default_page_number_start")]
+    pub page_number_start: i64,
+    #[serde(default)]
+    pub page_number_skip_first: bool,
     #[serde(default)]
     pub scope: Option<String>,
     #[serde(default)]

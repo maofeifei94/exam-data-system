@@ -408,6 +408,8 @@ describe('normalizeTemplate', () => {
     page_border: false,
     page_border_width_mm: 0.4,
     page_border_color: '#000000',
+    page_number_start: 1,
+    page_number_skip_first: false,
     scope: 'global',
     project_id: '',
     source_id: '',

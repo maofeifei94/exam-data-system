@@ -554,6 +554,24 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "invoice_validate",
+            "发票代码/号码校验",
+            "校验",
+            "校验发票代码（10 或 12 位数字）与发票号码（8 或 20 位数字）格式，报销与入账前防止错录。",
+            vec![
+                with_help(
+                    p("code_column", "发票代码字段（可空）", "column", false, json!("")),
+                    "增值税发票代码通常为 10 或 12 位数字",
+                ),
+                with_help(
+                    p("number_column", "发票号码字段（可空）", "column", false, json!("")),
+                    "发票号码通常为 8 位，全电发票为 20 位数字",
+                ),
+                with_help(p("allow_blank", "允许空值行", "bool", false, json!(true)), "关闭后空值同样视为不合法"),
+                with_options(p("on_error", "发现格式错误时", "enum", false, json!("fail")), &["fail", "warn"]),
+            ],
+        ),
+        def(
             "range_check",
             "数值范围校验",
             "校验",

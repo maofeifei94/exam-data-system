@@ -79,6 +79,21 @@ fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// 构造「该行格式不合法」的 SQL 条件。
+///
+/// `valid_expr` 是长度约束（用 `{f}` 占位字段），统一追加「仅允许数字」的判断；
+/// `allow_blank` 为 false 时空值也视为不合法。
+fn invalid_format_cond(field: &str, valid_expr: &str, allow_blank: bool) -> String {
+    let valid = valid_expr.replace("{f}", field);
+    let blank = format!("TRIM(COALESCE(CAST({field} AS TEXT), '')) = ''");
+    let digits = format!("TRIM(CAST({field} AS TEXT)) NOT GLOB '*[^0-9]*'");
+    if allow_blank {
+        format!("NOT ({blank}) AND NOT (({valid}) AND {digits})")
+    } else {
+        format!("({blank}) OR NOT (({valid}) AND {digits})")
+    }
+}
+
 fn defaulted(value: String, fallback: &str) -> String {
     if value.is_empty() {
         fallback.to_string()
@@ -413,6 +428,7 @@ impl<'a> Compiler<'a> {
             "not_null_check" => self.op_not_null_check(step_index, step, &params),
             "column_compare" => self.op_column_compare(step_index, step, &params),
             "format_check" => self.op_format_check(step_index, step, &params),
+            "invoice_validate" => self.op_invoice_validate(step_index, step, &params),
             "range_check" => self.op_range_check(step_index, step, &params),
             "shuffle" => self.op_shuffle(step_index, step, &params),
             "balance_classes" => self.op_balance_classes(step_index, step, &params),
@@ -2984,6 +3000,67 @@ impl<'a> Compiler<'a> {
                 format!("字段 [{col}] 格式全部合法（{label}）")
             } else {
                 format!("字段 [{col}] 有 {bad} 行{label}格式不合法，已按警告继续")
+            }),
+        ))
+    }
+
+    /// 发票代码 / 号码格式校验：代码 10 或 12 位数字，号码 8 或 20 位数字。
+    fn op_invoice_validate(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let code = str_param(p, "code_column");
+        let number = str_param(p, "number_column");
+        if code.is_empty() && number.is_empty() {
+            return Err("请至少指定发票代码或发票号码字段".into());
+        }
+        for c in [&code, &number] {
+            if !c.is_empty() && !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let allow_blank = bool_param(p, "allow_blank", true);
+        let mut invalid: Vec<String> = Vec::new();
+        if !code.is_empty() {
+            invalid.push(invalid_format_cond(
+                &q(&code),
+                "LENGTH(TRIM(CAST({f} AS TEXT))) IN (10, 12)",
+                allow_blank,
+            ));
+        }
+        if !number.is_empty() {
+            invalid.push(invalid_format_cond(
+                &q(&number),
+                "LENGTH(TRIM(CAST({f} AS TEXT))) IN (8, 20)",
+                allow_blank,
+            ));
+        }
+        let sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM {} WHERE {}",
+            self.cur,
+            invalid.join(" OR ")
+        ));
+        let bad: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("发票格式校验失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") == "fail" {
+            return Err(format!(
+                "发票代码/号码校验未通过：{bad} 行格式不合法（代码应为 10 或 12 位数字，号码应为 8 或 20 位数字）"
+            ));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            None,
+            Some(if bad == 0 {
+                "发票代码/号码格式全部合法".to_string()
+            } else {
+                format!("有 {bad} 行发票格式不合法，已按警告继续")
             }),
         ))
     }
@@ -6085,6 +6162,18 @@ pub fn validate_steps_with(
                     step_errors.push(format!("字段 [{c}] 不存在"));
                 }
             }
+            "invoice_validate" => {
+                let code = str_param(&p, "code_column");
+                let number = str_param(&p, "number_column");
+                if code.is_empty() && number.is_empty() {
+                    step_errors.push("请至少选择发票代码或发票号码字段".into());
+                }
+                for c in [&code, &number] {
+                    if !c.is_empty() && !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+            }
             "voucher_check" => {
                 let col = str_param(&p, "column");
                 if col.is_empty() {
@@ -8231,6 +8320,36 @@ mod tests {
             "f_uscc_warn",
             json!([{ "id": "s1", "operator": "format_check",
                      "params": { "column": "信用代码", "mode": "uscc", "on_error": "warn" } }]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn invoice_validate_checks_code_and_number_formats() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("发票代码", "text"), ("发票号码", "text")],
+            &[
+                vec!["1234567890", "12345678"],
+                vec!["123456789012", "12345678901234567890"],
+                vec!["123", "123456789"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_invoice_fail",
+            json!([{ "id": "s1", "operator": "invoice_validate",
+                     "params": { "code_column": "发票代码", "number_column": "发票号码", "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+        assert!(failed.message.unwrap_or_default().contains("发票"));
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_invoice_warn",
+            json!([{ "id": "s1", "operator": "invoice_validate",
+                     "params": { "code_column": "发票代码", "number_column": "发票号码", "on_error": "warn" } }]),
         );
         assert_eq!(warned.status, "success", "{:?}", warned.message);
     }

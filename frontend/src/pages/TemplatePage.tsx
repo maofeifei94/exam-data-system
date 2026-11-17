@@ -92,6 +92,10 @@ interface TemplateDraft {
   watermarkTile: boolean;
   /** 页脚显示页码 */
   showPageNumber: boolean;
+  /** 页码起始值 */
+  pageNumberStart: number;
+  /** 首页隐藏页码 */
+  pageNumberSkipFirst: boolean;
   /** 页面边框 */
   pageBorder: boolean;
   pageBorderWidth: number;
@@ -129,6 +133,8 @@ const EMPTY_DRAFT: TemplateDraft = {
   watermark: '',
   watermarkTile: false,
   showPageNumber: false,
+  pageNumberStart: 1,
+  pageNumberSkipFirst: false,
   pageBorder: false,
   pageBorderWidth: 0.4,
   pageBorderColor: '#000000',
@@ -1210,6 +1216,8 @@ export default function TemplatePage({
     watermark: draft.watermark.trim(),
     watermark_tile: draft.watermarkTile,
     show_page_number: draft.showPageNumber,
+    page_number_start: draft.pageNumberStart,
+    page_number_skip_first: draft.pageNumberSkipFirst,
     page_border: draft.pageBorder,
     page_border_width_mm: draft.pageBorderWidth,
     page_border_color: draft.pageBorderColor,
@@ -2047,6 +2055,8 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     watermark: template.watermark ?? '',
     watermarkTile: Boolean(template.watermark_tile),
     showPageNumber: Boolean(template.show_page_number),
+    pageNumberStart: template.page_number_start ?? 1,
+    pageNumberSkipFirst: Boolean(template.page_number_skip_first),
     pageBorder: Boolean(template.page_border),
     pageBorderWidth: template.page_border_width_mm ?? 0.4,
     pageBorderColor: template.page_border_color ?? '#000000',
@@ -2377,6 +2387,26 @@ function PagePanel({
           />
           页脚显示「第 X 页 / 共 Y 页」
         </label>
+        {draft.showPageNumber ? (
+          <div className="grid-2">
+            <NumberField
+              label="页码起始值"
+              step={1}
+              value={draft.pageNumberStart}
+              onChange={(value) => onDraft((prev) => ({ ...prev, pageNumberStart: value }))}
+            />
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={draft.pageNumberSkipFirst}
+                onChange={(event) =>
+                  onDraft((prev) => ({ ...prev, pageNumberSkipFirst: event.target.checked }))
+                }
+              />
+              首页不显示页码
+            </label>
+          </div>
+        ) : null}
         <p className="panel-hint">
           支持 {'{字段名}'} 与 {'{{page}}'}、{'{{pages}}'}、{'{{count}}'}、{'{{total}}'} 占位符，
           也可用统计占位符如 {'{{sum:成绩}}'}、{'{{avg:成绩}}'}、{'{{rate:成绩:60}}'}；页眉页脚中的字段也会自动纳入必需字段校验。
@@ -2694,6 +2724,19 @@ function ElementEditor({
                 onChange={(event) => onChange({ wrap: event.target.checked })}
               />
               自动换行（超出元素宽度时折行）
+            </label>
+          ) : null}
+          {element.type === 'text' ||
+          element.type === 'field' ||
+          element.type === 'qrcode' ||
+          element.type === 'barcode' ? (
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={element.hide_if_empty ?? false}
+                onChange={(event) => onChange({ hide_if_empty: event.target.checked })}
+              />
+              内容为空时隐藏（占位符没有值时不留空框）
             </label>
           ) : null}
           {element.type === 'text' || element.type === 'field' ? (

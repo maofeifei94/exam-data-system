@@ -346,6 +346,8 @@ export interface TemplateElement {
   wrap?: boolean;
   /** 文本旋转角度：0 / 90 / 180 / 270 */
   rotate?: number;
+  /** 渲染内容为空时隐藏该元素 */
+  hide_if_empty?: boolean;
   align: 'left' | 'center' | 'right';
   color: string;
   fill: string;
@@ -404,6 +406,10 @@ export interface PdfTemplate {
   page_border: boolean;
   page_border_width_mm: number;
   page_border_color: string;
+  /** 页码起始值 */
+  page_number_start: number;
+  /** 首页隐藏页码 */
+  page_number_skip_first: boolean;
   scope: Scope;
   project_id: string;
   source_id: string;
@@ -432,6 +438,8 @@ export interface PdfTemplateInput {
   page_border?: boolean;
   page_border_width_mm?: number;
   page_border_color?: string;
+  page_number_start?: number;
+  page_number_skip_first?: boolean;
   scope?: Scope;
   project_id?: string;
 }

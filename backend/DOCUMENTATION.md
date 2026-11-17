@@ -264,6 +264,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `not_null_check` | 空值校验：指定字段出现 NULL / 空字符串时终止或警告 |
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号 / 统一社会信用代码校验 |
+| `invoice_validate` | 发票代码 / 号码校验：代码须为 10 或 12 位数字，号码须为 8 或 20 位数字，空值可选忽略 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `sum_check` | 合计一致性校验：校验合计字段是否等于各明细字段之和（总成绩、发票金额） |
 | `outlier_check` | 异常值检测：按分组均值与标准差检测偏离超过 k 倍的异常值，可输出标记列 |
@@ -409,12 +410,16 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   路径支持 `{字段}` 占位符，其中字段同样纳入必需字段校验，适合证书底纹、防伪底图。
 - **页眉页脚 / 页码 / 水印**：`header_text`、`footer_text`、`watermark` 均支持
   `{字段}` 与 `{{page}}` / `{{pages}}` / `{{count}}` 占位符，每页绘制一次；
-  `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」；
+  `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」，
+  `page_number_start` 设置页码起始值（首页即显示为该值），
+  `page_number_skip_first` 让封面等首页不显示页码；
   `chrome_font_size` 与 `chrome_color` 控制页眉页脚字号和颜色（默认 9pt 浅灰）。
   水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
 - **页面边框**：`page_border` 打开后沿内容区绘制边框，`page_border_width_mm` 与
   `page_border_color` 控制线宽和颜色，适合证书、通知单等需要装裱边框的版式。
+- **空内容隐藏**：元素设置 `hide_if_empty = true` 后，占位符插值结果为空时整体跳过，
+  不绘制文字 / 二维码 / 条形码 / 照片框，适合名册中「补录信息」等可选栏目。
 
 新增照片元素的三个配置：`photo_dir`（目录，可由系统对话框选择）、
 `photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）。
