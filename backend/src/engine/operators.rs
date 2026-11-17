@@ -544,6 +544,19 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "shuffle",
+            "随机打散",
+            "行",
+            "随机打乱行顺序；按分组打散时各组轮流穿插，避免同校、同岗位考生连号相邻。",
+            vec![
+                with_help(
+                    p("group_by", "分组字段（可空）", "columns", false, json!([])),
+                    "留空表示全表随机；选择分组后各组按轮次穿插排列",
+                ),
+                p("out", "随机序号字段名", "text", false, json!("随机序号")),
+            ],
+        ),
+        def(
             "assign_seats",
             "考场座位编排",
             "计算",

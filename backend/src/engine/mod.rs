@@ -405,6 +405,7 @@ impl<'a> Compiler<'a> {
             "column_compare" => self.op_column_compare(step_index, step, &params),
             "format_check" => self.op_format_check(step_index, step, &params),
             "range_check" => self.op_range_check(step_index, step, &params),
+            "shuffle" => self.op_shuffle(step_index, step, &params),
             "assign_seats" => self.op_assign_seats(step_index, step, &params),
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
@@ -2339,6 +2340,63 @@ impl<'a> Compiler<'a> {
             Some(format!(
                 "已编排：每考场 {per_room} 人，起始考场 {start_room}"
             )),
+        ))
+    }
+
+    fn op_shuffle(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let groups = list_param(p, "group_by");
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let out = defaulted(str_param(p, "out"), "随机序号");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let (expr, order) = if groups.is_empty() {
+            (
+                format!("ROW_NUMBER() OVER (ORDER BY RANDOM()) AS {}", q(&out)),
+                format!("{} ASC", q(&out)),
+            )
+        } else {
+            let partition = groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ");
+            (
+                format!(
+                    "ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY RANDOM()) AS {}",
+                    q(&out)
+                ),
+                format!(
+                    "{} ASC, {} ASC",
+                    q(&out),
+                    groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ")
+                ),
+            )
+        };
+        let cte = self.push_cte(format!("SELECT *, {expr} FROM {}", self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        self.order_by = Some(order);
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(if groups.is_empty() {
+                format!("全表随机打散 → [{out}]")
+            } else {
+                format!(
+                    "按 {} 分组随机穿插 → [{out}]",
+                    groups
+                        .iter()
+                        .map(|g| format!("[{g}]"))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                )
+            }),
         ))
     }
 
@@ -4449,6 +4507,19 @@ pub fn validate_steps_with(
                     step_errors.push(format!("字段 [{c}] 不存在"));
                 }
             }
+            "shuffle" => {
+                for g in list_param(&p, "group_by") {
+                    if !cols.contains(&g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+                let out = defaulted(str_param(&p, "out"), "随机序号");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "assign_seats" => {
                 let room = {
                     let v = str_param(&p, "room_out");
@@ -5799,5 +5870,42 @@ mod tests {
         let messages: Vec<String> = result.steps.iter().flat_map(|s| s.errors.clone()).collect();
         assert!(messages.iter().any(|m| m.contains("税率")));
         assert!(messages.iter().any(|m| m.contains("同一字段")));
+    }
+
+    #[test]
+    fn shuffle_interleaves_groups_to_avoid_adjacent_same_school() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("学校", "text")],
+            &[
+                vec!["甲", "A校"],
+                vec!["乙", "A校"],
+                vec!["丙", "B校"],
+                vec!["丁", "B校"],
+                vec!["戊", "C校"],
+                vec!["己", "C校"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_shuffle",
+            json!([
+                { "id": "s1", "operator": "shuffle", "params": { "group_by": ["学校"] } },
+                { "id": "s2", "operator": "output", "params": { "name": "打散结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows.len(), 6);
+        // 前三行应分别来自三所学校（各组第 1 轮）
+        let first_three: Vec<&str> = page.rows[..3]
+            .iter()
+            .map(|r| r[1].as_str().unwrap())
+            .collect();
+        assert_eq!(first_three, vec!["A校", "B校", "C校"]);
+        // 随机序号为 1、1、1、2、2、2
+        let seqs: Vec<f64> = page.rows.iter().map(|r| r[2].as_f64().unwrap()).collect();
+        assert_eq!(seqs, vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
     }
 }

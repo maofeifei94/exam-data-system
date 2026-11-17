@@ -261,6 +261,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号格式校验 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `balance_check` | 按凭证号汇总借贷方，检查每张凭证是否平衡 |
+| `shuffle` | 随机打散行顺序；按学校/岗位分组后各组轮流穿插，避免同组考生连号相邻 |
 | `assign_seats` | 按顺序自动编排考场号与座位号，可设每考场人数和起始考场 |
 | `join_dataset` | 按关键字段关联另一个数据集（VLOOKUP），可选取字段、左/内连接与字段前缀 |
 | `append_dataset` | 纵向合并另一个数据集，按字段名对齐、缺失补空，可选去重 |
