@@ -182,7 +182,9 @@ pub fn configure(conn: &Connection) -> Result<()> {
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
          PRAGMA foreign_keys=ON;
-         PRAGMA temp_store=MEMORY;",
+         PRAGMA temp_store=MEMORY;
+         -- 64MB 页缓存：十万行级数据处理时减少磁盘回读
+         PRAGMA cache_size=-64000;",
     )?;
     register_functions(conn)?;
     Ok(())

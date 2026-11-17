@@ -78,15 +78,29 @@ pub fn urlencode(s: &str) -> String {
 }
 
 /// 解析颜色 `#RRGGBB` 或 `#RGB`，失败返回 None。
+///
+/// 直接按字节解析，避免为每个单元格/元素分配临时字符串。
 pub fn parse_hex_color(s: &str) -> Option<(f32, f32, f32)> {
+    fn hex(c: u8) -> Option<u8> {
+        (c as char).to_digit(16).map(|v| v as u8)
+    }
+    fn pair(a: u8, b: u8) -> Option<u8> {
+        Some(hex(a)? * 16 + hex(b)?)
+    }
     let t = s.trim().trim_start_matches('#');
-    let hex = match t.len() {
-        6 => t.to_string(),
-        3 => t.chars().flat_map(|c| [c, c]).collect(),
+    let bytes = t.as_bytes();
+    let (r, g, b) = match bytes.len() {
+        6 => (
+            pair(bytes[0], bytes[1])?,
+            pair(bytes[2], bytes[3])?,
+            pair(bytes[4], bytes[5])?,
+        ),
+        3 => (
+            hex(bytes[0])? * 17,
+            hex(bytes[1])? * 17,
+            hex(bytes[2])? * 17,
+        ),
         _ => return None,
     };
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
     Some((r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0))
 }

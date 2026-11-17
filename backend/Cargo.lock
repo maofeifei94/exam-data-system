@@ -311,6 +311,7 @@ dependencies = [
  "chrono",
  "csv",
  "encoding_rs",
+ "owned_ttf_parser",
  "printpdf",
  "qrcode",
  "rusqlite",

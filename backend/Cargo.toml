@@ -21,6 +21,8 @@ rusqlite = { version = "0.31", features = ["bundled", "functions", "serde_json"]
 calamine = { version = "0.24", features = ["dates"] }
 csv = "1"
 printpdf = { version = "0.7", features = ["embedded_images"] }
+# 与 printpdf 内置版本保持一致；用于自行编码字形 ID，绕开 printpdf 每次写文本都复制整份字体的问题
+owned_ttf_parser = "0.19.0"
 qrcode = { version = "0.14", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }

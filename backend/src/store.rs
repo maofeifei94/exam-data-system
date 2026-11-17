@@ -9,7 +9,6 @@
 use crate::db::{self, new_id, now, table_name};
 use crate::error::{AppError, AppResult};
 use crate::models::{ColumnSuggestion, Dataset, DatasetColumn, RowPage};
-use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
@@ -259,13 +258,15 @@ pub fn create_dataset_tx(conn: &Connection, input: NewDataset<'_>) -> AppResult<
         );
         let mut stmt = conn.prepare(&sql)?;
         for row in rows {
-            let vals: Vec<SqlValue> = (0..columns.len())
-                .map(|i| match row.get(i).and_then(|v| v.clone()) {
-                    Some(s) if !s.is_empty() => SqlValue::Text(s),
-                    _ => SqlValue::Null,
+            // 直接借用行内字符串，避免逐单元格 clone；空字符串按 NULL 写入。
+            let vals: Vec<Option<&str>> = (0..columns.len())
+                .map(|i| {
+                    row.get(i)
+                        .and_then(|v| v.as_deref())
+                        .filter(|s| !s.is_empty())
                 })
                 .collect();
-            stmt.execute(rusqlite::params_from_iter(vals.iter()))?;
+            stmt.execute(rusqlite::params_from_iter(vals))?;
         }
     }
 
@@ -321,11 +322,10 @@ pub fn create_dataset_from_select_tx(
         "INSERT INTO \"{tname}\" ({}) {select_sql}",
         dest_cols.join(", ")
     );
-    conn.execute(&sql, [])
-        .map_err(|e| AppError::bad_request(format!("流程结果写入失败: {e}")))?;
-    let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM \"{tname}\""), [], |r| {
-        r.get(0)
-    })?;
+    // `INSERT ... SELECT` 的影响行数即结果行数，避免再全表 COUNT(*)。
+    let n = conn
+        .execute(&sql, [])
+        .map_err(|e| AppError::bad_request(format!("流程结果写入失败: {e}")))? as i64;
 
     let ts = now();
     conn.execute(

@@ -13,9 +13,11 @@ use crate::models::{
     DatasetColumn, Margins, MatrixSetup, PageSetup, TableSetup, TemplateBody, TemplateElement,
 };
 use crate::util;
+use printpdf::lopdf::{content::Operation, Object, StringFormat};
 use printpdf::path::PaintMode;
 use printpdf::*;
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 const FONT_BYTES: &[u8] = include_bytes!("../../assets/NotoSansSC.ttf");
 const MM_PER_PT: f32 = 0.352778;
@@ -236,6 +238,46 @@ struct Origin {
     y_top: f32,
 }
 
+/// 内置中文字体只解析一次，供字形 ID 编码复用。
+fn glyph_face() -> &'static owned_ttf_parser::Face<'static> {
+    static FACE: OnceLock<owned_ttf_parser::Face<'static>> = OnceLock::new();
+    FACE.get_or_init(|| owned_ttf_parser::Face::parse(FONT_BYTES, 0).expect("内置中文字体解析失败"))
+}
+
+/// 写入一行文本。
+///
+/// printpdf 的 `use_text` 每次都会 `clone` 整份外部字体（约 2.4MB），
+/// 十万级单元格时会复制数百 GB 数据。这里自行编码字形 ID 并写入 `Tj`，
+/// 输出与 `use_text` 完全一致，但不再复制字体。
+fn use_text_fast(
+    layer: &PdfLayerReference,
+    font: &IndirectFontRef,
+    text: &str,
+    size_pt: f32,
+    x_mm: f32,
+    y_mm: f32,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let face = glyph_face();
+    let mut bytes: Vec<u8> = Vec::with_capacity(text.len() * 2);
+    for ch in text.chars() {
+        if let Some(id) = face.glyph_index(ch) {
+            bytes.push((id.0 >> 8) as u8);
+            bytes.push((id.0 & 0xff) as u8);
+        }
+    }
+    layer.begin_text_section();
+    layer.set_font(font, size_pt);
+    layer.set_text_cursor(Mm(x_mm), Mm(y_mm));
+    layer.add_operation(Operation::new(
+        "Tj",
+        vec![Object::String(bytes, StringFormat::Hexadecimal)],
+    ));
+    layer.end_text_section();
+}
+
 fn draw_text(
     layer: &PdfLayerReference,
     font: &IndirectFontRef,
@@ -267,14 +309,15 @@ fn draw_text(
             Pt(cy * PT_PER_MM),
             el.rotate,
         ));
-        layer.use_text(text, el.font_size, Mm(local_x), Mm(-fs_mm * 0.30), font);
+        use_text_fast(layer, font, text, el.font_size, local_x, -fs_mm * 0.30);
         if el.bold {
-            layer.use_text(
+            use_text_fast(
+                layer,
+                font,
                 text,
                 el.font_size,
-                Mm(local_x + 0.18),
-                Mm(-fs_mm * 0.30),
-                font,
+                local_x + 0.18,
+                -fs_mm * 0.30,
             );
         }
         layer.restore_graphics_state();
@@ -289,10 +332,10 @@ fn draw_text(
             _ => x0,
         };
         let baseline = page_h - (top + fs_mm * 0.80);
-        layer.use_text(line, el.font_size, Mm(x), Mm(baseline), font);
+        use_text_fast(layer, font, line, el.font_size, x, baseline);
         if el.bold {
             // 没有独立粗体字体，用微小偏移重绘模拟加粗
-            layer.use_text(line, el.font_size, Mm(x + 0.18), Mm(baseline), font);
+            use_text_fast(layer, font, line, el.font_size, x + 0.18, baseline);
         }
     };
 
@@ -628,6 +671,13 @@ struct Painter<'a> {
     photo_dir: Option<&'a str>,
 }
 
+/// 明细表当前页的数据：全部行 + 本页行下标 + 字段名到列下标的映射。
+struct TableData<'a> {
+    rows: &'a [Vec<String>],
+    indices: &'a [usize],
+    index: &'a HashMap<String, usize>,
+}
+
 impl<'a> Painter<'a> {
     fn matrix_frame(&self, mx: &MatrixSetup, origin: &Origin, grid: &Grid) {
         let cell_w = grid.w / grid.cols as f32;
@@ -682,10 +732,14 @@ impl<'a> Painter<'a> {
         setup: &TableSetup,
         el: &TemplateElement,
         widths: &[f32],
-        rows: &[Vec<String>],
-        index: &HashMap<String, usize>,
+        data: TableData<'_>,
         origin: &Origin,
     ) {
+        let TableData {
+            rows,
+            indices: row_indices,
+            index,
+        } = data;
         let row_h = setup.row_height_mm.max(3.0);
         let header_h = if setup.show_header {
             setup.header_height_mm.max(3.0)
@@ -700,7 +754,10 @@ impl<'a> Painter<'a> {
         cell.rotate = 0.0;
 
         let mut y = origin.y_top;
+        let table_w: f32 = widths.iter().sum();
         if setup.show_header {
+            // 表头底色整行合并成一次填充，避免逐单元格重复绘制。
+            self.table_fill((origin.x, y, table_w, header_h), &setup.header_fill);
             let mut x = origin.x;
             for (i, col) in setup.columns.iter().enumerate() {
                 let w = widths.get(i).copied().unwrap_or(0.0);
@@ -709,43 +766,99 @@ impl<'a> Painter<'a> {
                 } else {
                     col.label.trim()
                 };
-                self.table_fill((x, y, w, header_h), &setup.header_fill);
                 cell.bold = true;
-                self.table_cell(
-                    label,
-                    &mut cell,
-                    &col.align,
-                    (x, y, w, header_h),
-                    setup.show_grid,
-                );
+                self.table_cell(label, &mut cell, &col.align, (x, y, w, header_h), false);
                 x += w;
             }
             y += header_h;
         }
-        for (ri, row) in rows.iter().enumerate() {
-            let banded = setup.row_band && ri % 2 == 1;
+        if setup.row_band {
+            // 隔行底色按整行一次填充，减少 1 倍列数的矩形绘制。
+            for ri in 1..row_indices.len() {
+                if ri % 2 == 1 {
+                    self.table_fill((origin.x, y + ri as f32 * row_h, table_w, row_h), "#F7F7F7");
+                }
+            }
+        }
+        for &row_no in row_indices {
             let mut x = origin.x;
+            let row = &rows[row_no];
             for (i, col) in setup.columns.iter().enumerate() {
                 let w = widths.get(i).copied().unwrap_or(0.0);
-                if banded {
-                    self.table_fill((x, y, w, row_h), "#F7F7F7");
-                }
                 let text = index
                     .get(col.field.trim())
                     .and_then(|idx| row.get(*idx))
                     .map(|s| s.as_str())
                     .unwrap_or("");
                 cell.bold = el.bold;
-                self.table_cell(
-                    text,
-                    &mut cell,
-                    &col.align,
-                    (x, y, w, row_h),
-                    setup.show_grid,
-                );
+                self.table_cell(text, &mut cell, &col.align, (x, y, w, row_h), false);
                 x += w;
             }
             y += row_h;
+        }
+        // 网格线按页整体绘制：外框 + 内部横竖线，替代每个单元格一个矩形。
+        if setup.show_grid {
+            self.table_grid(
+                (origin.x, origin.y_top, table_w),
+                header_h,
+                row_h,
+                row_indices.len(),
+                widths,
+            );
+        }
+    }
+
+    /// 明细表网格：先画外框，再画内部横竖分隔线。
+    ///
+    /// `geometry` 为（左边界, 顶部, 表格总宽），坐标单位毫米。
+    fn table_grid(
+        &self,
+        geometry: (f32, f32, f32),
+        header_h: f32,
+        row_h: f32,
+        nrows: usize,
+        widths: &[f32],
+    ) {
+        let (x, y_top, w) = geometry;
+        let h = header_h + row_h * nrows as f32;
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let ury = self.page_h - y_top;
+        let lly = ury - h;
+        self.layer
+            .set_outline_color(Color::Rgb(Rgb::new(0.55, 0.55, 0.55, None)));
+        self.layer.set_outline_thickness(0.25);
+        self.layer
+            .add_rect(Rect::new(Mm(x), Mm(lly), Mm(x + w), Mm(ury)).with_mode(PaintMode::Stroke));
+        // 表头与数据之间、数据行之间的横线。
+        for i in 0..=nrows {
+            let y = y_top + header_h + row_h * i as f32;
+            if y - y_top <= 0.01 || y_top + h - y <= 0.01 {
+                continue;
+            }
+            self.layer.add_line(Line {
+                points: vec![
+                    (Point::new(Mm(x), Mm(self.page_h - y)), false),
+                    (Point::new(Mm(x + w), Mm(self.page_h - y)), false),
+                ],
+                is_closed: false,
+            });
+        }
+        // 列之间的竖线。
+        let mut cx = x;
+        for cw in widths.iter().take(widths.len().saturating_sub(1)) {
+            cx += *cw;
+            if cx - x <= 0.01 || x + w - cx <= 0.01 {
+                continue;
+            }
+            self.layer.add_line(Line {
+                points: vec![
+                    (Point::new(Mm(cx), Mm(ury)), false),
+                    (Point::new(Mm(cx), Mm(lly)), false),
+                ],
+                is_closed: false,
+            });
         }
     }
 
@@ -1126,8 +1239,7 @@ impl<'a> Painter<'a> {
         self.layer
             .set_fill_color(color_of(color).unwrap_or(Color::Rgb(Rgb::new(0.42, 0.45, 0.5, None))));
         let baseline = self.page_h - (y_top + size * MM_PER_PT * 0.8);
-        self.layer
-            .use_text(text, size, Mm(x), Mm(baseline), self.font);
+        use_text_fast(self.layer, self.font, text, size, x, baseline);
     }
 
     /// 斜向水印：浅灰、居中、旋转 30 度，画在正文之上但不遮挡阅读。
@@ -1147,12 +1259,13 @@ impl<'a> Painter<'a> {
         self.layer.set_fill_color(
             color_of(&body.watermark_color).unwrap_or(Color::Rgb(Rgb::new(0.85, 0.85, 0.85, None))),
         );
-        self.layer.use_text(
+        use_text_fast(
+            self.layer,
+            self.font,
             text,
             size,
-            Mm(-tw / 2.0),
-            Mm(-size * MM_PER_PT / 2.0),
-            self.font,
+            -tw / 2.0,
+            -size * MM_PER_PT / 2.0,
         );
         self.layer.restore_graphics_state();
     }
@@ -1180,12 +1293,13 @@ impl<'a> Painter<'a> {
                     Pt(cy * PT_PER_MM),
                     body.watermark_angle,
                 ));
-                self.layer.use_text(
+                use_text_fast(
+                    self.layer,
+                    self.font,
                     text,
                     size,
-                    Mm(-tw / 2.0),
-                    Mm(-size * MM_PER_PT / 2.0),
-                    self.font,
+                    -tw / 2.0,
+                    -size * MM_PER_PT / 2.0,
                 );
                 self.layer.restore_graphics_state();
             }
@@ -1679,7 +1793,6 @@ pub fn render_pdf_data(
                 photo_dir: photo_dir.as_deref(),
             };
             let (indices, group) = &page_groups[(page - 1) as usize];
-            let page_rows: Vec<Vec<String>> = indices.iter().map(|i| rows[*i].clone()).collect();
             // 页面级元素只认识本页的分组值（如考场号 / 学校）。
             let mut page_row: Vec<String> = vec![String::new(); col_meta.len()];
             if let Some(pi) = page_idx {
@@ -1709,7 +1822,17 @@ pub fn render_pdf_data(
                 x: content_x + table_el.x_mm,
                 y_top: content_y_top + table_el.y_mm,
             };
-            painter.table(&setup, table_el, &widths, &page_rows, &index, &table_origin);
+            painter.table(
+                &setup,
+                table_el,
+                &widths,
+                TableData {
+                    rows,
+                    indices,
+                    index: &index,
+                },
+                &table_origin,
+            );
             if page == pages {
                 if let Some(summary) = &summary {
                     // 汇总行固定在数据区底部，不随最后一页行数浮动。
@@ -2413,7 +2536,7 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 100_000, "PDF 体积异常: {} bytes", pdf.len());
-        assert!(elapsed.as_secs() < 180, "2 万行渲染耗时过长: {elapsed:?}");
+        assert!(elapsed.as_secs() < 60, "2 万行渲染耗时过长: {elapsed:?}");
         println!(
             "2 万行明细表 PDF 体积: {} MB, 耗时: {:?}",
             pdf.len() / 1024 / 1024,
