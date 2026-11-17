@@ -2977,6 +2977,19 @@ function ElementEditor({
             </select>
             <span className="field-hint">按住 Ctrl / Cmd 可多选，按选择顺序查找文件</span>
           </div>
+          <label className="field">
+            <span className="field-label">填充方式</span>
+            <select
+              value={element.photo_fit ?? 'stretch'}
+              onChange={(event) =>
+                onChange({ photo_fit: event.target.value as 'stretch' | 'contain' })
+              }
+            >
+              <option value="stretch">拉伸铺满（可能变形）</option>
+              <option value="contain">等比缩放适应（不变形，居中留白）</option>
+            </select>
+            <span className="field-hint">证件照建议使用「等比缩放适应」，避免人像被拉伸</span>
+          </label>
         </div>
       ) : null}
 

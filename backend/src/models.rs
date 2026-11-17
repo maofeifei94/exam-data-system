@@ -658,6 +658,13 @@ pub struct TemplateElement {
     /// type = "image" 时：按顺序尝试的候选后缀（不带点，如 jpg、png）
     #[serde(default)]
     pub photo_exts: Vec<String>,
+    /// type = "image" 时：填充方式，stretch（拉伸铺满）或 contain（等比缩放适应）
+    #[serde(default = "default_photo_fit")]
+    pub photo_fit: String,
+}
+
+fn default_photo_fit() -> String {
+    "stretch".to_string()
 }
 
 impl TemplateElement {
@@ -688,6 +695,7 @@ impl TemplateElement {
             photo_dir: String::new(),
             photo_name: String::new(),
             photo_exts: Vec::new(),
+            photo_fit: default_photo_fit(),
         }
     }
 }

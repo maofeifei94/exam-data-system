@@ -392,6 +392,8 @@ export interface TemplateElement {
    * 例如 ['jpg', 'png'] 会依次尝试 `名称.jpg`、`名称.png`。
    */
   photo_exts?: string[];
+  /** type=image：填充方式，stretch 拉伸铺满 / contain 等比缩放适应 */
+  photo_fit?: 'stretch' | 'contain';
 }
 
 export interface PdfTemplate {

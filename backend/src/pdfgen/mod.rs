@@ -374,6 +374,27 @@ fn draw_image(
     }
 }
 
+/// 计算图片在元素矩形内的缩放比例与居中偏移（mm）。
+///
+/// - `stretch`：横向、纵向分别铺满，可能变形；
+/// - `contain`：等比缩放至完整放入元素，并居中留白，人像照不会拉伸变形。
+fn photo_layout(el: &TemplateElement, img_w: f32, img_h: f32) -> (f32, f32, f32, f32) {
+    let (scale_x, scale_y) = if el.photo_fit == "contain" {
+        let uniform = ((el.w_mm * PT_PER_MM) / img_w).min((el.h_mm * PT_PER_MM) / img_h);
+        (uniform, uniform)
+    } else {
+        ((el.w_mm * PT_PER_MM) / img_w, (el.h_mm * PT_PER_MM) / img_h)
+    };
+    let draw_w = img_w * scale_x / PT_PER_MM;
+    let draw_h = img_h * scale_y / PT_PER_MM;
+    (
+        scale_x,
+        scale_y,
+        (el.w_mm - draw_w) / 2.0,
+        (el.h_mm - draw_h) / 2.0,
+    )
+}
+
 /// 把内存中的图片按元素矩形铺到 PDF 层上；尺寸非法时返回 false。
 fn place_image(
     layer: &PdfLayerReference,
@@ -386,14 +407,13 @@ fn place_image(
     if pw <= 0.0 || ph <= 0.0 {
         return false;
     }
+    let (scale_x, scale_y, dx, dy) = photo_layout(el, pw, ph);
     let xobj = ImageXObject::from_dynamic_image(img);
-    let scale_x = (el.w_mm * PT_PER_MM) / pw;
-    let scale_y = (el.h_mm * PT_PER_MM) / ph;
     Image::from(xobj).add_to_layer(
         layer.clone(),
         ImageTransform {
-            translate_x: Some(Mm(llx)),
-            translate_y: Some(Mm(lly)),
+            translate_x: Some(Mm(llx + dx)),
+            translate_y: Some(Mm(lly + dy)),
             rotate: None,
             scale_x: Some(scale_x),
             scale_y: Some(scale_y),
@@ -1724,6 +1744,23 @@ mod tests {
             resolve_photo("报名照.png", dir.to_str(), &["jpg".to_string()]).expect("exact name");
         assert!(found.ends_with("报名照.png"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contain_photo_keeps_aspect_ratio_and_centers() {
+        let mut el = TemplateElement::empty("img", "image");
+        el.w_mm = 30.0;
+        el.h_mm = 40.0;
+        el.photo_fit = "contain".into();
+        let (sx, sy, dx, dy) = photo_layout(&el, 100.0, 100.0);
+        assert!((sx - sy).abs() < 1e-6, "等比缩放");
+        assert!(dx.abs() < 1e-4, "水平居中");
+        assert!((dy - 5.0).abs() < 1e-4, "垂直居中留白");
+
+        el.photo_fit = "stretch".into();
+        let (sx2, sy2, dx2, dy2) = photo_layout(&el, 100.0, 100.0);
+        assert!((sx2 - sy2).abs() > 1e-3, "拉伸时横纵比例不同");
+        assert!(dx2.abs() < 1e-4 && dy2.abs() < 1e-4);
     }
 
     #[test]

@@ -123,6 +123,7 @@ const BASE_ELEMENT: Omit<TemplateElement, 'id' | 'type' | 'x_mm' | 'y_mm' | 'w_m
   photo_dir: '',
   photo_name: '',
   photo_exts: [],
+  photo_fit: 'stretch',
 };
 
 /** 照片元素的默认候选后缀，按顺序查找。 */

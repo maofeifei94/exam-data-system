@@ -133,7 +133,7 @@ TemplateElement
   ├─ font_size / bold / align / color / fill / border / border_radius_mm
   ├─ children: Vec<TemplateElement>   子元素（坐标为父元素相对坐标）
   ├─ matrix: MatrixSetup?             type=matrix 时的网格配置
-  └─ photo_dir / photo_name / photo_exts   type=image 的照片解析三要素
+  └─ photo_dir / photo_name / photo_exts / photo_fit   type=image 的照片解析与填充
 ```
 
 坐标系约定（关键）：**根元素相对页面内容区**（页面去掉页边距后的区域）左上角；
@@ -432,7 +432,8 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   不绘制文字 / 二维码 / 条形码 / 照片框，适合名册中「补录信息」等可选栏目。
 
 新增照片元素的三个配置：`photo_dir`（目录，可由系统对话框选择）、
-`photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）。
+`photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）、
+`photo_fit`（填充方式：`stretch` 拉伸铺满 / `contain` 等比缩放并居中，证件照推荐后者）。
 
 ### 4.10 项目字段复制与作用域（`routes/project_fields.rs::copy_fields`）
 
