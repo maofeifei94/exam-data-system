@@ -286,6 +286,8 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `score_summary` | 成绩统计汇总：人数、平均分、最高/最低分、及格率、优秀率、标准差 |
 | `score_segment` | 分数段统计，可生成一分一段表并输出累计人数 |
 | `pivot` | 透视表：按某列取值展开成多列并汇总（科目成绩、月度收支） |
+| `unpivot` | 逆透视：把多列指标展开为「指标 / 值」两列，宽表转长表 |
+| `fill_down` | 向下填充：用上方最近的非空值填充空白，修复合并单元格导出的空值 |
 
 自定义 SQL 函数在 `db::register_functions` 中随每条连接注册（`engine::Compiler::new`
 也会确保注册），因此表达式与算子共用：

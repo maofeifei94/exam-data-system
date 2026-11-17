@@ -630,6 +630,39 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "unpivot",
+            "逆透视（宽转长）",
+            "分析",
+            "把多列指标展开为「指标 / 值」两列，适合月度费用、多科成绩等宽表转长表。",
+            vec![
+                with_help(
+                    p("keep", "保留字段（可空）", "columns", false, json!([])),
+                    "原样带入结果的维度字段，如部门、姓名",
+                ),
+                p("columns", "展开字段", "columns", true, json!([])),
+                p("name_out", "指标字段名", "text", false, json!("指标")),
+                p("value_out", "数值字段名", "text", false, json!("值")),
+                p("drop_null", "跳过空值", "bool", false, json!(false)),
+            ],
+        ),
+        def(
+            "fill_down",
+            "向下填充",
+            "字段",
+            "用上方最近的非空值填充空白单元格，修复合并单元格导出后产生的空值。",
+            vec![
+                p("column", "填充字段", "column", true, json!("")),
+                with_help(
+                    p("group_by", "分组字段（可空）", "columns", false, json!([])),
+                    "如按班级、部门分别向下填充",
+                ),
+                with_help(
+                    p("order_by", "排序字段（可空）", "column", false, json!("")),
+                    "按该字段确定上下顺序，留空按原始行序",
+                ),
+            ],
+        ),
+        def(
             "value_map",
             "值映射替换",
             "字段",

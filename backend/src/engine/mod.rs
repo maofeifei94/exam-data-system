@@ -421,6 +421,8 @@ impl<'a> Compiler<'a> {
             "split_column" => self.op_split_column(step_index, step, &params),
             "join_dataset" => self.op_join_dataset(step_index, step, &params),
             "append_dataset" => self.op_append_dataset(step_index, step, &params),
+            "unpivot" => self.op_unpivot(step_index, step, &params),
+            "fill_down" => self.op_fill_down(step_index, step, &params),
             "value_map" => self.op_value_map(step_index, step, &params),
             "text_clean" => self.op_text_clean(step_index, step, &params),
             "sequence" => self.op_sequence(step_index, step, &params),
@@ -3192,6 +3194,146 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_unpivot(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let keep = list_param(p, "keep");
+        let cols = list_param(p, "columns");
+        if cols.is_empty() {
+            return Err("请至少选择一个展开字段".to_string());
+        }
+        for c in keep.iter().chain(cols.iter()) {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let name_out = defaulted(str_param(p, "name_out"), "指标");
+        let value_out = defaulted(str_param(p, "value_out"), "值");
+        if name_out == value_out {
+            return Err("指标字段与数值字段不能重名".to_string());
+        }
+        if keep.iter().any(|k| k == &name_out || k == &value_out) {
+            return Err("指标/数值字段不能与保留字段重名".to_string());
+        }
+        let drop_null = bool_param(p, "drop_null", false);
+        let mut branches: Vec<String> = Vec::new();
+        for c in &cols {
+            let mut items: Vec<String> = keep.iter().map(|k| q(k)).collect();
+            items.push(format!("{} AS {}", sql_literal(c), q(&name_out)));
+            items.push(format!("{} AS {}", q(c), q(&value_out)));
+            let mut body = format!("SELECT {} FROM {}", items.join(", "), self.cur);
+            if drop_null {
+                body.push_str(&format!(
+                    " WHERE {} IS NOT NULL AND TRIM(CAST({} AS TEXT)) <> ''",
+                    q(c),
+                    q(c)
+                ));
+            }
+            branches.push(body);
+        }
+        let cte = self.push_cte(branches.join(" UNION ALL "));
+        let value_dtype = if cols.iter().all(|c| {
+            self.columns
+                .iter()
+                .find(|col| &col.name == c)
+                .map(|col| col.dtype == "number")
+                .unwrap_or(false)
+        }) {
+            "number"
+        } else {
+            "text"
+        };
+        let mut next: Vec<DatasetColumn> = keep
+            .iter()
+            .filter_map(|k| self.columns.iter().find(|c| &c.name == k).cloned())
+            .collect();
+        next.push(DatasetColumn {
+            name: name_out.clone(),
+            dtype: "text".to_string(),
+        });
+        next.push(DatasetColumn {
+            name: value_out.clone(),
+            dtype: value_dtype.to_string(),
+        });
+        self.columns = next;
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "逆透视 {} 列 → [{name_out}] / [{value_out}]",
+                cols.len()
+            )),
+        ))
+    }
+
+    fn op_fill_down(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let groups = list_param(p, "group_by");
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let order_by = str_param(p, "order_by");
+        if !order_by.is_empty() && !self.has_column(&order_by) {
+            return Err(format!("排序字段 [{order_by}] 不存在"));
+        }
+        let partition = if groups.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "PARTITION BY {} ",
+                groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let order = if order_by.is_empty() {
+            "ORDER BY (SELECT NULL)".to_string()
+        } else {
+            format!("ORDER BY {}", q(&order_by))
+        };
+        let v = q(&col);
+        let group_flag = format!(
+            "SUM(CASE WHEN {v} IS NOT NULL AND TRIM(CAST({v} AS TEXT)) <> '' THEN 1 ELSE 0 END) \
+             OVER ({partition}{order} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS \"__fill_grp\""
+        );
+        let source = format!("(SELECT *, {group_flag} FROM {}) t", self.cur);
+        let mut max_partition = String::new();
+        if !groups.is_empty() {
+            max_partition.push_str(&format!(
+                "{}, ",
+                groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        max_partition.push_str("\"__fill_grp\"");
+        let items: Vec<String> = self
+            .columns
+            .iter()
+            .map(|c| {
+                if c.name == col {
+                    format!(
+                        "MAX({v}) OVER (PARTITION BY {max_partition}) AS {}",
+                        q(&c.name)
+                    )
+                } else {
+                    q(&c.name)
+                }
+            })
+            .collect();
+        let cte = self.push_cte(format!("SELECT {} FROM {source}", items.join(", ")));
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("向下填充 [{col}]")),
+        ))
+    }
+
     fn op_value_map(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
         let col = str_param(p, "column");
         if !self.has_column(&col) {
@@ -5396,6 +5538,45 @@ pub fn validate_steps_with(
                     step_errors.push("拆分段数应在 1~20 之间".into());
                 }
             }
+            "unpivot" => {
+                let keep = list_param(&p, "keep");
+                let cols_to_melt = list_param(&p, "columns");
+                if cols_to_melt.is_empty() {
+                    step_errors.push("请至少选择一个展开字段".into());
+                }
+                for c in keep.iter().chain(cols_to_melt.iter()) {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                let name_out = defaulted(str_param(&p, "name_out"), "指标");
+                let value_out = defaulted(str_param(&p, "value_out"), "值");
+                if name_out == value_out {
+                    step_errors.push("指标字段与数值字段不能重名".into());
+                }
+                if keep.iter().any(|k| k == &name_out || k == &value_out) {
+                    step_errors.push("指标/数值字段不能与保留字段重名".into());
+                }
+                let mut next: Vec<String> = keep;
+                next.push(name_out);
+                next.push(value_out);
+                cols = next;
+            }
+            "fill_down" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                for g in list_param(&p, "group_by") {
+                    if !cols.contains(&g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+                let order_by = str_param(&p, "order_by");
+                if !order_by.is_empty() && !cols.contains(&order_by) {
+                    step_errors.push(format!("排序字段 [{order_by}] 不存在"));
+                }
+            }
             "value_map" | "text_clean" | "aging_bucket" => {
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
@@ -6814,6 +6995,69 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn unpivot_melts_wide_columns_into_rows() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("语文", "number"), ("数学", "number")],
+            &[vec!["张三", "80", "90"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_unpivot",
+            json!([
+                { "id": "s1", "operator": "unpivot",
+                  "params": { "keep": ["姓名"], "columns": ["语文", "数学"] } },
+                { "id": "s2", "operator": "output", "params": { "name": "长表" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows.len(), 2);
+        let value_of = |subject: &str| {
+            page.rows
+                .iter()
+                .find(|r| r[1] == json!(subject))
+                .map(|r| r[2].clone())
+                .expect("subject row")
+        };
+        assert_eq!(value_of("语文"), json!(80.0));
+        assert_eq!(value_of("数学"), json!(90.0));
+        assert!(page.rows.iter().all(|r| r[0] == json!("张三")));
+    }
+
+    #[test]
+    fn fill_down_carries_last_value_within_groups() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("日期", "text"), ("部门", "text"), ("金额", "text")],
+            &[
+                vec!["1", "A", "100"],
+                vec!["2", "", ""],
+                vec!["3", "", "50"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_fill_down",
+            json!([
+                { "id": "s1", "operator": "fill_down",
+                  "params": { "column": "部门", "order_by": "日期" } },
+                { "id": "s2", "operator": "fill_down",
+                  "params": { "column": "金额", "order_by": "日期" } },
+                { "id": "s3", "operator": "output", "params": { "name": "填充结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let depts: Vec<&str> = page.rows.iter().map(|r| r[1].as_str().unwrap()).collect();
+        assert_eq!(depts, vec!["A", "A", "A"]);
+        let amounts: Vec<&str> = page.rows.iter().map(|r| r[2].as_str().unwrap()).collect();
+        assert_eq!(amounts, vec!["100", "100", "50"]);
     }
 
     #[test]
