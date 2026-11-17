@@ -652,6 +652,16 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "tax_rate_check",
+            "税率合规校验",
+            "校验",
+            "检查发票/报销税率是否为常见法定税率（0、1%、3%、5%、6%、9%、13%），支持 6% 与 0.06 两种写法。",
+            vec![
+                p("column", "税率字段", "column", true, json!("")),
+                with_options(p("on_error", "发现异常税率时", "enum", false, json!("warn")), &["fail", "warn"]),
+            ],
+        ),
+        def(
             "zero_score_check",
             "单科零分校验",
             "校验",

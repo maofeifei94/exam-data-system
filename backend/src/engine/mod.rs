@@ -435,6 +435,7 @@ impl<'a> Compiler<'a> {
             "column_compare" => self.op_column_compare(step_index, step, &params),
             "format_check" => self.op_format_check(step_index, step, &params),
             "invoice_validate" => self.op_invoice_validate(step_index, step, &params),
+            "tax_rate_check" => self.op_tax_rate_check(step_index, step, &params),
             "zero_score_check" => self.op_zero_score_check(step_index, step, &params),
             "score_balance_check" => self.op_score_balance_check(step_index, step, &params),
             "recheck_diff" => self.op_recheck_diff(step_index, step, &params),
@@ -3415,6 +3416,57 @@ impl<'a> Compiler<'a> {
                 "发票代码/号码格式全部合法".to_string()
             } else {
                 format!("有 {bad} 行发票格式不合法，已按警告继续")
+            }),
+        ))
+    }
+
+    /// 税率合规校验：仅允许常见法定税率。
+    fn op_tax_rate_check(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let f = q(&col);
+        // 兼容 6%、0.06、6 三种写法：大于 1 视为百分数。
+        let rate = format!(
+            "CASE WHEN CAST({f} AS REAL) > 1 THEN CAST({f} AS REAL) / 100.0 \
+             ELSE CAST({f} AS REAL) END"
+        );
+        let allowed = [0.0, 0.01, 0.03, 0.05, 0.06, 0.09, 0.13];
+        let valid = allowed
+            .iter()
+            .map(|r| format!("ABS({rate} - {r}) < 0.0005"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM {} WHERE TRIM(COALESCE(CAST({f} AS TEXT), '')) <> '' \
+             AND NOT ({valid})",
+            self.cur
+        ));
+        let bad: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("税率校验失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") == "fail" {
+            return Err(format!(
+                "税率合规校验未通过：{bad} 行税率不在 0/1%/3%/5%/6%/9%/13% 范围内"
+            ));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            None,
+            Some(if bad == 0 {
+                "税率全部合法".to_string()
+            } else {
+                format!("{bad} 行税率异常，已按警告继续")
             }),
         ))
     }
@@ -6972,6 +7024,12 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "tax_rate_check" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+            }
             "zero_score_check" => {
                 let list = list_param(&p, "columns");
                 if list.is_empty() {
@@ -9228,6 +9286,38 @@ mod tests {
                      "params": { "code_column": "发票代码", "number_column": "发票号码", "on_error": "warn" } }]),
         );
         assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn tax_rate_check_accepts_percent_and_decimal_forms() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("发票号", "text"), ("税率", "text")],
+            &[
+                vec!["A", "6%"],
+                vec!["B", "0.13"],
+                vec!["C", "6"],
+                vec!["D", "5"],
+                vec!["E", ""],
+                vec!["F", "7"],
+            ],
+        );
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_tax_warn",
+            json!([{ "id": "s1", "operator": "tax_rate_check",
+                     "params": { "column": "税率", "on_error": "warn" } }]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_tax_fail",
+            json!([{ "id": "s1", "operator": "tax_rate_check",
+                     "params": { "column": "税率", "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
     }
 
     #[test]
