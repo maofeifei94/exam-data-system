@@ -258,6 +258,10 @@ pub fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
         let value: Option<String> = ctx.get(0)?;
         Ok(value.map(|s| is_bank_card(&s) as i64).unwrap_or(0))
     })?;
+    conn.create_scalar_function("num_suffix", 1, flags, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        Ok(text.as_deref().and_then(num_suffix))
+    })?;
     conn.create_scalar_function("aging_bucket", 3, flags, |ctx| {
         let value: Option<String> = ctx.get(0)?;
         let mode: Option<String> = ctx.get(1)?;
@@ -288,6 +292,24 @@ pub fn split_part(text: &str, delim: &str, index: i64) -> Option<String> {
     text.split(delim)
         .nth((index - 1) as usize)
         .map(|s| s.to_string())
+}
+
+/// 提取文本末尾的连续数字，例如 `记-001` → 1、`20260012` → 20260012。
+/// 没有数字或数值过大无法解析时返回 None。
+pub fn num_suffix(text: &str) -> Option<i64> {
+    let digits: String = text
+        .trim()
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// 全角 ASCII（！到～）与全角空格转半角，其余字符原样保留。

@@ -502,6 +502,27 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "voucher_check",
+            "凭证号连续性校验",
+            "校验",
+            "检查凭证号是否重复或断号，支持按期间/账套分组；自动识别「记-001」这类带前缀的编号。",
+            vec![
+                p("column", "凭证号字段", "column", true, json!("")),
+                with_help(
+                    p("group_by", "分组字段（可空）", "columns", false, json!([])),
+                    "如按期间、账套分别检查连续性",
+                ),
+                with_help(
+                    p("check_gap", "检查断号", "bool", false, json!(true)),
+                    "关闭后只检查重复凭证号",
+                ),
+                with_options(
+                    p("on_error", "发现问题时", "enum", false, json!("fail")),
+                    &["fail", "warn"],
+                ),
+            ],
+        ),
+        def(
             "sum_check",
             "合计一致性校验",
             "校验",
@@ -630,6 +651,29 @@ pub fn catalog() -> Vec<OperatorDef> {
                 p("start", "起始序号", "number", false, json!(1)),
                 with_help(p("order_by", "排序依据（可空）", "column", false, json!("")), "按该字段排序后编号"),
                 with_help(p("partition_by", "分组字段（可空）", "columns", false, json!([])), "每个分组内单独编号"),
+            ],
+        ),
+        def(
+            "exam_number",
+            "准考证号生成",
+            "计算",
+            "按前缀、起始序号和位宽批量生成准考证号，可按考点/考场分组重新编号。",
+            vec![
+                with_help(
+                    p("prefix", "号码前缀（可空）", "text", false, json!("")),
+                    "如 ZK、2026，留空只生成数字",
+                ),
+                p("start", "起始序号", "number", false, json!(1)),
+                with_help(
+                    p("width", "数字位宽", "number", false, json!(6)),
+                    "不足位宽左侧补 0，如 6 位生成 000001",
+                ),
+                with_help(
+                    p("group_by", "分组字段（可空）", "columns", false, json!([])),
+                    "选择考点/考场后，各组分别从起始序号编号",
+                ),
+                p("order_by", "编号顺序字段（可空）", "column", false, json!("")),
+                p("out", "输出的号码字段名", "text", false, json!("准考证号")),
             ],
         ),
         def(

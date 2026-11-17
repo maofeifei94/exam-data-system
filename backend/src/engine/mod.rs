@@ -410,6 +410,7 @@ impl<'a> Compiler<'a> {
             "shuffle" => self.op_shuffle(step_index, step, &params),
             "assign_seats" => self.op_assign_seats(step_index, step, &params),
             "sum_check" => self.op_sum_check(step_index, step, &params),
+            "voucher_check" => self.op_voucher_check(step_index, step, &params),
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
             "join_dataset" => self.op_join_dataset(step_index, step, &params),
@@ -417,6 +418,7 @@ impl<'a> Compiler<'a> {
             "value_map" => self.op_value_map(step_index, step, &params),
             "text_clean" => self.op_text_clean(step_index, step, &params),
             "sequence" => self.op_sequence(step_index, step, &params),
+            "exam_number" => self.op_exam_number(step_index, step, &params),
             "multi_column_stat" => self.op_multi_column_stat(step_index, step, &params),
             "cumulative" => self.op_cumulative(step_index, step, &params),
             "window_compare" => self.op_window_compare(step_index, step, &params),
@@ -2421,6 +2423,85 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_voucher_check(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let groups = list_param(p, "group_by");
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let group_cols = groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ");
+        let group_prefix = if groups.is_empty() {
+            String::new()
+        } else {
+            format!("{group_cols}, ")
+        };
+        let group_by = if groups.is_empty() {
+            String::new()
+        } else {
+            format!(" GROUP BY {group_cols}")
+        };
+        let v = q(&col);
+        let dup_sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM {} WHERE TRIM(COALESCE({v}, '')) <> '' GROUP BY {group_prefix}{v} HAVING COUNT(*) > 1)",
+            self.cur
+        ));
+        let duplicates: i64 = self
+            .conn
+            .query_row(&dup_sql, [], |r| r.get(0))
+            .map_err(|e| format!("凭证号重复检查失败: {e}"))?;
+
+        let check_gap = bool_param(p, "check_gap", true);
+        let gaps = if check_gap {
+            let gap_sql = self.with_ctes(&format!(
+                "SELECT COUNT(*) FROM (SELECT {group_prefix}\
+                   COUNT(DISTINCT num_suffix({v})) AS c, \
+                   MIN(num_suffix({v})) AS lo, MAX(num_suffix({v})) AS hi \
+                 FROM {} WHERE num_suffix({v}) IS NOT NULL{group_by} \
+                 HAVING MAX(num_suffix({v})) - MIN(num_suffix({v})) + 1 <> COUNT(DISTINCT num_suffix({v})))",
+                self.cur
+            ));
+            self.conn
+                .query_row(&gap_sql, [], |r| r.get(0))
+                .map_err(|e| format!("凭证号断号检查失败: {e}"))?
+        } else {
+            0
+        };
+
+        let has_problem = duplicates > 0 || gaps > 0;
+        if has_problem && str_param(p, "on_error") != "warn" {
+            return Err(format!(
+                "凭证号校验未通过：{duplicates} 组重复{}",
+                if check_gap {
+                    format!("，{gaps} 个分组存在断号")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            None,
+            Some(if has_problem {
+                format!("发现 {duplicates} 组重复、{gaps} 个断号分组，已按警告继续")
+            } else {
+                "凭证号连续且无重复".to_string()
+            }),
+        ))
+    }
+
     fn op_column_compare(
         &mut self,
         i: i64,
@@ -3115,6 +3196,71 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("生成序号字段 [{out}]")),
+        ))
+    }
+
+    fn op_exam_number(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let out = defaulted(str_param(p, "out"), "准考证号");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let start = num_param(p, "start").unwrap_or(1);
+        let width = num_param(p, "width").unwrap_or(6).clamp(1, 12);
+        let parts = list_param(p, "group_by");
+        for c in &parts {
+            if !self.has_column(c) {
+                return Err(format!("分组字段 [{c}] 不存在"));
+            }
+        }
+        let order_by = str_param(p, "order_by");
+        if !order_by.is_empty() && !self.has_column(&order_by) {
+            return Err(format!("排序字段 [{order_by}] 不存在"));
+        }
+        let partition = if parts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "PARTITION BY {} ",
+                parts.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let order = if order_by.is_empty() {
+            "ORDER BY (SELECT NULL)".to_string()
+        } else {
+            format!("ORDER BY {}", q(&order_by))
+        };
+        let seq = format!("(ROW_NUMBER() OVER ({partition}{order}) + ({start} - 1))");
+        let padded = format!("printf('%0{width}d', {seq})");
+        let prefix = str_param(p, "prefix");
+        let expr = if prefix.is_empty() {
+            padded
+        } else {
+            format!("'{}' || {padded}", prefix.replace('\'', "''"))
+        };
+        let cte = self.push_cte(format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "生成准考证号 [{out}]：前缀「{prefix}」· {width} 位{}",
+                if parts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · 按 {} 分组", parts.join("、"))
+                }
+            )),
         ))
     }
 
@@ -4812,6 +4958,19 @@ pub fn validate_steps_with(
                     step_errors.push(format!("字段 [{c}] 不存在"));
                 }
             }
+            "voucher_check" => {
+                let col = str_param(&p, "column");
+                if col.is_empty() {
+                    step_errors.push("凭证号字段不能为空".into());
+                } else if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                for g in list_param(&p, "group_by") {
+                    if !cols.contains(&g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+            }
             "sum_check" => {
                 let total = str_param(&p, "total");
                 let parts = list_param(&p, "parts");
@@ -4983,6 +5142,26 @@ pub fn validate_steps_with(
                     if !cols.contains(&c) {
                         step_errors.push(format!("分组字段 [{c}] 不存在"));
                     }
+                }
+            }
+            "exam_number" => {
+                let out = defaulted(str_param(&p, "out"), "准考证号");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+                for c in list_param(&p, "group_by") {
+                    if !cols.contains(&c) {
+                        step_errors.push(format!("分组字段 [{c}] 不存在"));
+                    }
+                }
+                let order_by = str_param(&p, "order_by");
+                if !order_by.is_empty() && !cols.contains(&order_by) {
+                    step_errors.push(format!("排序字段 [{order_by}] 不存在"));
+                }
+                if num_param(&p, "width").unwrap_or(6) < 1 {
+                    step_errors.push("号码位宽必须大于 0".into());
                 }
             }
             "multi_column_stat" => {
@@ -6313,6 +6492,89 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn exam_number_generates_padded_numbers_per_group() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("考点", "text"), ("姓名", "text")],
+            &[vec!["A", "张三"], vec!["A", "李四"], vec!["B", "王五"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_exam_no",
+            json!([
+                { "id": "s1", "operator": "exam_number",
+                  "params": { "prefix": "ZK", "start": 1, "width": 4,
+                              "group_by": ["考点"], "order_by": "姓名" } },
+                { "id": "s2", "operator": "output", "params": { "name": "准考证号" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let number_of = |name: &str| {
+            page.rows
+                .iter()
+                .find(|r| r[1] == json!(name))
+                .map(|r| r[2].as_str().unwrap().to_string())
+                .expect("name row")
+        };
+        assert_eq!(number_of("张三"), "ZK0001");
+        assert_eq!(number_of("李四"), "ZK0002");
+        // B 考点重新从起始序号开始
+        assert_eq!(number_of("王五"), "ZK0001");
+    }
+
+    #[test]
+    fn voucher_check_finds_duplicates_and_gaps_by_period() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("期间", "text"), ("凭证号", "text")],
+            &[
+                vec!["2026-01", "记-1"],
+                vec!["2026-01", "记-2"],
+                vec!["2026-01", "记-2"],
+                vec!["2026-01", "记-4"],
+                vec!["2026-02", "记-1"],
+                vec!["2026-02", "记-2"],
+                vec!["2026-02", "记-3"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_voucher_fail",
+            json!([{ "id": "s1", "operator": "voucher_check",
+                     "params": { "column": "凭证号", "group_by": ["期间"], "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+        let message = failed.message.unwrap_or_default();
+        assert!(message.contains("重复"), "{message}");
+        assert!(message.contains("断号"), "{message}");
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_voucher_warn",
+            json!([{ "id": "s1", "operator": "voucher_check",
+                     "params": { "column": "凭证号", "group_by": ["期间"], "on_error": "warn" } }]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+
+        // 关闭断号检查后只关注重复
+        let only_dup = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_voucher_dup",
+            json!([{ "id": "s1", "operator": "voucher_check",
+                     "params": { "column": "凭证号", "group_by": ["期间"],
+                                 "check_gap": false, "on_error": "fail" } }]),
+        );
+        assert_eq!(only_dup.status, "failed");
+        let message = only_dup.message.unwrap_or_default();
+        assert!(message.contains("1 组重复"), "{message}");
+        assert!(!message.contains("断号"), "{message}");
     }
 
     #[test]

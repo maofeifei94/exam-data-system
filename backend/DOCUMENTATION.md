@@ -263,6 +263,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号格式校验 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `sum_check` | 合计一致性校验：校验合计字段是否等于各明细字段之和（总成绩、发票金额） |
+| `voucher_check` | 凭证号连续性校验：检查重复与断号，可按期间/账套分组，自动识别「记-001」前缀编号 |
 | `balance_check` | 按凭证号汇总借贷方，检查每张凭证是否平衡 |
 | `shuffle` | 随机打散行顺序；按学校/岗位分组后各组轮流穿插，避免同组考生连号相邻 |
 | `assign_seats` | 按顺序自动编排考场号与座位号，可设每考场人数和起始考场 |
@@ -272,6 +273,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `value_map` | 值映射替换（男→M、缺考→0），未匹配值可选保留 |
 | `text_clean` | 去首尾空白、去空格换行、大小写转换、全角转半角 |
 | `sequence` | 行号/序号，支持分组内重新编号 |
+| `exam_number` | 准考证号生成：前缀 + 起始序号 + 位宽补零，可分组重新编号 |
 | `multi_column_stat` | 多列横向合计/平均/最大/最小/计数（多科总分、费用合计） |
 | `cumulative` | 按顺序累计求和（累计发生额、期初余额） |
 | `window_compare` | 同比/环比：与上 N 期比较，输出增长额或增长率 |
@@ -292,6 +294,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `norm_date(x)` | 统一 `2010/5/3`、`20100503`、`2010年5月3日` 等日期写法 |
 | `sqrt(x)` / `power(x, y)` | 兜底数学函数（内置 SQLite 未编译数学扩展时也能用） |
 | `split_part(text, delim, n)` | 按分隔符取第 n 段（1 基），用于拆分字段 |
+| `num_suffix(text)` | 提取末尾连续数字（`记-001` → 1），用于凭证号连续性与断号检查 |
 | `full_to_half(text)` | 全角字符转半角 |
 | `aging_bucket(value, mode, buckets)` | 账龄区间标签，mode 为 `date` / `days` |
 | `is_mobile(x)` / `is_email(x)` / `is_bank_card(x)` | 格式校验，返回 1 / 0 |
