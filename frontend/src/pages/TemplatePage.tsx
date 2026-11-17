@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { App, Group, Rect, Text } from 'leafer-ui';
 import {
@@ -621,6 +621,9 @@ export default function TemplatePage({
   const selectedLocated =
     selection.type === 'element' ? findElement(draft.elements, selection.id) : null;
   const selectedElement = selectedLocated?.element ?? null;
+
+  // 画布场景重建较重：延迟一帧跟随元素变化，保证右侧属性面板输入不卡顿。
+  const sceneElements = useDeferredValue(draft.elements);
   const selectedPath =
     selection.type === 'element' ? findPath(draft.elements, selection.id) : [];
   const isMatrix = draft.kind === 'matrix';
@@ -1120,11 +1123,10 @@ export default function TemplatePage({
       return node;
     };
 
-    draft.elements.forEach((element) => viewport.add(buildElementNode(element, true)));
+    sceneElements.forEach((element) => viewport.add(buildElementNode(element, true)));
   }, [
-    draft.elements,
+    sceneElements,
     draft.page,
-    selectedElement,
     tool,
     fit.scale,
     fit.tx,

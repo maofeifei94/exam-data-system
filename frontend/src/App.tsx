@@ -1,18 +1,38 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Button, Select } from 'antd';
 import { getHealth } from './api/client';
 import { ProjectProvider, useProject } from './context/ProjectContext';
 import { desktop } from './lib/native';
 import { ThemeProvider, useThemeMode } from './theme';
 import ProjectFilesPage from './pages/ProjectFilesPage';
-import ProjectFlowPage from './pages/ProjectFlowPage';
-import ProjectTemplatesPage from './pages/ProjectTemplatesPage';
-import DataFlowPage from './pages/DataFlowPage';
-import ImportPage from './pages/ImportPage';
-import AliasPage from './pages/AliasPage';
-import TemplatePage from './pages/TemplatePage';
 import { NewProjectDialog } from './components/NewProjectDialog';
+import { Spinner } from './components/Spinner';
 import { UiSettingsProvider, useUiSettings } from './context/UiSettingsContext';
+
+// 除默认页外全部按需加载：首屏只解析工作台与文件页，
+// PDF 模板（含 Leafer 画布）等重型页面在首次进入时再加载。
+const loadProjectTemplates = () => import('./pages/ProjectTemplatesPage');
+const loadProjectFlow = () => import('./pages/ProjectFlowPage');
+const loadDataFlow = () => import('./pages/DataFlowPage');
+const loadImport = () => import('./pages/ImportPage');
+const loadAlias = () => import('./pages/AliasPage');
+const loadTemplate = () => import('./pages/TemplatePage');
+const ProjectTemplatesPage = lazy(loadProjectTemplates);
+const ProjectFlowPage = lazy(loadProjectFlow);
+const DataFlowPage = lazy(loadDataFlow);
+const ImportPage = lazy(loadImport);
+const AliasPage = lazy(loadAlias);
+const TemplatePage = lazy(loadTemplate);
+
+/** 鼠标悬停侧边栏时预取对应页面，点击后几乎即时打开。 */
+const VIEW_PRELOADS: Partial<Record<ViewKey, () => Promise<unknown>>> = {
+  projectTemplates: loadProjectTemplates,
+  flow: loadProjectFlow,
+  dataflow: loadDataFlow,
+  import: loadImport,
+  alias: loadAlias,
+  templates: loadTemplate,
+};
 
 export type ViewKey =
   | 'projectTemplates'
@@ -399,6 +419,7 @@ function Workbench() {
                 key={view}
                 className={`activity-item ${active === view ? 'active' : ''}`}
                 onClick={() => openView(view)}
+                onMouseEnter={() => void VIEW_PRELOADS[view]?.()}
               >
                 <Icon name={meta.icon} size={22} />
                 <span className="activity-label">{meta.label}</span>
@@ -409,7 +430,18 @@ function Workbench() {
 
         <section className="editor">
           <div className="editor-content">
-            <div className="editor-scroll">{renderView(active)}</div>
+            <div className="editor-scroll">
+              <Suspense
+                fallback={
+                  <div className="view-loading">
+                    <Spinner />
+                    <span>正在加载页面…</span>
+                  </div>
+                }
+              >
+                {renderView(active)}
+              </Suspense>
+            </div>
           </div>
         </section>
       </div>

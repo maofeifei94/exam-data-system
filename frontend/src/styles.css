@@ -526,6 +526,17 @@ body {
   overflow: hidden;
 }
 
+/* 按需加载页面时的占位：保持布局稳定，避免切换瞬间跳动 */
+.view-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
 /* ---------------------- 状态栏 ---------------------- */
 
 .statusbar {

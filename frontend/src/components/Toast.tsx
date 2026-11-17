@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { createContext, useCallback, useContext, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 type ToastKind = 'info' | 'success' | 'error';
 
@@ -26,8 +26,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }, 3200);
   }, []);
 
+  // 固定 context value：弹 toast 时只更新提示列表，不触发所有页面重渲染。
+  const value = useMemo<ToastContextValue>(() => ({ show }), [show]);
+
   return (
-    <ToastContext.Provider value={{ show }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div className="toast-stack">
         {items.map((item) => (
