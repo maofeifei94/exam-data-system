@@ -253,7 +253,8 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `percentage` | 占合计百分比，支持按分组分别计算 |
 | `depreciation` | 直线法折旧：月折旧额、累计折旧、净值（可字段指定已计提月数） |
 | `allocate` | 按权重分摊金额，可按项目/部门分组分别分摊 |
-| `tax_calc` | 税额计算：按税率拆分含税/不含税金额，支持价内税与价外税 |
+| `tax_calc` | 税额计算：按固定税率或税率字段拆分含税/不含税金额，支持价内税与价外税 |
+| `exchange_convert` | 汇率换算：按固定汇率或汇率字段乘/除换算金额 |
 | `loan_payment` | 等额本息月供：按本金、年利率、期限计算月供、总利息与还款总额 |
 | `compound_interest` | 复利终值/现值：支持按年/季/月复利，输出终值或现值 |
 | `interest_accrual` | 利息计算：按本金、起止日期与年利率计算计息天数与利息，支持实际/365、实际/360、30/360 |

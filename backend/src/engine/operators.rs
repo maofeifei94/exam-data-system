@@ -380,6 +380,10 @@ pub fn catalog() -> Vec<OperatorDef> {
             vec![
                 p("column", "金额字段", "column", true, json!("")),
                 with_help(p("rate", "税率", "number", true, json!(0.06)), "如 0.06 表示 6%，13% 填 0.13"),
+                with_help(
+                    p("rate_column", "税率字段（可空）", "column", false, json!("")),
+                    "填写后按每行税率计算，优先于固定税率",
+                ),
                 with_options(
                     p("mode", "金额口径", "enum", false, json!("exclusive")),
                     &["exclusive", "inclusive"],
@@ -405,6 +409,26 @@ pub fn catalog() -> Vec<OperatorDef> {
                 with_help(p("warning_rate", "超支预警线(%)", "number", false, json!(100)), "执行率高于该值时标记为超支"),
                 p("decimals", "保留小数位", "number", false, json!(2)),
                 p("status_out", "状态字段名", "text", false, json!("预算状态")),
+            ],
+        ),
+        def(
+            "exchange_convert",
+            "汇率换算",
+            "计算",
+            "按固定汇率或汇率字段把金额换算成另一种币种，支持乘法与除法。",
+            vec![
+                p("column", "金额字段", "column", true, json!("")),
+                with_help(p("rate", "汇率", "number", true, json!(7.2)), "如 1 美元 = 7.2 人民币填 7.2"),
+                with_help(
+                    p("rate_column", "汇率字段（可空）", "column", false, json!("")),
+                    "填写后按每行汇率计算，优先于固定汇率",
+                ),
+                with_options(
+                    p("mode", "换算方式", "enum", false, json!("multiply")),
+                    &["multiply", "divide"],
+                ),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+                p("out", "输出字段名", "text", false, json!("换算金额")),
             ],
         ),
         def(

@@ -403,6 +403,7 @@ impl<'a> Compiler<'a> {
             "interest_accrual" => self.op_interest_accrual(step_index, step, &params),
             "compound_interest" => self.op_compound_interest(step_index, step, &params),
             "tax_calc" => self.op_tax_calc(step_index, step, &params),
+            "exchange_convert" => self.op_exchange_convert(step_index, step, &params),
             "budget_variance" => self.op_budget_variance(step_index, step, &params),
             "loan_payment" => self.op_loan_payment(step_index, step, &params),
             "reconcile" => self.op_reconcile(step_index, step, &params),
@@ -1944,10 +1945,20 @@ impl<'a> Compiler<'a> {
         if !self.has_column(&col) {
             return Err(format!("字段 [{col}] 不存在"));
         }
-        let rate = f64_param(p, "rate").ok_or_else(|| "税率不能为空".to_string())?;
-        if !(0.0..=1.0).contains(&rate) {
-            return Err("税率应在 0~1 之间（如 13% 填 0.13）".to_string());
+        let rate = f64_param(p, "rate").unwrap_or(0.06);
+        let rate_column = str_param(p, "rate_column");
+        if rate_column.is_empty() {
+            if !(0.0..=1.0).contains(&rate) {
+                return Err("税率应在 0~1 之间（如 13% 填 0.13）".to_string());
+            }
+        } else if !self.has_column(&rate_column) {
+            return Err(format!("税率字段 [{rate_column}] 不存在"));
         }
+        let rate_expr = if rate_column.is_empty() {
+            rate.to_string()
+        } else {
+            format!("CAST({} AS REAL)", q(&rate_column))
+        };
         let mode = {
             let m = str_param(p, "mode");
             if m.is_empty() {
@@ -1973,14 +1984,14 @@ impl<'a> Compiler<'a> {
         }
         let f = format!("CAST({} AS REAL)", q(&col));
         let net_expr = if mode == "inclusive" {
-            format!("ROUND({f} / (1.0 + {rate}), {decimals})")
+            format!("ROUND({f} / (1.0 + ({rate_expr})), {decimals})")
         } else {
             format!("ROUND({f}, {decimals})")
         };
         let tax_expr = if mode == "inclusive" {
             format!("ROUND({f}, {decimals}) - {net_expr}")
         } else {
-            format!("ROUND({f} * {rate}, {decimals})")
+            format!("ROUND({f} * ({rate_expr}), {decimals})")
         };
         let gross_expr = if mode == "inclusive" {
             format!("ROUND({f}, {decimals})")
@@ -2007,12 +2018,89 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!(
-                "税额计算：[{col}] 按 {:.2}% {}",
-                rate * 100.0,
+                "税额计算：[{col}] {} {}",
+                if rate_column.is_empty() {
+                    format!("按 {:.2}%", rate * 100.0)
+                } else {
+                    format!("按税率字段 [{rate_column}]")
+                },
                 if mode == "inclusive" {
                     "价内税拆分"
                 } else {
                     "价外税拆分"
+                }
+            )),
+        ))
+    }
+
+    fn op_exchange_convert(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let rate_column = str_param(p, "rate_column");
+        let rate = f64_param(p, "rate").unwrap_or(7.2);
+        if rate_column.is_empty() {
+            if rate <= 0.0 {
+                return Err("汇率必须大于 0".to_string());
+            }
+        } else if !self.has_column(&rate_column) {
+            return Err(format!("汇率字段 [{rate_column}] 不存在"));
+        }
+        let mode = {
+            let m = str_param(p, "mode");
+            if m.is_empty() {
+                "multiply".to_string()
+            } else {
+                m
+            }
+        };
+        if mode != "multiply" && mode != "divide" {
+            return Err(format!("未知的换算方式: {mode}"));
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let out = defaulted(str_param(p, "out"), "换算金额");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let rate_expr = if rate_column.is_empty() {
+            rate.to_string()
+        } else {
+            format!("CAST({} AS REAL)", q(&rate_column))
+        };
+        let expr = if mode == "divide" {
+            format!(
+                "ROUND(CAST({} AS REAL) / NULLIF({rate_expr}, 0), {decimals})",
+                q(&col)
+            )
+        } else {
+            format!(
+                "ROUND(CAST({} AS REAL) * ({rate_expr}), {decimals})",
+                q(&col)
+            )
+        };
+        let cte = self.push_cte(format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "汇率换算：[{col}] {} → [{out}]",
+                if rate_column.is_empty() {
+                    format!("汇率 {rate}")
+                } else {
+                    format!("按汇率字段 [{rate_column}]")
                 }
             )),
         ))
@@ -5692,10 +5780,15 @@ pub fn validate_steps_with(
                 if !cols.contains(&col) {
                     step_errors.push(format!("字段 [{col}] 不存在"));
                 }
-                match f64_param(&p, "rate") {
-                    Some(rate) if (0.0..=1.0).contains(&rate) => {}
-                    Some(_) => step_errors.push("税率应在 0~1 之间（如 13% 填 0.13）".into()),
-                    None => step_errors.push("税率不能为空".into()),
+                let rate_column = str_param(&p, "rate_column");
+                if rate_column.is_empty() {
+                    match f64_param(&p, "rate") {
+                        Some(rate) if (0.0..=1.0).contains(&rate) => {}
+                        Some(_) => step_errors.push("税率应在 0~1 之间（如 13% 填 0.13）".into()),
+                        None => step_errors.push("税率不能为空".into()),
+                    }
+                } else if !cols.contains(&rate_column) {
+                    step_errors.push(format!("税率字段 [{rate_column}] 不存在"));
                 }
                 let mode = str_param(&p, "mode");
                 if !mode.is_empty() && mode != "exclusive" && mode != "inclusive" {
@@ -5715,6 +5808,30 @@ pub fn validate_steps_with(
                     }
                 }
                 cols.extend(outs);
+            }
+            "exchange_convert" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                let rate_column = str_param(&p, "rate_column");
+                if rate_column.is_empty() {
+                    if f64_param(&p, "rate").unwrap_or(7.2) <= 0.0 {
+                        step_errors.push("汇率必须大于 0".into());
+                    }
+                } else if !cols.contains(&rate_column) {
+                    step_errors.push(format!("汇率字段 [{rate_column}] 不存在"));
+                }
+                let mode = str_param(&p, "mode");
+                if !mode.is_empty() && mode != "multiply" && mode != "divide" {
+                    step_errors.push(format!("未知的换算方式: {mode}"));
+                }
+                let out = defaulted(str_param(&p, "out"), "换算金额");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
             }
             "budget_variance" => {
                 for (key, label) in [("budget_column", "预算金额"), ("actual_column", "实际金额")]
@@ -7723,6 +7840,64 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn tax_calc_uses_per_row_rate_column() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("金额", "number"), ("税率", "number")],
+            &[vec!["100", "0.13"], vec!["200", "0.06"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_tax_rate_col",
+            json!([
+                { "id": "s1", "operator": "tax_calc",
+                  "params": { "column": "金额", "rate_column": "税率", "mode": "exclusive" } },
+                { "id": "s2", "operator": "output", "params": { "name": "税额" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let taxes: Vec<f64> = page.rows.iter().map(|r| r[3].as_f64().unwrap()).collect();
+        assert_eq!(taxes, vec![13.0, 12.0]);
+    }
+
+    #[test]
+    fn exchange_convert_multiplies_and_divides_by_rate() {
+        let (mut conn, ds_id) = setup_custom(&[("金额", "number")], &[vec!["100"], vec!["200"]]);
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_exchange_mul",
+            json!([
+                { "id": "s1", "operator": "exchange_convert",
+                  "params": { "column": "金额", "rate": 7.2, "mode": "multiply" } },
+                { "id": "s2", "operator": "output", "params": { "name": "人民币" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let values: Vec<f64> = page.rows.iter().map(|r| r[1].as_f64().unwrap()).collect();
+        assert_eq!(values, vec![720.0, 1440.0]);
+
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_exchange_div",
+            json!([
+                { "id": "s1", "operator": "exchange_convert",
+                  "params": { "column": "金额", "rate": 7.2, "mode": "divide" } },
+                { "id": "s2", "operator": "output", "params": { "name": "美元" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows[0][1], json!(13.89));
     }
 
     #[test]
