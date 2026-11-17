@@ -498,6 +498,22 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "balance_rollforward",
+            "期末余额计算",
+            "计算",
+            "按「期初余额 + 借方 - 贷方」计算期末余额，支持逐行结转或按日期累计流水。",
+            vec![
+                p("debit", "借方金额字段", "column", true, json!("")),
+                p("credit", "贷方金额字段", "column", true, json!("")),
+                with_help(p("opening", "期初余额字段（可空）", "column", false, json!("")), "留空按 0 处理"),
+                with_options(p("mode", "计算方式", "enum", false, json!("row")), &["row", "running"]),
+                with_help(p("order_by", "累计排序字段", "column", false, json!("")), "累计模式下必填，如日期、凭证号"),
+                with_help(p("partition_by", "分组字段（可空）", "columns", false, json!([])), "如按科目、账户分别累计"),
+                p("out", "输出字段名", "text", false, json!("期末余额")),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+            ],
+        ),
+        def(
             "income_tax",
             "个人所得税计算",
             "计算",

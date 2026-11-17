@@ -426,6 +426,7 @@ impl<'a> Compiler<'a> {
             "depreciation" => self.op_depreciation(step_index, step, &params),
             "allocate" => self.op_allocate(step_index, step, &params),
             "income_tax" => self.op_income_tax(step_index, step, &params),
+            "balance_rollforward" => self.op_balance_rollforward(step_index, step, &params),
             "data_profile" => self.op_data_profile(step_index, step, &params),
             "not_null_check" => self.op_not_null_check(step_index, step, &params),
             "column_compare" => self.op_column_compare(step_index, step, &params),
@@ -2582,6 +2583,90 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("按 [{weight}] 分摊 [{amount}] → [{out}]")),
+        ))
+    }
+
+    /// 期末余额：期初余额 + 借方 - 贷方，支持逐行或累计模式。
+    fn op_balance_rollforward(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let debit = str_param(p, "debit");
+        let credit = str_param(p, "credit");
+        for c in [&debit, &credit] {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let opening = str_param(p, "opening");
+        if !opening.is_empty() && !self.has_column(&opening) {
+            return Err(format!("字段 [{opening}] 不存在"));
+        }
+        let mode = if str_param(p, "mode") == "running" {
+            "running"
+        } else {
+            "row"
+        };
+        let order_by = str_param(p, "order_by");
+        if mode == "running" && order_by.is_empty() {
+            return Err("累计模式下需要指定排序字段".into());
+        }
+        if !order_by.is_empty() && !self.has_column(&order_by) {
+            return Err(format!("字段 [{order_by}] 不存在"));
+        }
+        let parts = list_param(p, "partition_by");
+        for c in &parts {
+            if !self.has_column(c) {
+                return Err(format!("分组字段 [{c}] 不存在"));
+            }
+        }
+        let out = defaulted(str_param(p, "out"), "期末余额");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let opening_expr = if opening.is_empty() {
+            "0".to_string()
+        } else {
+            format!("COALESCE(CAST({} AS REAL), 0)", q(&opening))
+        };
+        let delta = format!(
+            "(COALESCE(CAST({} AS REAL), 0) - COALESCE(CAST({} AS REAL), 0))",
+            q(&debit),
+            q(&credit)
+        );
+        let e = if mode == "running" {
+            let partition = if parts.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "PARTITION BY {} ",
+                    parts.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")
+                )
+            };
+            format!(
+                "ROUND({opening_expr} + SUM({delta}) OVER ({partition}ORDER BY {}), {decimals})",
+                q(&order_by)
+            )
+        } else {
+            format!("ROUND({opening_expr} + {delta}, {decimals})")
+        };
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "期末余额：[{debit}] - [{credit}] → [{out}]（{mode}）"
+            )),
         ))
     }
 
@@ -6619,6 +6704,36 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "balance_rollforward" => {
+                for key in ["debit", "credit"] {
+                    let c = str_param(&p, key);
+                    if !cols.contains(&c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                let opening = str_param(&p, "opening");
+                if !opening.is_empty() && !cols.contains(&opening) {
+                    step_errors.push(format!("字段 [{opening}] 不存在"));
+                }
+                let order = str_param(&p, "order_by");
+                if str_param(&p, "mode") == "running" && order.is_empty() {
+                    step_errors.push("累计模式下需要指定排序字段".into());
+                }
+                if !order.is_empty() && !cols.contains(&order) {
+                    step_errors.push(format!("字段 [{order}] 不存在"));
+                }
+                for part in list_param(&p, "partition_by") {
+                    if !cols.contains(&part) {
+                        step_errors.push(format!("分组字段 [{part}] 不存在"));
+                    }
+                }
+                let out = defaulted(str_param(&p, "out"), "期末余额");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "data_profile" => {
                 for c in list_param(&p, "columns") {
                     if !cols.contains(&c) {
@@ -9009,6 +9124,78 @@ mod tests {
         assert_eq!(page.rows[0][flag], json!(""));
         assert_eq!(page.rows[1][flag], json!("偏科"));
         assert_eq!(page.rows[2][flag], json!(""));
+    }
+
+    #[test]
+    fn balance_rollforward_supports_row_and_running_modes() {
+        let (mut conn, ds_id) = setup_custom(
+            &[
+                ("日期", "text"),
+                ("借方", "number"),
+                ("贷方", "number"),
+                ("期初", "number"),
+            ],
+            &[
+                vec!["2026-01-01", "100", "0", "1000"],
+                vec!["2026-01-02", "0", "50", "1000"],
+            ],
+        );
+        let row_result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_balance_row",
+            json!([
+                { "id": "s1", "operator": "balance_rollforward",
+                  "params": { "debit": "借方", "credit": "贷方", "opening": "期初", "mode": "row" } },
+                { "id": "s2", "operator": "output", "params": { "name": "余额" } }
+            ]),
+        );
+        assert_eq!(row_result.status, "success", "{:?}", row_result.message);
+        let page = store::read_rows(
+            &conn,
+            row_result.output_dataset_id.as_deref().unwrap(),
+            0,
+            10,
+        )
+        .expect("read");
+        let idx = page
+            .columns
+            .iter()
+            .position(|c| c.name == "期末余额")
+            .expect("column");
+        assert_eq!(page.rows[0][idx], json!(1100.0));
+        assert_eq!(page.rows[1][idx], json!(950.0));
+
+        let running_result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_balance_running",
+            json!([
+                { "id": "s1", "operator": "balance_rollforward",
+                  "params": { "debit": "借方", "credit": "贷方", "mode": "running",
+                              "order_by": "日期", "out": "累计余额" } },
+                { "id": "s2", "operator": "output", "params": { "name": "累计余额" } }
+            ]),
+        );
+        assert_eq!(
+            running_result.status, "success",
+            "{:?}",
+            running_result.message
+        );
+        let page = store::read_rows(
+            &conn,
+            running_result.output_dataset_id.as_deref().unwrap(),
+            0,
+            10,
+        )
+        .expect("read");
+        let idx = page
+            .columns
+            .iter()
+            .position(|c| c.name == "累计余额")
+            .expect("column");
+        assert_eq!(page.rows[0][idx], json!(100.0));
+        assert_eq!(page.rows[1][idx], json!(50.0));
     }
 
     #[test]

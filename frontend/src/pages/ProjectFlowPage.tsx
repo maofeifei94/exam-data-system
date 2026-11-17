@@ -106,6 +106,22 @@ const FLOW_PRESETS: Array<{
     ],
   },
   {
+    name: '期末余额计算',
+    description: '按「期初余额 + 借方 - 贷方」逐行结转，生成期末余额',
+    steps: [
+      {
+        operator: 'balance_rollforward',
+        params: {
+          debit: '借方金额',
+          credit: '贷方金额',
+          opening: '期初余额',
+          mode: 'row',
+          out: '期末余额',
+        },
+      },
+    ],
+  },
+  {
     name: '工资个税计算',
     description: '按月度七级超额累进税率计算个税与税后收入',
     steps: [
