@@ -255,6 +255,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `allocate` | 按权重分摊金额，可按项目/部门分组分别分摊 |
 | `tax_calc` | 税额计算：按税率拆分含税/不含税金额，支持价内税与价外税 |
 | `loan_payment` | 等额本息月供：按本金、年利率、期限计算月供、总利息与还款总额 |
+| `compound_interest` | 复利终值/现值：支持按年/季/月复利，输出终值或现值 |
 | `budget_variance` | 预算执行分析：按部门/科目汇总预算与实际，输出执行率、差额与超支预警 |
 | `reconcile` | 对账核对：按关键字段汇总双方金额，标记一致、金额不符、本方独有、对方独有，支持金额容差与仅看差异 |
 | `data_profile` | 数据概览：逐字段统计非空数、空值数、去重数、最小/最大值、平均值 |
@@ -274,6 +275,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `text_clean` | 去首尾空白、去空格换行、大小写转换、全角转半角 |
 | `sequence` | 行号/序号，支持分组内重新编号 |
 | `exam_number` | 准考证号生成：前缀 + 起始序号 + 位宽补零，可分组重新编号 |
+| `absence_flag` | 缺考标记：按成绩空值或指定缺考值生成考试状态，可只保留缺考行 |
 | `multi_column_stat` | 多列横向合计/平均/最大/最小/计数（多科总分、费用合计） |
 | `cumulative` | 按顺序累计求和（累计发生额、期初余额） |
 | `window_compare` | 同比/环比：与上 N 期比较，输出增长额或增长率 |

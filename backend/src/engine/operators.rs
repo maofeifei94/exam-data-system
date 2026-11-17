@@ -408,6 +408,27 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "compound_interest",
+            "复利终值/现值",
+            "计算",
+            "按本金、年利率、年限与复利频率计算复利终值或现值，适用于理财测算与长期资金规划。",
+            vec![
+                p("column", "金额字段", "column", true, json!("")),
+                with_help(p("annual_rate", "年利率", "number", true, json!(0.05)), "如 5% 填 0.05"),
+                p("years", "年限", "number", true, json!(10)),
+                with_help(
+                    p("compounds_per_year", "每年复利次数", "number", false, json!(1)),
+                    "1=按年，4=按季，12=按月",
+                ),
+                with_options(
+                    p("mode", "计算方式", "enum", false, json!("fv")),
+                    &["fv", "pv"],
+                ),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+                p("out", "输出字段名", "text", false, json!("复利终值")),
+            ],
+        ),
+        def(
             "loan_payment",
             "等额本息月供",
             "计算",
@@ -651,6 +672,23 @@ pub fn catalog() -> Vec<OperatorDef> {
                 p("start", "起始序号", "number", false, json!(1)),
                 with_help(p("order_by", "排序依据（可空）", "column", false, json!("")), "按该字段排序后编号"),
                 with_help(p("partition_by", "分组字段（可空）", "columns", false, json!([])), "每个分组内单独编号"),
+            ],
+        ),
+        def(
+            "absence_flag",
+            "缺考标记",
+            "计算",
+            "根据成绩字段是否为空判断缺考，生成考试状态列，可选只保留缺考行，便于生成补考名单。",
+            vec![
+                p("columns", "成绩字段", "columns", true, json!([])),
+                with_help(
+                    p("mark_value", "缺考成绩值（可空）", "text", false, json!("")),
+                    "如填 0 或 -1，表示该值也视为缺考；留空只判断空值",
+                ),
+                p("status_out", "状态字段名", "text", false, json!("考试状态")),
+                p("absent_label", "缺考标签", "text", false, json!("缺考")),
+                p("normal_label", "正常标签", "text", false, json!("正常")),
+                p("only_absent", "只保留缺考行", "bool", false, json!(false)),
             ],
         ),
         def(

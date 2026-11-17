@@ -75,6 +75,10 @@ fn list_param(params: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn defaulted(value: String, fallback: &str) -> String {
     if value.is_empty() {
         fallback.to_string()
@@ -396,6 +400,7 @@ impl<'a> Compiler<'a> {
             "parse_id_card" => self.op_parse_id_card(step_index, step, &params),
             "amount_upper" => self.op_amount_upper(step_index, step, &params),
             "percentage" => self.op_percentage(step_index, step, &params),
+            "compound_interest" => self.op_compound_interest(step_index, step, &params),
             "tax_calc" => self.op_tax_calc(step_index, step, &params),
             "budget_variance" => self.op_budget_variance(step_index, step, &params),
             "loan_payment" => self.op_loan_payment(step_index, step, &params),
@@ -419,6 +424,7 @@ impl<'a> Compiler<'a> {
             "text_clean" => self.op_text_clean(step_index, step, &params),
             "sequence" => self.op_sequence(step_index, step, &params),
             "exam_number" => self.op_exam_number(step_index, step, &params),
+            "absence_flag" => self.op_absence_flag(step_index, step, &params),
             "multi_column_stat" => self.op_multi_column_stat(step_index, step, &params),
             "cumulative" => self.op_cumulative(step_index, step, &params),
             "window_compare" => self.op_window_compare(step_index, step, &params),
@@ -1759,6 +1765,75 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("计算 [{col}] 占比 → [{out}]")),
+        ))
+    }
+
+    fn op_compound_interest(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let rate = f64_param(p, "annual_rate").ok_or_else(|| "年利率不能为空".to_string())?;
+        if rate < 0.0 {
+            return Err("年利率不能为负数".to_string());
+        }
+        let years = f64_param(p, "years").unwrap_or(10.0);
+        if years <= 0.0 {
+            return Err("年限必须大于 0".to_string());
+        }
+        let periods = num_param(p, "compounds_per_year").unwrap_or(1).max(1);
+        let mode = {
+            let m = str_param(p, "mode");
+            if m.is_empty() {
+                "fv".to_string()
+            } else {
+                m
+            }
+        };
+        if mode != "fv" && mode != "pv" {
+            return Err(format!("未知的计算方式: {mode}"));
+        }
+        let fallback = if mode == "pv" {
+            "复利现值"
+        } else {
+            "复利终值"
+        };
+        let out = defaulted(str_param(p, "out"), fallback);
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let factor = format!("power(1.0 + ({rate} / {periods}), {periods} * {years})");
+        let expr = if mode == "pv" {
+            format!("ROUND(CAST({} AS REAL) / {factor}, {decimals})", q(&col))
+        } else {
+            format!("ROUND(CAST({} AS REAL) * {factor}, {decimals})", q(&col))
+        };
+        let cte = self.push_cte(format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "{}：{years} 年 · 年利率 {:.2}% · 每年复利 {periods} 次",
+                if mode == "pv" {
+                    "复利现值"
+                } else {
+                    "复利终值"
+                },
+                rate * 100.0
+            )),
         ))
     }
 
@@ -3259,6 +3334,80 @@ impl<'a> Compiler<'a> {
                     String::new()
                 } else {
                     format!(" · 按 {} 分组", parts.join("、"))
+                }
+            )),
+        ))
+    }
+
+    fn op_absence_flag(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let cols = list_param(p, "columns");
+        if cols.is_empty() {
+            return Err("请至少选择一个成绩字段".to_string());
+        }
+        for c in &cols {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let out = defaulted(str_param(p, "status_out"), "考试状态");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let mark = str_param(p, "mark_value");
+        let absent = defaulted(str_param(p, "absent_label"), "缺考");
+        let normal = defaulted(str_param(p, "normal_label"), "正常");
+        let mut conds: Vec<String> = Vec::new();
+        for c in &cols {
+            let f = q(c);
+            conds.push(format!("TRIM(COALESCE(CAST({f} AS TEXT), '')) = ''"));
+            if !mark.is_empty() {
+                conds.push(format!("TRIM(CAST({f} AS TEXT)) = {}", sql_literal(&mark)));
+                // 数值列会把 0 存成 0.0，补充按数值比较，保证「缺考值填 0」可用。
+                if let Ok(value) = mark.parse::<f64>() {
+                    conds.push(format!("CAST({f} AS REAL) = {value}"));
+                }
+            }
+        }
+        let expr = format!(
+            "CASE WHEN {} THEN {} ELSE {} END",
+            conds.join(" OR "),
+            sql_literal(&absent),
+            sql_literal(&normal)
+        );
+        let select = format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur);
+        let only_absent = bool_param(p, "only_absent", false);
+        let cte = if only_absent {
+            let filtered = format!(
+                "SELECT * FROM ({select}) WHERE {} = {}",
+                q(&out),
+                sql_literal(&absent)
+            );
+            self.push_cte(filtered)
+        } else {
+            self.push_cte(select)
+        };
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "按 {} 标记考试状态 → [{out}]{}",
+                cols.join("、"),
+                if only_absent {
+                    "（仅保留缺考）"
+                } else {
+                    ""
                 }
             )),
         ))
@@ -4864,6 +5013,35 @@ pub fn validate_steps_with(
                     "对账结果".to_string(),
                 ];
             }
+            "compound_interest" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                match f64_param(&p, "annual_rate") {
+                    Some(rate) if rate >= 0.0 => {}
+                    Some(_) => step_errors.push("年利率不能为负数".into()),
+                    None => step_errors.push("年利率不能为空".into()),
+                }
+                if f64_param(&p, "years").unwrap_or(10.0) <= 0.0 {
+                    step_errors.push("年限必须大于 0".into());
+                }
+                let mode = str_param(&p, "mode");
+                if !mode.is_empty() && mode != "fv" && mode != "pv" {
+                    step_errors.push(format!("未知的计算方式: {mode}"));
+                }
+                let fallback = if mode == "pv" {
+                    "复利现值"
+                } else {
+                    "复利终值"
+                };
+                let out = defaulted(str_param(&p, "out"), fallback);
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "depreciation" => {
                 let original = str_param(&p, "original");
                 if !cols.contains(&original) {
@@ -5162,6 +5340,23 @@ pub fn validate_steps_with(
                 }
                 if num_param(&p, "width").unwrap_or(6) < 1 {
                     step_errors.push("号码位宽必须大于 0".into());
+                }
+            }
+            "absence_flag" => {
+                let list = list_param(&p, "columns");
+                if list.is_empty() {
+                    step_errors.push("请至少选择一个成绩字段".into());
+                }
+                for c in &list {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                let out = defaulted(str_param(&p, "status_out"), "考试状态");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
                 }
             }
             "multi_column_stat" => {
@@ -6492,6 +6687,92 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn absence_flag_marks_blank_and_configured_values() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("笔试", "number"), ("面试", "number")],
+            &[
+                vec!["张三", "80", "90"],
+                vec!["李四", "", "70"],
+                vec!["王五", "0", "0"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_absent_all",
+            json!([
+                { "id": "s1", "operator": "absence_flag",
+                  "params": { "columns": ["笔试", "面试"], "mark_value": "0" } },
+                { "id": "s2", "operator": "output", "params": { "name": "缺考标记" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let status_of = |name: &str| {
+            page.rows
+                .iter()
+                .find(|r| r[0] == json!(name))
+                .map(|r| r[3].as_str().unwrap().to_string())
+                .expect("name row")
+        };
+        assert_eq!(status_of("张三"), "正常");
+        assert_eq!(status_of("李四"), "缺考");
+        assert_eq!(status_of("王五"), "缺考");
+
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_absent_only",
+            json!([
+                { "id": "s1", "operator": "absence_flag",
+                  "params": { "columns": ["笔试", "面试"], "mark_value": "0", "only_absent": true } },
+                { "id": "s2", "operator": "output", "params": { "name": "补考名单" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows.len(), 2);
+    }
+
+    #[test]
+    fn compound_interest_computes_future_and_present_value() {
+        let (mut conn, ds_id) = setup_custom(&[("金额", "number")], &[vec!["10000"]]);
+        let fv = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_fv",
+            json!([
+                { "id": "s1", "operator": "compound_interest",
+                  "params": { "column": "金额", "annual_rate": 0.05, "years": 10,
+                              "compounds_per_year": 1, "mode": "fv" } },
+                { "id": "s2", "operator": "output", "params": { "name": "复利终值" } }
+            ]),
+        );
+        assert_eq!(fv.status, "success", "{:?}", fv.message);
+        let page =
+            store::read_rows(&conn, fv.output_dataset_id.as_deref().unwrap(), 0, 10).expect("read");
+        assert_eq!(page.rows[0][1], json!(16288.95));
+
+        let pv = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_pv",
+            json!([
+                { "id": "s1", "operator": "compound_interest",
+                  "params": { "column": "金额", "annual_rate": 0.05, "years": 10,
+                              "compounds_per_year": 1, "mode": "pv" } },
+                { "id": "s2", "operator": "output", "params": { "name": "复利现值" } }
+            ]),
+        );
+        assert_eq!(pv.status, "success", "{:?}", pv.message);
+        let page =
+            store::read_rows(&conn, pv.output_dataset_id.as_deref().unwrap(), 0, 10).expect("read");
+        assert_eq!(page.rows[0][1], json!(6139.13));
     }
 
     #[test]
