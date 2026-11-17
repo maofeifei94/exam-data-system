@@ -436,7 +436,8 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   适合「按考场分页、组内按成绩倒序」的名单与成绩单。
 - **明细表元素**：`type = "table"` 的元素用于多行表格展示，配置在 `table` 字段：
   `columns`（字段、表头、列宽、对齐）、`header_height_mm`、`row_height_mm`、
-  `show_header`、`show_grid`、`summary_label`、`wrap`。模板类型为 `table` 时，数据按元素高度与行高自动分页，
+  `show_header`、`show_grid`、`summary_label`、`wrap`、`header_fill`、`row_band`。
+  模板类型为 `table` 时，数据按元素高度与行高自动分页，
   每页重复表头；列宽填 0 时按剩余宽度均分。列可配置 `summary: sum / avg / count`，
   在最后一页底部输出汇总行（首列显示 `summary_label`）。设置 `page_field` 后，
   明细表按该字段分组，每组另起一页，页眉页脚可使用该字段占位符。

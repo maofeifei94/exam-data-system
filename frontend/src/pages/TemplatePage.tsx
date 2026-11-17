@@ -859,7 +859,7 @@ export default function TemplatePage({
               y: top,
               width: cw,
               height: ch,
-              fill: header ? '#f1f5f9' : undefined,
+              fill: header ? (setup.header_fill || undefined) : undefined,
               stroke: setup.show_grid ? '#cbd5e1' : undefined,
               strokeWidth: strokeMm,
               hittable: false,
@@ -2833,6 +2833,24 @@ function ElementEditor({
               onChange={(event) => patchTable({ wrap: event.target.checked })}
             />
             单元格文字自动换行（超出列宽时按行高裁剪）
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={Boolean(table.header_fill)}
+              onChange={(event) =>
+                patchTable({ header_fill: event.target.checked ? '#F2F2F2' : '' })
+              }
+            />
+            表头浅灰底色
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={table.row_band ?? false}
+              onChange={(event) => patchTable({ row_band: event.target.checked })}
+            />
+            隔行浅色底纹（斑马纹）
           </label>
           <div className="tpl-mini-actions">
             <span>列配置</span>

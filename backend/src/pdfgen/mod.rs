@@ -709,6 +709,7 @@ impl<'a> Painter<'a> {
                 } else {
                     col.label.trim()
                 };
+                self.table_fill((x, y, w, header_h), &setup.header_fill);
                 cell.bold = true;
                 self.table_cell(
                     label,
@@ -721,10 +722,14 @@ impl<'a> Painter<'a> {
             }
             y += header_h;
         }
-        for row in rows {
+        for (ri, row) in rows.iter().enumerate() {
+            let banded = setup.row_band && ri % 2 == 1;
             let mut x = origin.x;
             for (i, col) in setup.columns.iter().enumerate() {
                 let w = widths.get(i).copied().unwrap_or(0.0);
+                if banded {
+                    self.table_fill((x, y, w, row_h), "#F7F7F7");
+                }
                 let text = index
                     .get(col.field.trim())
                     .and_then(|idx| row.get(*idx))
@@ -742,6 +747,19 @@ impl<'a> Painter<'a> {
             }
             y += row_h;
         }
+    }
+
+    /// 给表格单元格铺底色；颜色非法时跳过。
+    fn table_fill(&self, rect: (f32, f32, f32, f32), color: &str) {
+        let Some(c) = color_of(color) else {
+            return;
+        };
+        let (x, y_top, w, h) = rect;
+        let ury = self.page_h - y_top;
+        let lly = ury - h;
+        self.layer.set_fill_color(c);
+        self.layer
+            .add_rect(Rect::new(Mm(x), Mm(lly), Mm(x + w), Mm(ury)).with_mode(PaintMode::Fill));
     }
 
     /// 绘制汇总行，`geometry` 为（x, y_top, 行高）。
@@ -765,6 +783,7 @@ impl<'a> Painter<'a> {
         for (i, col) in setup.columns.iter().enumerate() {
             let w = widths.get(i).copied().unwrap_or(0.0);
             let text = summary.get(i).map(|s| s.as_str()).unwrap_or("");
+            self.table_fill((cx, y_top, w, row_h), &setup.header_fill);
             self.table_cell(
                 text,
                 &mut cell,
@@ -2254,6 +2273,8 @@ mod tests {
             show_grid: true,
             summary_label: "合计".into(),
             wrap: true,
+            header_fill: "#EEEEEE".into(),
+            row_band: true,
         });
         let mut body = TemplateBody::default();
         body.elements.push(table);

@@ -28,6 +28,8 @@ export const DEFAULT_TABLE: TableSetup = {
   show_grid: true,
   summary_label: '合计',
   wrap: false,
+  header_fill: '',
+  row_band: false,
 };
 
 /** 按固定列宽优先、剩余均分的方式计算各列实际宽度。 */

@@ -357,6 +357,10 @@ export interface TableSetup {
   summary_label?: string;
   /** 单元格文字自动换行 */
   wrap?: boolean;
+  /** 表头背景色（十六进制），留空不填充 */
+  header_fill?: string;
+  /** 隔行浅色底纹 */
+  row_band?: boolean;
 }
 
 export interface TemplateElement {

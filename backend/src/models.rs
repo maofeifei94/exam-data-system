@@ -571,6 +571,12 @@ pub struct TableSetup {
     /// 单元格文字自动换行（超出列宽时按行高裁剪）
     #[serde(default)]
     pub wrap: bool,
+    /// 表头背景色（十六进制），留空表示不填充
+    #[serde(default)]
+    pub header_fill: String,
+    /// 隔行浅色底纹（斑马纹）
+    #[serde(default)]
+    pub row_band: bool,
 }
 impl Default for TableSetup {
     fn default() -> Self {
@@ -582,6 +588,8 @@ impl Default for TableSetup {
             show_grid: true,
             summary_label: default_summary_label(),
             wrap: false,
+            header_fill: String::new(),
+            row_band: false,
         }
     }
 }
