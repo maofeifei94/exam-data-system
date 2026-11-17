@@ -431,6 +431,7 @@ impl<'a> Compiler<'a> {
             "format_check" => self.op_format_check(step_index, step, &params),
             "invoice_validate" => self.op_invoice_validate(step_index, step, &params),
             "zero_score_check" => self.op_zero_score_check(step_index, step, &params),
+            "score_balance_check" => self.op_score_balance_check(step_index, step, &params),
             "range_check" => self.op_range_check(step_index, step, &params),
             "shuffle" => self.op_shuffle(step_index, step, &params),
             "balance_classes" => self.op_balance_classes(step_index, step, &params),
@@ -3197,6 +3198,76 @@ impl<'a> Compiler<'a> {
                     "{bad} 行存在 0 分{}，建议人工复核",
                     if include_blank { "或缺考" } else { "" }
                 )
+            }),
+        ))
+    }
+
+    /// 多科均衡校验：同一行各科最高分与最低分差值超过阈值即视为偏科。
+    fn op_score_balance_check(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let cols = list_param(p, "columns");
+        if cols.len() < 2 {
+            return Err("请至少选择两个科目字段".into());
+        }
+        for c in &cols {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let threshold = f64_param(p, "threshold").unwrap_or(30.0);
+        let values = cols
+            .iter()
+            .map(|c| format!("CAST({} AS REAL)", q(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let present = cols
+            .iter()
+            .map(|c| format!("TRIM(COALESCE(CAST({} AS TEXT), '')) <> ''", q(c)))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let cond = format!("({present}) AND MAX({values}) - MIN({values}) > {threshold}");
+        let count_sql = self.with_ctes(&format!("SELECT COUNT(*) FROM {} WHERE {cond}", self.cur));
+        let bad: i64 = self
+            .conn
+            .query_row(&count_sql, [], |r| r.get(0))
+            .map_err(|e| format!("多科均衡校验失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") == "fail" {
+            return Err(format!(
+                "多科均衡校验未通过：{bad} 行存在偏科（{} 分差 > {threshold}）",
+                cols.join("、")
+            ));
+        }
+        let flag_out = str_param(p, "flag_out");
+        let mut cte = None;
+        if !flag_out.is_empty() {
+            if self.has_column(&flag_out) {
+                return Err(format!("字段 [{flag_out}] 已存在"));
+            }
+            let sql = format!(
+                "SELECT *, CASE WHEN {cond} THEN '偏科' ELSE '' END AS {} FROM {}",
+                q(&flag_out),
+                self.cur
+            );
+            cte = Some(self.push_cte(sql));
+            self.add_column(DatasetColumn {
+                name: flag_out,
+                dtype: "text".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            cte,
+            Some(if bad == 0 {
+                "所选科目分差均在阈值内".to_string()
+            } else {
+                format!("{bad} 行存在偏科，阈值 {threshold} 分")
             }),
         ))
     }
@@ -6346,6 +6417,25 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "score_balance_check" => {
+                let list = list_param(&p, "columns");
+                if list.len() < 2 {
+                    step_errors.push("请至少选择两个科目字段".into());
+                }
+                for c in &list {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                let flag = str_param(&p, "flag_out");
+                if !flag.is_empty() {
+                    if cols.contains(&flag) {
+                        step_errors.push(format!("字段 [{flag}] 已存在"));
+                    } else {
+                        cols.push(flag);
+                    }
+                }
+            }
             "voucher_check" => {
                 let col = str_param(&p, "column");
                 if col.is_empty() {
@@ -8562,6 +8652,49 @@ mod tests {
                      "params": { "columns": ["语文", "数学"], "on_error": "warn" } }]),
         );
         assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn score_balance_check_flags_uneven_subjects_and_can_mark_rows() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("语文", "number"), ("数学", "number")],
+            &[
+                vec!["张三", "90", "95"],
+                vec!["李四", "90", "20"],
+                vec!["王五", "", "50"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_balance_fail",
+            json!([{ "id": "s1", "operator": "score_balance_check",
+                     "params": { "columns": ["语文", "数学"], "threshold": 30, "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_balance_warn",
+            json!([
+                { "id": "s1", "operator": "score_balance_check",
+                  "params": { "columns": ["语文", "数学"], "threshold": 30,
+                              "flag_out": "偏科预警", "on_error": "warn" } },
+                { "id": "s2", "operator": "output", "params": { "name": "均衡结果" } }
+            ]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+        let page = store::read_rows(&conn, warned.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let flag = page
+            .columns
+            .iter()
+            .position(|c| c.name == "偏科预警")
+            .expect("flag column");
+        assert_eq!(page.rows[0][flag], json!(""));
+        assert_eq!(page.rows[1][flag], json!("偏科"));
+        assert_eq!(page.rows[2][flag], json!(""));
     }
 
     #[test]

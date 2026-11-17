@@ -154,6 +154,16 @@ const FLOW_PRESETS: Array<{
     ],
   },
   {
+    name: '成绩均衡检查',
+    description: '比较各科成绩分差，标记偏科考生',
+    steps: [
+      {
+        operator: 'score_balance_check',
+        params: { columns: ['语文', '数学', '英语'], threshold: 30, flag_out: '偏科预警', on_error: 'warn' },
+      },
+    ],
+  },
+  {
     name: '成绩复核与总分核对',
     description: '单科零分/缺考检查 → 核对总成绩是否等于各科之和',
     steps: [

@@ -603,6 +603,24 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "score_balance_check",
+            "多科均衡校验",
+            "校验",
+            "比较同一行各科成绩的最高分与最低分，差值超过阈值视为偏科，可输出预警标记列。",
+            vec![
+                with_help(
+                    p("columns", "参与比较的科目字段", "columns", true, json!([])),
+                    "至少选择两个科目，空值行不参与比较",
+                ),
+                with_help(p("threshold", "分差阈值", "number", false, json!(30)), "最高分与最低分之差超过该值即预警"),
+                with_help(
+                    p("flag_out", "预警标记字段名（可空）", "text", false, json!("")),
+                    "填写后输出「偏科 / 空」标记列",
+                ),
+                with_options(p("on_error", "发现偏科时", "enum", false, json!("warn")), &["fail", "warn"]),
+            ],
+        ),
+        def(
             "range_check",
             "数值范围校验",
             "校验",
