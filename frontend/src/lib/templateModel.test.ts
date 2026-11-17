@@ -414,6 +414,8 @@ describe('normalizeTemplate', () => {
     background_image: '',
     header_text: '',
     footer_text: '',
+    header_align: 'left',
+    footer_align: 'left',
     chrome_font_size: 9,
     chrome_color: '#6B7280',
     watermark: '',

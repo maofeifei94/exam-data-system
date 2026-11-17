@@ -87,6 +87,9 @@ interface TemplateDraft {
   headerText: string;
   /** 页脚文字，支持 {字段} 占位符 */
   footerText: string;
+  /** 页眉 / 页脚对齐 */
+  headerAlign: 'left' | 'center' | 'right';
+  footerAlign: 'left' | 'center' | 'right';
   /** 页眉页脚字号与颜色 */
   chromeFontSize: number;
   chromeColor: string;
@@ -132,6 +135,8 @@ const EMPTY_DRAFT: TemplateDraft = {
   backgroundImage: '',
   headerText: '',
   footerText: '',
+  headerAlign: 'left',
+  footerAlign: 'left',
   chromeFontSize: 9,
   chromeColor: '#6B7280',
   watermark: '',
@@ -1343,6 +1348,8 @@ export default function TemplatePage({
     background_image: draft.backgroundImage.trim(),
     header_text: draft.headerText.trim(),
     footer_text: draft.footerText.trim(),
+    header_align: draft.headerAlign,
+    footer_align: draft.footerAlign,
     chrome_font_size: draft.chromeFontSize,
     chrome_color: draft.chromeColor,
     watermark: draft.watermark.trim(),
@@ -2182,6 +2189,8 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     backgroundImage: template.background_image ?? '',
     headerText: template.header_text ?? '',
     footerText: template.footer_text ?? '',
+    headerAlign: template.header_align ?? 'left',
+    footerAlign: template.footer_align ?? 'left',
     chromeFontSize: template.chrome_font_size ?? 9,
     chromeColor: template.chrome_color ?? '#6B7280',
     watermark: template.watermark ?? '',
@@ -2437,6 +2446,22 @@ function PagePanel({
           />
         </label>
         <label className="field">
+          <span className="field-label">页眉对齐</span>
+          <select
+            value={draft.headerAlign}
+            onChange={(event) =>
+              onDraft((prev) => ({
+                ...prev,
+                headerAlign: event.target.value as 'left' | 'center' | 'right',
+              }))
+            }
+          >
+            <option value="left">左对齐</option>
+            <option value="center">居中</option>
+            <option value="right">右对齐</option>
+          </select>
+        </label>
+        <label className="field">
           <span className="field-label">页脚</span>
           <input
             type="text"
@@ -2446,6 +2471,22 @@ function PagePanel({
               onDraft((prev) => ({ ...prev, footerText: event.target.value }))
             }
           />
+        </label>
+        <label className="field">
+          <span className="field-label">页脚对齐</span>
+          <select
+            value={draft.footerAlign}
+            onChange={(event) =>
+              onDraft((prev) => ({
+                ...prev,
+                footerAlign: event.target.value as 'left' | 'center' | 'right',
+              }))
+            }
+          >
+            <option value="left">左对齐</option>
+            <option value="center">居中</option>
+            <option value="right">右对齐</option>
+          </select>
         </label>
         <div className="grid-2">
           <NumberField

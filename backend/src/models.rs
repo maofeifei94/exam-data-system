@@ -726,6 +726,12 @@ pub struct TemplateBody {
     /// 页脚文字，支持占位符
     #[serde(default)]
     pub footer_text: String,
+    /// 页眉对齐：left / center / right
+    #[serde(default = "default_align")]
+    pub header_align: String,
+    /// 页脚对齐：left / center / right（显示页码时页脚占左侧 72% 区域）
+    #[serde(default = "default_align")]
+    pub footer_align: String,
     /// 页眉页脚字号（pt）
     #[serde(default = "default_chrome_font_size")]
     pub chrome_font_size: f32,
@@ -791,6 +797,8 @@ impl Default for TemplateBody {
             background_image: String::new(),
             header_text: String::new(),
             footer_text: String::new(),
+            header_align: default_align(),
+            footer_align: default_align(),
             chrome_font_size: default_chrome_font_size(),
             chrome_color: default_chrome_color(),
             watermark: String::new(),
@@ -1009,6 +1017,9 @@ pub struct PdfTemplate {
     pub background_image: String,
     pub header_text: String,
     pub footer_text: String,
+    /// 页眉 / 页脚对齐
+    pub header_align: String,
+    pub footer_align: String,
     /// 页眉页脚字号（pt）
     pub chrome_font_size: f32,
     pub chrome_color: String,
@@ -1055,6 +1066,10 @@ pub struct PdfTemplateInput {
     pub header_text: String,
     #[serde(default)]
     pub footer_text: String,
+    #[serde(default = "default_align")]
+    pub header_align: String,
+    #[serde(default = "default_align")]
+    pub footer_align: String,
     #[serde(default = "default_chrome_font_size")]
     pub chrome_font_size: f32,
     #[serde(default = "default_chrome_color")]

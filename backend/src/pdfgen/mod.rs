@@ -975,7 +975,7 @@ impl<'a> Painter<'a> {
                 m.left,
                 y,
                 content_w,
-                "left",
+                &body.header_align,
                 (chrome_size, chrome_color),
             );
         }
@@ -987,7 +987,7 @@ impl<'a> Painter<'a> {
                 m.left,
                 y,
                 content_w * 0.72,
-                "left",
+                &body.footer_align,
                 (chrome_size, chrome_color),
             );
         }
@@ -2140,6 +2140,8 @@ mod tests {
             page_field: "考场号".into(),
             header_text: "第 {考场号} 考场".into(),
             footer_text: "考试数据导出".into(),
+            header_align: "center".into(),
+            footer_align: "right".into(),
             watermark: "内部资料".into(),
             show_page_number: true,
             ..Default::default()

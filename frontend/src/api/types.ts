@@ -418,6 +418,9 @@ export interface PdfTemplate {
   header_text: string;
   /** 页脚文字，支持 {字段} 占位符 */
   footer_text: string;
+  /** 页眉 / 页脚对齐 */
+  header_align: 'left' | 'center' | 'right';
+  footer_align: 'left' | 'center' | 'right';
   /** 页眉页脚字号（pt） */
   chrome_font_size: number;
   /** 页眉页脚颜色 */
@@ -456,6 +459,8 @@ export interface PdfTemplateInput {
   background_image?: string;
   header_text?: string;
   footer_text?: string;
+  header_align?: 'left' | 'center' | 'right';
+  footer_align?: 'left' | 'center' | 'right';
   chrome_font_size?: number;
   chrome_color?: string;
   watermark?: string;
