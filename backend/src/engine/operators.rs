@@ -456,6 +456,23 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "join_dataset",
+            "关联数据表",
+            "字段",
+            "按关键字段把另一个数据集的字段关联进来，类似 Excel 的 VLOOKUP。例如按学号关联考生信息，按订单号关联收款记录。",
+            vec![
+                with_help(p("dataset_id", "关联数据集", "dataset", true, json!("")), "选择要从中取数的另一个数据集"),
+                p("left_field", "当前表关键字段", "column", true, json!("")),
+                p("right_field", "关联表关键字段", "dataset_column", true, json!("")),
+                with_help(
+                    p("fields", "取用字段", "dataset_fields", false, json!([])),
+                    "留空表示取关联表的全部字段；重名字段会自动加后缀",
+                ),
+                with_options(p("join_type", "关联方式", "enum", false, json!("left")), &["left", "inner"]),
+                with_help(p("prefix", "字段前缀", "text", false, json!("")), "如填「档案_」，关联字段会变成「档案_姓名」"),
+            ],
+        ),
+        def(
             "value_map",
             "值映射替换",
             "字段",

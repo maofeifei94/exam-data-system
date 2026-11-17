@@ -78,7 +78,12 @@ function defaultParamsFor(op: OperatorDef | undefined): Record<string, unknown> 
   for (const p of op.params) {
     if (p.default !== undefined && p.default !== null) {
       params[p.key] = p.default;
-    } else if (p.type === 'columns' || p.type === 'fields' || p.type === 'mappings') {
+    } else if (
+      p.type === 'columns' ||
+      p.type === 'fields' ||
+      p.type === 'mappings' ||
+      p.type === 'dataset_fields'
+    ) {
       params[p.key] = [];
     } else if (p.type === 'bool') {
       params[p.key] = false;
@@ -140,6 +145,8 @@ export default function ProjectFlowPage() {
 
   const [operators, setOperators] = useState<OperatorDef[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  /** 全部数据集：供「关联数据表」选择，不受当前项目绑定限制 */
+  const [allDatasets, setAllDatasets] = useState<Dataset[]>([]);
   const [standardFields, setStandardFields] = useState<StandardField[]>([]);
   const [projectTemplates, setProjectTemplates] = useState<PdfTemplate[]>([]);
   const [globalTemplates, setGlobalTemplates] = useState<PdfTemplate[]>([]);
@@ -312,10 +319,11 @@ export default function ProjectFlowPage() {
     (async () => {
       setLoading(true);
       try {
-        const [ops, datasetList, projectFields, flows, projectTpl, globalTpl] =
+        const [ops, datasetList, everyDataset, projectFields, flows, projectTpl, globalTpl] =
           await Promise.all([
             listOperators(),
             listDatasets(currentProjectId),
+            listDatasets(),
             listProjectFields(currentProjectId),
             listFlows({ projectId: currentProjectId }),
             listPdfTemplates({ projectId: currentProjectId }),
@@ -324,6 +332,7 @@ export default function ProjectFlowPage() {
         if (!active) return;
         setOperators(ops);
         setDatasets(datasetList);
+        setAllDatasets(everyDataset);
         // 项目流程只使用本项目字段，全局字段需先在「项目模板」中复制。
         setStandardFields(projectFieldsAsStandard(projectFields));
         setProjectTemplates(projectTpl);
@@ -1262,6 +1271,7 @@ export default function ProjectFlowPage() {
               index={selectedIndex}
               def={operatorMap.get(selectedStep.operator)}
               columns={availableColumns}
+              datasets={allDatasets}
               flowFields={
                 flowByStep.get(selectedIndex)?.input_fields ??
                 (requiredFields.length ? requiredFields : undefined)
@@ -1347,6 +1357,7 @@ interface StepEditorProps {
   index: number;
   def: OperatorDef | undefined;
   columns: string[];
+  datasets: Dataset[];
   /** 进入该步骤时的数据流字段快照；用于表达式字段校验 */
   flowFields?: string[];
   onRename: (label: string) => void;
@@ -1361,6 +1372,7 @@ function StepEditor({
   index,
   def,
   columns,
+  datasets,
   flowFields,
   onRename,
   onToggle,
@@ -1400,7 +1412,9 @@ function StepEditor({
           key={param.key}
           param={param}
           value={step.params?.[param.key]}
+          params={step.params ?? {}}
           columns={columns}
+          datasets={datasets}
           fields={flowFields}
           onChange={(value) => onParam(param.key, value)}
         />
@@ -1428,13 +1442,24 @@ function StepEditor({
 interface ParamControlProps {
   param: OperatorParam;
   value: unknown;
+  /** 同一步骤的全部参数值，用于「关联数据集」联动 */
+  params: Record<string, unknown>;
   columns: string[];
+  datasets: Dataset[];
   /** 当前步骤可用的数据流字段，用于表达式字段高亮校验 */
   fields?: string[];
   onChange: (value: unknown) => void;
 }
 
-function ParamControl({ param, value, columns, fields, onChange }: ParamControlProps) {
+function ParamControl({
+  param,
+  value,
+  params,
+  columns,
+  datasets,
+  fields,
+  onChange,
+}: ParamControlProps) {
   const label = (
     <span className="field-label">
       {param.label}
@@ -1473,6 +1498,53 @@ function ParamControl({ param, value, columns, fields, onChange }: ParamControlP
 
   if (param.type === 'columns' || param.type === 'fields') {
     return <ColumnsControl param={param} value={value} columns={columns} onChange={onChange} />;
+  }
+
+  if (param.type === 'dataset') {
+    return (
+      <label className="field">
+        {label}
+        <select value={String(value ?? '')} onChange={(event) => onChange(event.target.value)}>
+          <option value="">选择数据集…</option>
+          {datasets.map((dataset) => (
+            <option key={dataset.id} value={dataset.id}>
+              {dataset.name}（{dataset.row_count} 行）
+            </option>
+          ))}
+        </select>
+        {param.help ? <span className="field-hint">{param.help}</span> : null}
+      </label>
+    );
+  }
+
+  if (param.type === 'dataset_column' || param.type === 'dataset_fields') {
+    const datasetId = String(params.dataset_id ?? '');
+    const rightColumns =
+      datasets.find((dataset) => dataset.id === datasetId)?.columns.map((c) => c.name) ?? [];
+    if (param.type === 'dataset_column') {
+      return (
+        <label className="field">
+          {label}
+          <select value={String(value ?? '')} onChange={(event) => onChange(event.target.value)}>
+            <option value="">{datasetId ? '选择字段…' : '请先选择关联数据集'}</option>
+            {rightColumns.map((column) => (
+              <option key={column} value={column}>
+                {column}
+              </option>
+            ))}
+          </select>
+          {param.help ? <span className="field-hint">{param.help}</span> : null}
+        </label>
+      );
+    }
+    return (
+      <ColumnsControl
+        param={param}
+        value={value}
+        columns={rightColumns}
+        onChange={onChange}
+      />
+    );
   }
 
   if (param.type === 'mappings') {

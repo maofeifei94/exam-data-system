@@ -210,7 +210,10 @@ export interface OperatorParam {
     | 'fields'
     | 'mappings'
     | 'sorts'
-    | 'aggregations';
+    | 'aggregations'
+    | 'dataset'
+    | 'dataset_column'
+    | 'dataset_fields';
   required: boolean;
   default?: any;
   options?: string[];

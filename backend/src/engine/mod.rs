@@ -19,6 +19,7 @@ use crate::models::{
 use crate::store;
 use rusqlite::Connection;
 use serde_json::Value;
+use std::collections::HashMap;
 
 const PREVIEW_ROWS: i64 = 200;
 /// 节点数据预览单次最多返回的行数，防止误传超大 limit 拖垮接口。
@@ -178,6 +179,45 @@ fn value_or_expr(raw: &str, cols: &[String]) -> Result<String, String> {
     } else {
         Ok(format!("'{}'", text.replace('\'', "''")))
     }
+}
+
+/// 规划「关联数据表」的输出列：返回（右表字段名, 输出字段名, 类型）。
+///
+/// 重名时自动追加 `_2`、`_3`；配置了前缀则统一加前缀。
+fn join_output_plan(
+    left_names: &[String],
+    right: &[DatasetColumn],
+    requested: &[String],
+    prefix: &str,
+) -> Result<Vec<(String, String, String)>, String> {
+    let mut picked: Vec<&DatasetColumn> = Vec::new();
+    if requested.is_empty() {
+        picked.extend(right.iter());
+    } else {
+        for name in requested {
+            let Some(col) = right.iter().find(|c| &c.name == name) else {
+                return Err(format!("关联表中没有字段 [{name}]"));
+            };
+            if !picked.iter().any(|c| c.name == col.name) {
+                picked.push(col);
+            }
+        }
+    }
+    let mut used: Vec<String> = left_names.to_vec();
+    let mut out = Vec::new();
+    for col in picked {
+        let mut name = format!("{prefix}{}", col.name);
+        if used.contains(&name) {
+            let mut n = 2;
+            while used.contains(&format!("{name}_{n}")) {
+                n += 1;
+            }
+            name = format!("{name}_{n}");
+        }
+        used.push(name.clone());
+        out.push((col.name.clone(), name, col.dtype.clone()));
+    }
+    Ok(out)
 }
 
 fn agg_label(func: &str, field: &str) -> String {
@@ -358,6 +398,7 @@ impl<'a> Compiler<'a> {
             "assign_seats" => self.op_assign_seats(step_index, step, &params),
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
+            "join_dataset" => self.op_join_dataset(step_index, step, &params),
             "value_map" => self.op_value_map(step_index, step, &params),
             "text_clean" => self.op_text_clean(step_index, step, &params),
             "sequence" => self.op_sequence(step_index, step, &params),
@@ -2291,6 +2332,89 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_join_dataset(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let right_id = str_param(p, "dataset_id");
+        if right_id.is_empty() {
+            return Err("请选择关联数据集".to_string());
+        }
+        let left_field = str_param(p, "left_field");
+        if !self.has_column(&left_field) {
+            return Err(format!("字段 [{left_field}] 不存在"));
+        }
+        let right_cols = store::get_columns(self.conn, &right_id)
+            .map_err(|e| format!("读取关联数据集字段失败: {e}"))?;
+        if right_cols.is_empty() {
+            return Err("关联数据集没有字段".to_string());
+        }
+        let right_field = str_param(p, "right_field");
+        if !right_cols.iter().any(|c| c.name == right_field) {
+            return Err(format!("关联表中没有字段 [{right_field}]"));
+        }
+        let requested = list_param(p, "fields");
+        let prefix = str_param(p, "prefix");
+        let plan = join_output_plan(
+            &self
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>(),
+            &right_cols,
+            &requested,
+            &prefix,
+        )?;
+        let table =
+            crate::db::table_name(&right_id).map_err(|e| format!("关联数据集不可用: {e}"))?;
+        let mut right_items: Vec<String> = Vec::new();
+        for (idx, col) in right_cols.iter().enumerate() {
+            if col.name == right_field {
+                right_items.push(format!("\"c{idx}\" AS \"__join_key__\""));
+            }
+        }
+        for (name, _, _) in &plan {
+            if let Some(idx) = right_cols.iter().position(|c| &c.name == name) {
+                right_items.push(format!("\"c{idx}\" AS {}", q(name)));
+            }
+        }
+        let mut items: Vec<String> = vec!["l.*".to_string()];
+        for (name, out, _) in &plan {
+            items.push(format!("r.{} AS {}", q(name), q(out)));
+        }
+        let join = if str_param(p, "join_type") == "inner" {
+            "INNER JOIN"
+        } else {
+            "LEFT JOIN"
+        };
+        let body = format!(
+            "SELECT {} FROM {} l {} (SELECT {} FROM \"{}\") r ON CAST(l.{} AS TEXT) = CAST(r.\"__join_key__\" AS TEXT)",
+            items.join(", "),
+            self.cur,
+            join,
+            right_items.join(", "),
+            table,
+            q(&left_field)
+        );
+        let cte = self.push_cte(body);
+        for (_, out, dtype) in &plan {
+            self.add_column(DatasetColumn {
+                name: out.clone(),
+                dtype: dtype.clone(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("关联数据集，新增 {} 个字段", plan.len())),
+        ))
+    }
+
     fn op_value_map(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
         let col = str_param(p, "column");
         if !self.has_column(&col) {
@@ -3538,6 +3662,16 @@ pub(crate) fn missing_required_fields(
 /// 未声明的字段按用户约定视为不存在；没有必需字段声明时才退回数据集实际列。
 /// 每一步都会输出进入/离开时的字段快照，前端据此即时提示流程是否合理。
 pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult {
+    validate_steps_with(steps, columns, &HashMap::new())
+}
+
+/// 与 `validate_steps` 相同，但可以传入「关联数据表」算子用到的数据集字段，
+/// 从而静态推导 JOIN 之后新增的字段名。
+pub fn validate_steps_with(
+    steps: &[FlowStep],
+    columns: &[String],
+    join_datasets: &HashMap<String, Vec<DatasetColumn>>,
+) -> ValidateResult {
     let mut errors: Vec<ValidateError> = Vec::new();
     let mut flows: Vec<StepFlow> = Vec::new();
 
@@ -4074,6 +4208,30 @@ pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult 
                         step_errors.push(format!("{} 不能为空", key));
                     } else if !cols.contains(&c) {
                         step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+            }
+            "join_dataset" => {
+                let left = str_param(&p, "left_field");
+                if !cols.contains(&left) {
+                    step_errors.push(format!("字段 [{left}] 不存在"));
+                }
+                let dataset_id = str_param(&p, "dataset_id");
+                if dataset_id.is_empty() {
+                    step_errors.push("请选择关联数据集".into());
+                } else if let Some(right_cols) = join_datasets.get(&dataset_id) {
+                    let right_field = str_param(&p, "right_field");
+                    if !right_cols.iter().any(|c| c.name == right_field) {
+                        step_errors.push(format!("关联表中没有字段 [{right_field}]"));
+                    }
+                    match join_output_plan(
+                        &cols,
+                        right_cols,
+                        &list_param(&p, "fields"),
+                        &str_param(&p, "prefix"),
+                    ) {
+                        Ok(plan) => cols.extend(plan.into_iter().map(|(_, out, _)| out)),
+                        Err(e) => step_errors.push(e),
                     }
                 }
             }
@@ -4853,6 +5011,80 @@ mod tests {
         let yi = names.iter().position(|n| *n == "乙").unwrap();
         assert_eq!(bank[jia], json!(500.0));
         assert_eq!(bank[yi], json!(90.0));
+    }
+
+    #[test]
+    fn join_dataset_brings_columns_from_another_dataset() {
+        let (mut conn, left_id) = setup_custom(
+            &[("学号", "text"), ("姓名", "text")],
+            &[vec!["001", "张三"], vec!["002", "李四"]],
+        );
+        let right_cols = vec![
+            DatasetColumn {
+                name: "学号".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "手机号".into(),
+                dtype: "text".into(),
+            },
+        ];
+        let right_rows = vec![
+            vec![Some("001".into()), Some("13800138000".into())],
+            vec![Some("002".into()), Some("13900139000".into())],
+        ];
+        let right = store::create_dataset(
+            &mut conn,
+            store::NewDataset {
+                name: "考生档案",
+                kind: "import",
+                source_file: "",
+                origin: "单元测试",
+                project_id: "",
+                columns: &right_cols,
+                rows: &right_rows,
+            },
+        )
+        .expect("right dataset");
+        let result = run_steps(
+            &mut conn,
+            &left_id,
+            "f_join",
+            json!([
+                { "id": "s1", "operator": "join_dataset",
+                  "params": { "dataset_id": right.id.clone(), "left_field": "学号", "right_field": "学号",
+                              "fields": ["手机号"], "join_type": "left" } },
+                { "id": "s2", "operator": "output", "params": { "name": "关联结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.columns.len(), 3);
+        assert_eq!(page.columns[2].name, "手机号");
+        assert_eq!(page.rows[0][2], json!("13800138000"));
+        assert_eq!(page.rows[1][2], json!("13900139000"));
+
+        let validate_steps = steps(json!([
+            { "id": "s1", "operator": "join_dataset",
+              "params": { "dataset_id": right.id.clone(), "left_field": "学号", "right_field": "学号",
+                          "fields": ["手机号"] } }
+        ]));
+        let mut map: HashMap<String, Vec<DatasetColumn>> = HashMap::new();
+        map.insert(
+            right.id.clone(),
+            store::get_columns(&conn, &right.id).expect("right cols"),
+        );
+        let validated = validate_steps_with(
+            &validate_steps,
+            &["学号".to_string(), "姓名".to_string()],
+            &map,
+        );
+        assert!(validated.ok, "{:?}", validated.errors);
+        assert_eq!(
+            validated.steps[0].output_fields,
+            vec!["学号", "姓名", "手机号"]
+        );
     }
 
     #[test]

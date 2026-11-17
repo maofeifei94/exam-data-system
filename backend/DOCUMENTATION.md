@@ -260,6 +260,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `balance_check` | 按凭证号汇总借贷方，检查每张凭证是否平衡 |
 | `assign_seats` | 按顺序自动编排考场号与座位号，可设每考场人数和起始考场 |
+| `join_dataset` | 按关键字段关联另一个数据集（VLOOKUP），可选取字段、左/内连接与字段前缀 |
 | `split_column` | 按分隔符把一列拆成多列（`考场-座位` → 考场、座位） |
 | `value_map` | 值映射替换（男→M、缺考→0），未匹配值可选保留 |
 | `text_clean` | 去首尾空白、去空格换行、大小写转换、全角转半角 |

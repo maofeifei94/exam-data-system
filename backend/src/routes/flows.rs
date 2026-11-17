@@ -12,6 +12,7 @@ use axum::Json;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 const FLOW_COLS: &str =
@@ -322,7 +323,37 @@ pub async fn validate(
     Json(input): Json<ValidateFlowInput>,
 ) -> AppResult<Json<ValidateResult>> {
     let steps = normalize_steps(&input.steps);
-    let mut result = engine::validate_steps(&steps, &input.columns);
+    // 「关联数据表」的静态校验需要知道右表字段，先按需读取。
+    let join_ids: Vec<String> = steps
+        .iter()
+        .filter(|s| s.enabled && s.operator == "join_dataset")
+        .filter_map(|s| {
+            s.params
+                .get("dataset_id")
+                .and_then(|v| v.as_str())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .collect();
+    let mut join_datasets: HashMap<String, Vec<models::DatasetColumn>> = HashMap::new();
+    if !join_ids.is_empty() {
+        join_datasets = state
+            .db(move |conn| {
+                let mut map: HashMap<String, Vec<models::DatasetColumn>> = HashMap::new();
+                for id in join_ids {
+                    if let Ok(cols) = store::get_columns(conn, &id) {
+                        map.insert(id, cols);
+                    }
+                }
+                Ok(map)
+            })
+            .await?;
+    }
+    let mut result = if join_datasets.is_empty() {
+        engine::validate_steps(&steps, &input.columns)
+    } else {
+        engine::validate_steps_with(&steps, &input.columns, &join_datasets)
+    };
 
     // 项目流程额外校验：必需字段必须真实存在于项目模板，而不是沿用全局字段。
     let input_columns = input.columns.clone();
