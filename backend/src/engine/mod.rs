@@ -400,6 +400,7 @@ impl<'a> Compiler<'a> {
             "rank" => self.op_rank(step_index, step, &params),
             "filter" => self.op_filter(step_index, step, &params),
             "dedupe" => self.op_dedupe(step_index, step, &params),
+            "duplicate_flag" => self.op_duplicate_flag(step_index, step, &params),
             "sort" => self.op_sort(step_index, step, &params),
             "limit" => self.op_limit(step_index, step, &params),
             "random_number" => self.op_random_number(step_index, step, &params),
@@ -998,6 +999,69 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("按 {} 去重", cols.join("、"))),
+        ))
+    }
+
+    /// 重复值标记：不删数据，只给重复行打标记。
+    fn op_duplicate_flag(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let cols = list_param(p, "columns");
+        if cols.is_empty() {
+            return Err("判重字段不能为空".into());
+        }
+        for c in &cols {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let out = defaulted(str_param(p, "out"), "重复标记");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let keep_first = bool_param(p, "keep_first", false);
+        let order_by = str_param(p, "order_by");
+        if !order_by.is_empty() && !self.has_column(&order_by) {
+            return Err(format!("字段 [{order_by}] 不存在"));
+        }
+        let partition = cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ");
+        let e = if keep_first {
+            let order = if order_by.is_empty() {
+                "ORDER BY (SELECT NULL)".to_string()
+            } else {
+                let dir = if str_param(p, "order") == "desc" {
+                    "DESC"
+                } else {
+                    "ASC"
+                };
+                format!("ORDER BY {} {dir}", q(&order_by))
+            };
+            format!(
+                "CASE WHEN COUNT(*) OVER (PARTITION BY {partition}) > 1 \
+                 AND ROW_NUMBER() OVER (PARTITION BY {partition} {order}) > 1 \
+                 THEN '重复' ELSE '' END"
+            )
+        } else {
+            format!(
+                "CASE WHEN COUNT(*) OVER (PARTITION BY {partition}) > 1 \
+                 THEN '重复' ELSE '' END"
+            )
+        };
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("按 [{}] 标记重复值 → [{out}]", cols.join("、"))),
         ))
     }
 
@@ -6108,6 +6172,27 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "duplicate_flag" => {
+                let list = list_param(&p, "columns");
+                if list.is_empty() {
+                    step_errors.push("判重字段不能为空".into());
+                }
+                for c in &list {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                let order = str_param(&p, "order_by");
+                if !order.is_empty() && !cols.contains(&order) {
+                    step_errors.push(format!("字段 [{order}] 不存在"));
+                }
+                let out = defaulted(str_param(&p, "out"), "重复标记");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "map_columns" => {
                 // 全局别名表只在运行时可见，这里仅推演显式写出的映射。
                 if let Some(arr) = p.get("mappings").and_then(|v| v.as_array()) {
@@ -9174,6 +9259,66 @@ mod tests {
         assert_eq!(page.rows[0][flag], json!(""));
         assert_eq!(page.rows[1][flag], json!("偏科"));
         assert_eq!(page.rows[2][flag], json!(""));
+    }
+
+    #[test]
+    fn duplicate_flag_marks_all_or_keeps_first() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("序号", "number"), ("证件号", "text")],
+            &[vec!["1", "A"], vec!["2", "A"], vec!["3", "B"]],
+        );
+        let all_result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_dup_all",
+            json!([
+                { "id": "s1", "operator": "duplicate_flag",
+                  "params": { "columns": ["证件号"] } },
+                { "id": "s2", "operator": "output", "params": { "name": "全部重复" } }
+            ]),
+        );
+        assert_eq!(all_result.status, "success", "{:?}", all_result.message);
+        let page = store::read_rows(
+            &conn,
+            all_result.output_dataset_id.as_deref().unwrap(),
+            0,
+            10,
+        )
+        .expect("read");
+        let idx = page
+            .columns
+            .iter()
+            .position(|c| c.name == "重复标记")
+            .expect("column");
+        assert_eq!(page.rows[0][idx], json!("重复"));
+        assert_eq!(page.rows[1][idx], json!("重复"));
+        assert_eq!(page.rows[2][idx], json!(""));
+
+        let first_result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_dup_first",
+            json!([
+                { "id": "s1", "operator": "duplicate_flag",
+                  "params": { "columns": ["证件号"], "keep_first": true, "order_by": "序号" } },
+                { "id": "s2", "operator": "output", "params": { "name": "保留首条" } }
+            ]),
+        );
+        assert_eq!(first_result.status, "success", "{:?}", first_result.message);
+        let page = store::read_rows(
+            &conn,
+            first_result.output_dataset_id.as_deref().unwrap(),
+            0,
+            10,
+        )
+        .expect("read");
+        let idx = page
+            .columns
+            .iter()
+            .position(|c| c.name == "重复标记")
+            .expect("column");
+        assert_eq!(page.rows[0][idx], json!(""));
+        assert_eq!(page.rows[1][idx], json!("重复"));
     }
 
     #[test]

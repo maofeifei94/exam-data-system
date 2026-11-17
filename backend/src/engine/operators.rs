@@ -164,6 +164,19 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "duplicate_flag",
+            "重复值标记",
+            "行",
+            "按字段组合标记重复行（如重复报名、重复发票），可保留第一条不标记。",
+            vec![
+                p("columns", "判重字段", "columns", true, json!([])),
+                p("out", "标记字段名", "text", false, json!("重复标记")),
+                with_help(p("keep_first", "保留第一条", "bool", false, json!(false)), "开启后每组只在第 2 条及以后标记"),
+                with_help(p("order_by", "排序字段（可空）", "column", false, json!("")), "配合「保留第一条」决定谁是第一条"),
+                with_options(p("order", "排序方向", "enum", false, json!("asc")), &["asc", "desc"]),
+            ],
+        ),
+        def(
             "sort",
             "排序",
             "行",

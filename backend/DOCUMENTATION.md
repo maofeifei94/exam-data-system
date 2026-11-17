@@ -238,6 +238,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | 算子 | 说明 |
 | --- | --- |
 | `sort`（升级） | 支持多级排序：`keys: [{field, order}]` 从上到下依次比较；未填时回退旧的 `by` + `order` |
+| `duplicate_flag` | 重复值标记：按字段组合给重复行打「重复」标记，可保留每组第一条不标记 |
 | `random_number` | 生成随机整数/小数，可指定取值范围与小数位 |
 | `random_rows` | 随机打乱（shuffle）或随机抽取 N 行（sample） |
 | `group_aggregate` | 分组汇总：计数、去重计数、合计、平均、最小、最大、拼接、标准差、方差 |

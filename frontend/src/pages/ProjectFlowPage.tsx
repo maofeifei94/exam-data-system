@@ -78,6 +78,23 @@ const FLOW_PRESETS: Array<{
     ],
   },
   {
+    name: '重复报名检测',
+    description: '按身份证号标记重复报名，保留最早一条并筛出重复名单',
+    steps: [
+      {
+        operator: 'duplicate_flag',
+        params: {
+          columns: ['身份证号'],
+          out: '重复标记',
+          keep_first: true,
+          order_by: '报名时间',
+          order: 'asc',
+        },
+      },
+      { operator: 'filter', params: { expr: "[重复标记] = '重复'" } },
+    ],
+  },
+  {
     name: '缺考标记与补考名单',
     description: '按成绩空值标记考试状态 → 只保留缺考行',
     steps: [
