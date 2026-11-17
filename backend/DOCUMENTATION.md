@@ -273,6 +273,8 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `append_dataset` | 纵向合并另一个数据集，按字段名对齐、缺失补空，可选去重 |
 | `split_column` | 按分隔符把一列拆成多列（`考场-座位` → 考场、座位） |
 | `name_split` | 姓名拆分：识别欧阳、司马、上官等常见复姓，输出姓与名 |
+| `split_rows` | 拆分多行：按分隔符把一个字段拆成多行，其余字段复制 |
+| `balance_classes` | 分班/分组：按成绩蛇形或轮询分配到指定班级数，保持各班总分均衡 |
 | `value_map` | 值映射替换（男→M、缺考→0），未匹配值可选保留 |
 | `text_clean` | 去首尾空白、去空格换行、大小写转换、全角转半角 |
 | `sequence` | 行号/序号，支持分组内重新编号 |

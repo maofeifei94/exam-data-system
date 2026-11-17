@@ -630,6 +630,43 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "split_rows",
+            "拆分多行",
+            "行",
+            "按分隔符把一个字段拆成多行，其余字段原样复制，适合一格里多个科目、标签或备注。",
+            vec![
+                p("column", "拆分字段", "column", true, json!("")),
+                with_help(
+                    p("delimiter", "分隔符", "text", true, json!(",")),
+                    "如逗号、分号、顿号，支持多字符",
+                ),
+                p("trim", "去除各项首尾空白", "bool", false, json!(true)),
+            ],
+        ),
+        def(
+            "balance_classes",
+            "分班/分组",
+            "计算",
+            "按成绩排序后蛇形或轮询分配到指定数量的班级/组，尽量保持各班总分均衡。",
+            vec![
+                with_help(
+                    p("class_count", "班级/组数", "number", true, json!(2)),
+                    "要分成的班级或小组数量",
+                ),
+                p("order_by", "排序字段（可空）", "column", false, json!("")),
+                with_options(
+                    p("order", "排序方向", "enum", false, json!("desc")),
+                    &["desc", "asc"],
+                ),
+                with_options(
+                    p("method", "分配方式", "enum", false, json!("snake")),
+                    &["snake", "round_robin"],
+                ),
+                p("start", "起始班级号", "number", false, json!(1)),
+                p("class_out", "班级字段名", "text", false, json!("班级")),
+            ],
+        ),
+        def(
             "name_split",
             "姓名拆分",
             "字段",

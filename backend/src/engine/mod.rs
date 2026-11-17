@@ -414,12 +414,14 @@ impl<'a> Compiler<'a> {
             "format_check" => self.op_format_check(step_index, step, &params),
             "range_check" => self.op_range_check(step_index, step, &params),
             "shuffle" => self.op_shuffle(step_index, step, &params),
+            "balance_classes" => self.op_balance_classes(step_index, step, &params),
             "assign_seats" => self.op_assign_seats(step_index, step, &params),
             "sum_check" => self.op_sum_check(step_index, step, &params),
             "voucher_check" => self.op_voucher_check(step_index, step, &params),
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
             "name_split" => self.op_name_split(step_index, step, &params),
+            "split_rows" => self.op_split_rows(step_index, step, &params),
             "join_dataset" => self.op_join_dataset(step_index, step, &params),
             "append_dataset" => self.op_append_dataset(step_index, step, &params),
             "unpivot" => self.op_unpivot(step_index, step, &params),
@@ -3062,6 +3064,129 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_split_rows(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let delimiter = str_param(p, "delimiter");
+        if delimiter.is_empty() {
+            return Err("分隔符不能为空".to_string());
+        }
+        let trim = bool_param(p, "trim", true);
+        let piece = format!("split_part({}, {}, n)", q(&col), sql_literal(&delimiter));
+        let piece = if trim {
+            format!("TRIM({piece})")
+        } else {
+            piece
+        };
+        let numbers = {
+            let parts: Vec<String> = (1..=20).map(|n| format!("SELECT {n} AS n")).collect();
+            format!("({})", parts.join(" UNION ALL "))
+        };
+        let items: Vec<String> = self
+            .columns
+            .iter()
+            .map(|c| {
+                if c.name == col {
+                    format!("{piece} AS {}", q(&c.name))
+                } else {
+                    q(&c.name)
+                }
+            })
+            .collect();
+        let body = format!(
+            "SELECT {} FROM {} CROSS JOIN {numbers} \
+             WHERE split_part({}, {}, n) <> '' \
+                OR (n = 1 AND TRIM(COALESCE(CAST({} AS TEXT), '')) = '')",
+            items.join(", "),
+            self.cur,
+            q(&col),
+            sql_literal(&delimiter),
+            q(&col)
+        );
+        let cte = self.push_cte(body);
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("按「{delimiter}」拆分 [{col}] 为多行")),
+        ))
+    }
+
+    fn op_balance_classes(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let count = num_param(p, "class_count").unwrap_or(2);
+        if count <= 0 {
+            return Err("班级/组数必须大于 0".to_string());
+        }
+        let order_by = str_param(p, "order_by");
+        if !order_by.is_empty() && !self.has_column(&order_by) {
+            return Err(format!("排序字段 [{order_by}] 不存在"));
+        }
+        let out = defaulted(str_param(p, "class_out"), "班级");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let start = num_param(p, "start").unwrap_or(1);
+        let method = {
+            let m = str_param(p, "method");
+            if m.is_empty() {
+                "snake".to_string()
+            } else {
+                m
+            }
+        };
+        if method != "snake" && method != "round_robin" {
+            return Err(format!("未知的分配方式: {method}"));
+        }
+        let direction = if str_param(p, "order") == "asc" {
+            "ASC"
+        } else {
+            "DESC"
+        };
+        let rn = if order_by.is_empty() {
+            "ROW_NUMBER() OVER (ORDER BY (SELECT NULL))".to_string()
+        } else {
+            format!("ROW_NUMBER() OVER (ORDER BY {} {direction})", q(&order_by))
+        };
+        let expr = if method == "snake" {
+            format!(
+                "CASE WHEN ((({rn} - 1) / {count}) % 2) = 0 \
+                 THEN ((({rn} - 1) % {count}) + {start}) \
+                 ELSE ({count} - (({rn} - 1) % {count}) + {start} - 1) END"
+            )
+        } else {
+            format!("((({rn} - 1) % {count}) + {start})")
+        };
+        let cte = self.push_cte(format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "{}分配为 {count} 个班级/组 → [{out}]",
+                if method == "snake" {
+                    "蛇形"
+                } else {
+                    "轮询"
+                }
+            )),
+        ))
+    }
+
     fn op_name_split(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
         let col = str_param(p, "column");
         if !self.has_column(&col) {
@@ -5600,6 +5725,34 @@ pub fn validate_steps_with(
                     step_errors.push("拆分段数应在 1~20 之间".into());
                 }
             }
+            "split_rows" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                if str_param(&p, "delimiter").is_empty() {
+                    step_errors.push("分隔符不能为空".into());
+                }
+            }
+            "balance_classes" => {
+                if num_param(&p, "class_count").unwrap_or(2) <= 0 {
+                    step_errors.push("班级/组数必须大于 0".into());
+                }
+                let order_by = str_param(&p, "order_by");
+                if !order_by.is_empty() && !cols.contains(&order_by) {
+                    step_errors.push(format!("排序字段 [{order_by}] 不存在"));
+                }
+                let method = str_param(&p, "method");
+                if !method.is_empty() && method != "snake" && method != "round_robin" {
+                    step_errors.push(format!("未知的分配方式: {method}"));
+                }
+                let out = defaulted(str_param(&p, "class_out"), "班级");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "name_split" => {
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
@@ -7076,6 +7229,82 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn split_rows_expands_delimited_values() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("科目", "text")],
+            &[vec!["张三", "语文, 数学"], vec!["李四", ""]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_split_rows",
+            json!([
+                { "id": "s1", "operator": "split_rows",
+                  "params": { "column": "科目", "delimiter": "," } },
+                { "id": "s2", "operator": "output", "params": { "name": "拆分多行" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let pairs: Vec<(String, String)> = page
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r[0].as_str().unwrap().to_string(),
+                    r[1].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("张三".to_string(), "语文".to_string()),
+                ("张三".to_string(), "数学".to_string()),
+                ("李四".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn balance_classes_snake_distributes_scores_evenly() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("成绩", "number")],
+            &[
+                vec!["甲", "100"],
+                vec!["乙", "90"],
+                vec!["丙", "80"],
+                vec!["丁", "70"],
+                vec!["戊", "60"],
+                vec!["己", "50"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_balance",
+            json!([
+                { "id": "s1", "operator": "balance_classes",
+                  "params": { "class_count": 2, "order_by": "成绩", "method": "snake" } },
+                { "id": "s2", "operator": "output", "params": { "name": "分班结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let mut sums = [0.0f64; 2];
+        let mut counts = [0i64; 2];
+        for row in &page.rows {
+            let class = row[2].as_f64().unwrap() as usize;
+            sums[class - 1] += row[1].as_f64().unwrap();
+            counts[class - 1] += 1;
+        }
+        assert_eq!(counts, [3, 3]);
+        assert!((sums[0] - sums[1]).abs() < 20.0, "{sums:?}");
     }
 
     #[test]
