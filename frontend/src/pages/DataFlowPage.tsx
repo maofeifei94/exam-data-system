@@ -9,7 +9,7 @@ import {
   runFlow,
 } from '../api/client';
 import type { Dataset, Flow, FlowStep, PdfTemplate, RowPage } from '../api/types';
-import { DataTable } from '../components/DataTable';
+import { CanvasTable } from '../components/CanvasTable';
 import { EmptyState } from '../components/EmptyState';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
@@ -406,13 +406,12 @@ export default function DataFlowPage() {
               {!selected ? (
                 <EmptyState text="从左侧节点树中选择一个节点" />
               ) : rows ? (
-                <DataTable
+                <CanvasTable
                   columns={rows.columns.map((column) => column.name)}
                   rows={rows.rows}
                   loading={rowsLoading}
                   emptyText="该节点没有数据"
                   maxHeight="100%"
-                  stickyHeader
                 />
               ) : rowsLoading ? (
                 <div className="table-state">

@@ -75,7 +75,7 @@ React 应用 src/main.tsx → App.tsx
 | `src/components/Spinner.tsx` | 加载指示器。 |
 | `src/components/EmptyState.tsx` | 空状态占位。 |
 | `src/components/Field.tsx` | 表单字段外壳（标签 + 提示）。 |
-| `src/components/DataTable.tsx` | 数据表格：自动识别数值列右对齐、空值占位、单元格格式化；根据 `UiSettings` 追加 `align-center` / `bordered` class（默认居中 + 带边框，可在「选项」中关闭）。 |
+| `src/components/CanvasTable.tsx` | **Excel 风格画布表格**：单张 canvas 绘制，冻结表头（列字母 + 字段名）与行号列，原生滚轮滚动、单元格选区 / 拖拽选区 / 列头整列选择 / 行号整行选择、拖拽列宽、方向键导航、Ctrl+C 复制选区为 TSV、明暗双主题。虚拟化只绘制视口内的行，10 万行同样流畅；纯计算在 `canvasTable/model.ts`，绘制在 `canvasTable/paint.ts`。 |
 | `src/components/NewProjectDialog.tsx` | 新建考试项目对话框（名称、说明、文件夹选择）。 |
 | `src/components/TokenEditor.tsx` | **字段胶囊编辑器**：展示态把 `{{字段}}`/`[字段]` 渲染成彩色胶囊，双击进入编辑态；支持 template / expr 两种模式。 |
 
@@ -88,6 +88,8 @@ React 应用 src/main.tsx → App.tsx
 | `src/lib/tokens.ts` | 字段胶囊解析与配色：表达式 token、模板 token、字段配色、hex→rgba。 |
 | `src/lib/projectFields.ts` | `projectFieldsAsStandard(projectFields)`：把项目本地字段转换成标准字段形状。**不做全局合并**——项目内只能引用本项目字段，全局字段需先复制进项目。 |
 | `src/lib/native.ts` | 见上（桌面能力）。 |
+| `src/components/canvasTable/model.ts` | **画布表格的纯计算层**：虚拟行窗口、抽样列宽估算、命中测试、选区归一化 / 移动 / 复制，配有 `model.test.ts`。 |
+| `src/components/canvasTable/paint.ts` | 画布绘制层：网格、文字、冻结表头、行号列、选区边框与填充柄。 |
 | `*.test.ts` | 上述模块的单元测试（vitest）。 |
 
 ### 2.5 页面 `src/pages/`
@@ -101,6 +103,12 @@ React 应用 src/main.tsx → App.tsx
 | `DataFlowPage.tsx` | **数据流**：左侧按 `branch_of` 还原的节点多级目录，右侧查看该节点数据表；终点节点展示 PDF 预览与下载。 |
 | `AliasPage.tsx` | 字段别名与标准字段管理：分组卡片、拖拽换组、改名、增删别名。别名胶囊共用同一前缀「别名：」，其后并列展示全部别名标签（不重复前缀、不加分隔符）；`InlineSelect` / `PrecisionInput` 也供项目模板卡片复用。 |
 | `TemplatePage.tsx` | PDF 模板设计器：页面/矩阵设置、元素树、画布拖拽缩放、属性面板、预览与渲染导出。 |
+
+### 2.6 画布表格性能演示页
+
+`npm run dev` 后打开 `http://localhost:5173/bench.html`，页面会生成 10 万行 × 12 列数据并渲染
+`CanvasTable`，用于验证滚轮滚动、冻结表头、选区与复制在超大数据量下的表现。
+该页面只用于开发验证，不参与 `npm run build` 的产物。
 
 ---
 

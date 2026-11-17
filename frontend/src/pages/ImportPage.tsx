@@ -8,7 +8,7 @@ import {
   listProjectFields,
 } from '../api/client';
 import type { ColumnSuggestion, Dataset, ImportResult, RowPage, StandardField } from '../api/types';
-import { DataTable } from '../components/DataTable';
+import { CanvasTable } from '../components/CanvasTable';
 import { EmptyState } from '../components/EmptyState';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
@@ -226,12 +226,11 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
               <h3 className="card-title">导入预览（映射前）</h3>
               <div className="card-scroll">
                 {result ? (
-                  <DataTable
+                  <CanvasTable
                     columns={result.preview.columns.map((column) => column.name)}
                     rows={result.preview.rows}
                     emptyText="暂无预览数据"
                     maxHeight="100%"
-                    stickyHeader
                   />
                 ) : (
                   <EmptyState text="还没有导入数据" />
@@ -333,12 +332,11 @@ export default function ImportPage({ onNavigate, onImported }: Props) {
                 <>
                   <div className="detail-meta">共 {appliedDataset.row_count} 行</div>
                   <div className="card-scroll">
-                    <DataTable
+                    <CanvasTable
                       columns={appliedDataset.columns.map((column) => column.name)}
                       rows={appliedRows?.rows ?? []}
                       emptyText="暂无数据"
                       maxHeight="100%"
-                      stickyHeader
                     />
                   </div>
                 </>

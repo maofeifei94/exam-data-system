@@ -8,7 +8,7 @@ import {
   updateProject,
 } from '../api/client';
 import type { Dataset, RowPage } from '../api/types';
-import { DataTable } from '../components/DataTable';
+import { CanvasTable } from '../components/CanvasTable';
 import { EmptyState } from '../components/EmptyState';
 import { Field } from '../components/Field';
 import { Spinner } from '../components/Spinner';
@@ -371,13 +371,12 @@ export default function ProjectFilesPage({ onNewProject, onOpenImport, onOpenFlo
                 </div>
                 <div className="card-scroll">
                   {rows ? (
-                    <DataTable
+                    <CanvasTable
                       columns={rows.columns.map((column) => column.name)}
                       rows={rows.rows}
                       loading={rowsLoading}
                       emptyText="暂无数据"
                       maxHeight="100%"
-                      stickyHeader
                     />
                   ) : (
                     <div className="table-state">
