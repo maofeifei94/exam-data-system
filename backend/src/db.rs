@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rusqlite::functions::FunctionFlags;
 use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
@@ -171,9 +172,10 @@ pub fn table_name(dataset_id: &str) -> AppResult<String> {
     Ok(format!("data_{dataset_id}"))
 }
 
-/// 每条连接都必须设置的 PRAGMA。
+/// 每条连接都必须设置的 PRAGMA，并注册流程表达式可用的自定义函数。
 ///
-/// `foreign_keys` 与 `busy_timeout` 是连接级配置，不能只在初始化连接上设置。
+/// `foreign_keys` 与 `busy_timeout` 是连接级配置，不能只在初始化连接上设置；
+/// 自定义函数同样按连接注册，因此所有取连接的入口都走这里。
 pub fn configure(conn: &Connection) -> Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(
@@ -182,7 +184,232 @@ pub fn configure(conn: &Connection) -> Result<()> {
          PRAGMA foreign_keys=ON;
          PRAGMA temp_store=MEMORY;",
     )?;
+    register_functions(conn)?;
     Ok(())
+}
+
+/// 注册业务函数：
+/// - `rmb_upper(数值)`：金额转中文大写（财务凭证 / 报销单）
+/// - `id_card_birth(身份证号)`：提取出生日期 `YYYY-MM-DD`
+/// - `id_card_gender(身份证号)`：提取性别
+/// - `id_card_valid(身份证号)`：校验位是否合法，返回 1 / 0
+/// - `norm_date(文本)`：把多种日期写法统一成 `YYYY-MM-DD`
+pub fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
+    let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+    conn.create_scalar_function("rmb_upper", 1, flags, |ctx| {
+        let value: Option<f64> = ctx.get(0)?;
+        Ok(rmb_upper(value.unwrap_or(0.0)))
+    })?;
+    conn.create_scalar_function("id_card_birth", 1, flags, |ctx| {
+        let raw: Option<String> = ctx.get(0)?;
+        Ok(raw.as_deref().and_then(id_card_birth))
+    })?;
+    conn.create_scalar_function("id_card_gender", 1, flags, |ctx| {
+        let raw: Option<String> = ctx.get(0)?;
+        Ok(raw.as_deref().and_then(id_card_gender))
+    })?;
+    conn.create_scalar_function("id_card_valid", 1, flags, |ctx| {
+        let raw: Option<String> = ctx.get(0)?;
+        Ok(raw.map(|s| id_card_valid(&s) as i64).unwrap_or(0))
+    })?;
+    conn.create_scalar_function("norm_date", 1, flags, |ctx| {
+        let raw: Option<String> = ctx.get(0)?;
+        Ok(raw.as_deref().and_then(normalize_date))
+    })?;
+    // 内置 SQLite 未编译数学函数时，SQRT 不存在；这里统一补齐，供标准差等计算使用。
+    conn.create_scalar_function("sqrt", 1, flags, |ctx| {
+        let value: Option<f64> = ctx.get(0)?;
+        Ok(value.map(|v| v.max(0.0).sqrt()))
+    })?;
+    conn.create_scalar_function("power", 2, flags, |ctx| {
+        let base: Option<f64> = ctx.get(0)?;
+        let exp: Option<f64> = ctx.get(1)?;
+        Ok(match (base, exp) {
+            (Some(b), Some(e)) => Some(b.powf(e)),
+            _ => None,
+        })
+    })?;
+    Ok(())
+}
+
+/// 金额转中文大写，例如 `1234.56` → `壹仟贰佰叁拾肆元伍角陆分`。
+pub fn rmb_upper(value: f64) -> String {
+    const DIGITS: [&str; 10] = ["零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"];
+    const UNITS: [&str; 4] = ["", "拾", "佰", "仟"];
+    const GROUPS: [&str; 4] = ["", "万", "亿", "万亿"];
+
+    // 四舍五入到分；先转成整数分，避免浮点尾差导致的「玖分」变「拾分」。
+    let cents = (value.abs() * 100.0).round() as i64;
+    let integer = cents / 100;
+    let jiao = (cents / 10 % 10) as usize;
+    let fen = (cents % 10) as usize;
+    let sign = if value < 0.0 { "负" } else { "" };
+
+    if cents == 0 {
+        return "零元整".to_string();
+    }
+
+    let mut integer_cn = String::new();
+    if integer == 0 {
+        integer_cn.push('零');
+    } else {
+        let mut groups: Vec<String> = Vec::new();
+        let mut rest = integer;
+        let mut gi = 0usize;
+        while rest > 0 && gi < GROUPS.len() {
+            let section = rest % 10000;
+            if section > 0 {
+                let mut sec_cn = String::new();
+                let mut n = section;
+                let mut pos = 0usize;
+                let mut pending_zero = false;
+                while n > 0 {
+                    let d = (n % 10) as usize;
+                    if d == 0 {
+                        if !sec_cn.is_empty() {
+                            pending_zero = true;
+                        }
+                    } else {
+                        if pending_zero {
+                            sec_cn.insert(0, '零');
+                            pending_zero = false;
+                        }
+                        sec_cn.insert_str(0, &format!("{}{}", DIGITS[d], UNITS[pos]));
+                    }
+                    n /= 10;
+                    pos += 1;
+                }
+                groups.insert(0, format!("{sec_cn}{}", GROUPS[gi]));
+            } else if !groups.is_empty() {
+                // 整段为零（如 100000005 的「万」段），补一个零占位。
+                groups.insert(0, "零".to_string());
+            }
+            rest /= 10000;
+            gi += 1;
+        }
+        integer_cn = groups.concat();
+        // 去掉段之间可能出现的连续零
+        while integer_cn.contains("零零") {
+            integer_cn = integer_cn.replace("零零", "零");
+        }
+        integer_cn = integer_cn.trim_end_matches('零').to_string();
+    }
+
+    let mut out = String::from(sign);
+    out.push_str(&integer_cn);
+    out.push('元');
+    if jiao == 0 && fen == 0 {
+        out.push('整');
+        return out;
+    }
+    if jiao > 0 {
+        out.push_str(DIGITS[jiao]);
+        out.push('角');
+    } else if integer > 0 {
+        out.push('零');
+    }
+    if fen > 0 {
+        out.push_str(DIGITS[fen]);
+        out.push('分');
+    }
+    out
+}
+
+fn id_card_digits(raw: &str) -> Option<Vec<char>> {
+    let s = raw.trim();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() != 15 && chars.len() != 18 {
+        return None;
+    }
+    if !chars.iter().take(17).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(chars)
+}
+
+/// 从身份证号提取出生日期。
+pub fn id_card_birth(raw: &str) -> Option<String> {
+    let chars = id_card_digits(raw)?;
+    let (year, month, day) = if chars.len() == 18 {
+        (
+            chars[6..10].iter().collect::<String>(),
+            chars[10..12].iter().collect::<String>(),
+            chars[12..14].iter().collect::<String>(),
+        )
+    } else {
+        (
+            format!("19{}", chars[6..8].iter().collect::<String>()),
+            chars[8..10].iter().collect::<String>(),
+            chars[10..12].iter().collect::<String>(),
+        )
+    };
+    normalize_date(&format!("{year}-{month}-{day}"))
+}
+
+/// 从身份证号提取性别；无法解析时返回空。
+pub fn id_card_gender(raw: &str) -> Option<String> {
+    let chars = id_card_digits(raw)?;
+    let index = if chars.len() == 18 { 16 } else { 14 };
+    let digit = chars.get(index)?.to_digit(10)?;
+    Some(if digit % 2 == 1 { "男" } else { "女" }.to_string())
+}
+
+/// 18 位身份证校验位校验；15 位老号按「无校验位」视为不合法。
+pub fn id_card_valid(raw: &str) -> bool {
+    let chars: Vec<char> = raw.trim().chars().collect();
+    if chars.len() != 18 {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, weight) in [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+        .iter()
+        .enumerate()
+    {
+        match chars[i].to_digit(10) {
+            Some(d) => sum += d * weight,
+            None => return false,
+        }
+    }
+    let expect = ["1", "0", "X", "9", "8", "7", "6", "5", "4", "3", "2"][(sum % 11) as usize];
+    chars[17].to_ascii_uppercase().to_string() == expect
+}
+
+/// 把 `2010/5/3`、`20100503`、`2010年5月3日`、`2010-05-03 12:00` 等写法统一成 `YYYY-MM-DD`。
+pub fn normalize_date(raw: &str) -> Option<String> {
+    let mut text = raw.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() == 18 || text.len() == 15 {
+        if let Some(birth) = id_card_birth(&text) {
+            return Some(birth);
+        }
+    }
+    for sep in ["年", "月", "日", "/", ".", "T"] {
+        text = text.replace(sep, "-");
+    }
+    let text = text.split_whitespace().next().unwrap_or("").to_string();
+    let compact: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+    let (y, m, d) = if compact.len() == 8 && !text.contains('-') {
+        (
+            compact[0..4].to_string(),
+            compact[4..6].to_string(),
+            compact[6..8].to_string(),
+        )
+    } else {
+        let mut parts = text.split('-').filter(|s| !s.is_empty());
+        let (Some(y), Some(m), Some(d)) = (parts.next(), parts.next(), parts.next()) else {
+            return None;
+        };
+        (y.to_string(), m.to_string(), d.to_string())
+    };
+    let year: i32 = y.parse().ok()?;
+    let month: u32 = m.parse().ok()?;
+    let day: u32 = d.parse().ok()?;
+    if !(1900..=2200).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(format!("{year:04}-{month:02}-{day:02}"))
 }
 
 pub fn open(path: &str) -> Result<Connection> {
@@ -495,4 +722,52 @@ fn seed(conn: &Connection) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod biz_tests {
+    use super::*;
+
+    #[test]
+    fn rmb_upper_covers_common_amounts() {
+        assert_eq!(rmb_upper(0.0), "零元整");
+        assert_eq!(rmb_upper(1.0), "壹元整");
+        assert_eq!(rmb_upper(10.0), "壹拾元整");
+        assert_eq!(rmb_upper(1005.06), "壹仟零伍元零陆分");
+        assert_eq!(rmb_upper(1234.56), "壹仟贰佰叁拾肆元伍角陆分");
+        assert_eq!(rmb_upper(100000005.0), "壹亿零伍元整");
+        assert_eq!(rmb_upper(-12.5), "负壹拾贰元伍角");
+    }
+
+    #[test]
+    fn id_card_helpers_parse_18_and_15_digit_numbers() {
+        assert_eq!(
+            id_card_birth("11010519491231002X").as_deref(),
+            Some("1949-12-31")
+        );
+        assert_eq!(id_card_gender("11010519491231002X").as_deref(), Some("女"));
+        assert!(id_card_valid("11010519491231002X"));
+        assert!(!id_card_valid("110105194912310021"));
+
+        assert_eq!(
+            id_card_birth("110105491231002").as_deref(),
+            Some("1949-12-31")
+        );
+        assert_eq!(id_card_gender("110105491231002").as_deref(), Some("女"));
+    }
+
+    #[test]
+    fn normalize_date_accepts_common_inputs() {
+        assert_eq!(normalize_date("2010/5/3").as_deref(), Some("2010-05-03"));
+        assert_eq!(normalize_date("20100503").as_deref(), Some("2010-05-03"));
+        assert_eq!(
+            normalize_date("2010年5月3日").as_deref(),
+            Some("2010-05-03")
+        );
+        assert_eq!(
+            normalize_date("2010-05-03 12:30:00").as_deref(),
+            Some("2010-05-03")
+        );
+        assert_eq!(normalize_date("不是日期"), None);
+    }
 }

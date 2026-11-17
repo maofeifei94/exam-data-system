@@ -39,6 +39,10 @@ fn row_to_template(r: &rusqlite::Row<'_>) -> rusqlite::Result<(PdfTemplate, Stri
     let kind: String = r.get(2)?;
     let mut body = parse_body(&raw)?;
     body.normalize(&kind);
+    let page_field = body.page_field.clone();
+    let matrix_index_field = body.matrix_index_field.clone();
+    let required_fields = body.required_fields.clone();
+    let all_required_fields = body.all_required_fields();
     Ok((
         PdfTemplate {
             id: r.get(0)?,
@@ -48,6 +52,10 @@ fn row_to_template(r: &rusqlite::Row<'_>) -> rusqlite::Result<(PdfTemplate, Stri
             page: body.page,
             matrix: body.matrix,
             elements: body.elements,
+            page_field,
+            matrix_index_field,
+            required_fields,
+            all_required_fields,
             scope: r.get(5)?,
             project_id: r.get(6)?,
             source_id: r.get(7)?,
@@ -136,6 +144,14 @@ fn body_from_input(input: &PdfTemplateInput, kind: &str) -> TemplateBody {
         page: input.page.clone(),
         matrix: input.matrix.clone(),
         elements: input.elements.clone(),
+        page_field: input.page_field.trim().to_string(),
+        matrix_index_field: input.matrix_index_field.trim().to_string(),
+        required_fields: input
+            .required_fields
+            .iter()
+            .map(|f| f.trim().to_string())
+            .filter(|f| !f.is_empty())
+            .collect(),
     };
     body.normalize(kind);
     body

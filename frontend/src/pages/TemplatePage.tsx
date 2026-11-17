@@ -31,6 +31,7 @@ import { projectFieldsAsStandard } from '../lib/projectFields';
 import {
   DEFAULT_MATRIX,
   appendChild,
+  collectRequiredFields,
   contentSizeMm,
   createElement,
   elementIcon,
@@ -70,6 +71,12 @@ interface TemplateDraft {
   description: string;
   page: PageSetup;
   elements: TemplateElement[];
+  /** 页面分组/排序依据字段（如考场号） */
+  pageField: string;
+  /** 矩阵格子索引依据字段（如座位号） */
+  matrixIndexField: string;
+  /** 模板显式声明的必需字段 */
+  requiredFields: string[];
   scope: 'global' | 'project';
 }
 
@@ -92,6 +99,9 @@ const EMPTY_DRAFT: TemplateDraft = {
   description: '',
   page: DEFAULT_PAGE,
   elements: [],
+  pageField: '',
+  matrixIndexField: '',
+  requiredFields: [],
   scope: 'global',
 };
 
@@ -1141,6 +1151,9 @@ export default function TemplatePage({
     page: draft.page,
     matrix: matrixElement?.matrix ?? DEFAULT_MATRIX,
     elements: draft.elements,
+    page_field: draft.pageField.trim(),
+    matrix_index_field: draft.matrixIndexField.trim(),
+    required_fields: draft.requiredFields,
     scope: draft.id ? draft.scope : scope,
     project_id: draft.id
       ? draft.scope === 'project'
@@ -1964,6 +1977,9 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     description: template.description,
     page: template.page,
     elements: normalizeTemplate(template),
+    pageField: template.page_field ?? '',
+    matrixIndexField: template.matrix_index_field ?? '',
+    requiredFields: template.required_fields ?? [],
     scope: template.scope === 'project' ? 'project' : 'global',
   };
 }
@@ -1997,6 +2013,25 @@ function PagePanel({
   onPreview,
   onRender,
 }: PagePanelProps) {
+  const [newField, setNewField] = useState('');
+  const available = datasets.find((item) => item.id === datasetId)?.columns.map((c) => c.name) ?? [];
+  const required = collectRequiredFields({
+    elements: draft.elements,
+    page_field: draft.pageField,
+    matrix_index_field: draft.matrixIndexField,
+    required_fields: draft.requiredFields,
+  });
+  const missing = available.length > 0 ? required.filter((field) => !available.includes(field)) : [];
+
+  const addRequired = () => {
+    const name = newField.trim();
+    if (!name) return;
+    if (!draft.requiredFields.includes(name)) {
+      onDraft((prev) => ({ ...prev, requiredFields: [...prev.requiredFields, name] }));
+    }
+    setNewField('');
+  };
+
   return (
     <div className="tpl-prop-body">
       <div className="tpl-section">
@@ -2073,6 +2108,83 @@ function PagePanel({
             </label>
           ))}
         </div>
+      </div>
+
+      <div className="tpl-section">
+        <div className="tpl-section-title">分页与字段</div>
+        <datalist id="tpl-field-options">
+          {available.map((name) => (
+            <option key={name} value={name} />
+          ))}
+        </datalist>
+        <label className="field">
+          <span className="field-label">页面顺序字段</span>
+          <input
+            list="tpl-field-options"
+            value={draft.pageField}
+            placeholder="如 考场号：每个考场单独成页，页序按考场号排列"
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, pageField: event.target.value }))
+            }
+          />
+        </label>
+        <p className="panel-hint">
+          设置后按该字段的值分组，每个取值单独成页，页序按取值自然排序（2 排在 10 之前）。
+        </p>
+        {draft.kind === 'matrix' ? (
+          <label className="field">
+            <span className="field-label">矩阵格子索引字段</span>
+            <input
+              list="tpl-field-options"
+              value={draft.matrixIndexField}
+              placeholder="如 座位号：填写 1 的数据放进第 1 个格子"
+              onChange={(event) =>
+                onDraft((prev) => ({ ...prev, matrixIndexField: event.target.value }))
+              }
+            />
+          </label>
+        ) : null}
+        <div className="field">
+          <span className="field-label">模板必需字段</span>
+          {draft.requiredFields.length > 0 ? (
+            <div className="chip-row">
+              {draft.requiredFields.map((field) => (
+                <button
+                  key={field}
+                  type="button"
+                  className="chip"
+                  title="点击移除"
+                  onClick={() =>
+                    onDraft((prev) => ({
+                      ...prev,
+                      requiredFields: prev.requiredFields.filter((item) => item !== field),
+                    }))
+                  }
+                >
+                  {field} ×
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <input
+            list="tpl-field-options"
+            value={newField}
+            placeholder="补充字段名，回车添加"
+            onChange={(event) => setNewField(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                addRequired();
+              }
+            }}
+          />
+        </div>
+        <p className="panel-hint">
+          模板自动需要的字段：{required.length > 0 ? required.join('、') : '暂无'}（由页面字段、格子索引和元素占位符自动汇总）
+        </p>
+        {missing.length > 0 ? (
+          <p className="panel-hint warn">当前预览数据集缺少字段：{missing.join('、')}</p>
+        ) : null}
       </div>
 
       <div className="tpl-section">

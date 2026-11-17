@@ -231,6 +231,56 @@ export function normalizeTemplate(template: PdfTemplate): TemplateElement[] {
   return normalizeTree([...pageElements, matrix]);
 }
 
+const BUILTIN_TOKENS = new Set(['index', 'no', 'page', 'pages', 'count']);
+
+function scanPlaceholders(text: string, out: string[]) {
+  if (!text) return;
+  const re = /\{\{([^{}]+)\}\}|\{([^{}]+)\}/g;
+  let match: RegExpExecArray | null = re.exec(text);
+  while (match) {
+    const name = (match[1] ?? match[2] ?? '').trim();
+    if (name && !BUILTIN_TOKENS.has(name) && !out.includes(name)) out.push(name);
+    match = re.exec(text);
+  }
+}
+
+function collectElementFields(element: TemplateElement, out: string[]) {
+  const add = (name?: string) => {
+    const value = (name ?? '').trim();
+    if (value && !BUILTIN_TOKENS.has(value) && !out.includes(value)) out.push(value);
+  };
+  if (element.type === 'text') {
+    scanPlaceholders(element.text, out);
+    add(element.field);
+  } else if (element.type === 'image') {
+    if ((element.photo_name ?? '').trim()) scanPlaceholders(element.photo_name ?? '', out);
+    else add(element.field);
+  }
+  (element.children ?? []).forEach((child) => collectElementFields(child, out));
+}
+
+/**
+ * 模板整体需要的字段：显式声明 + 页面/矩阵索引字段 + 所有子元素占位符。
+ * 与后端 `TemplateBody::all_required_fields` 保持一致，用于编辑时提前检查数据。
+ */
+export function collectRequiredFields(template: {
+  elements: TemplateElement[];
+  page_field?: string;
+  matrix_index_field?: string;
+  required_fields?: string[];
+}): string[] {
+  const out: string[] = [];
+  const add = (name?: string) => {
+    const value = (name ?? '').trim();
+    if (value && !BUILTIN_TOKENS.has(value) && !out.includes(value)) out.push(value);
+  };
+  (template.required_fields ?? []).forEach(add);
+  add(template.page_field);
+  add(template.matrix_index_field);
+  (template.elements ?? []).forEach((element) => collectElementFields(element, out));
+  return out;
+}
+
 export interface LocatedElement {
   element: TemplateElement;
   parent: TemplateElement | null;

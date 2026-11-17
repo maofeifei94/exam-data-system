@@ -230,6 +230,38 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 - 因此最终生成的是可直接执行的 SQL，而不是把用户输入原样拼接，天然防注入。
 - 附带 `numeric_guard_sql`：对参与算术的列做数值兜底，非数字按 0 处理。
 
+### 4.6.1 考试 / 财务业务算子
+
+除基础字段处理外，算子目录新增一组考试与财务场景常用算子
+（`engine/operators.rs` 声明参数，`engine/mod.rs` 编译为 SQL）：
+
+| 算子 | 说明 |
+| --- | --- |
+| `sort`（升级） | 支持多级排序：`keys: [{field, order}]` 从上到下依次比较；未填时回退旧的 `by` + `order` |
+| `random_number` | 生成随机整数/小数，可指定取值范围与小数位 |
+| `random_rows` | 随机打乱（shuffle）或随机抽取 N 行（sample） |
+| `group_aggregate` | 分组汇总：计数、去重计数、合计、平均、最小、最大、拼接、标准差、方差 |
+| `round_number` | 四舍五入 / 向下取整 / 向上取整，可覆盖原列或输出新列 |
+| `text_concat` | 多字段拼接，可设分隔符（如考场号-座位号） |
+| `text_substr` | 按位置截取文本 |
+| `text_pad` | 左右补位到指定长度（学号、准考证号格式化） |
+| `text_replace` | 文本查找替换 |
+| `conditional` | 条件赋值（CASE WHEN），可直接写中文结果 |
+| `date_calc` | 年龄、日期加减、相差天数、年/月/日/星期提取 |
+| `parse_id_card` | 身份证解析：出生日期、性别、年龄、校验位，可配置非法号码直接终止 |
+| `amount_upper` | 金额转中文大写（财务凭证） |
+| `percentage` | 占合计百分比，支持按分组分别计算 |
+
+自定义 SQL 函数在 `db::register_functions` 中随每条连接注册（`engine::Compiler::new`
+也会确保注册），因此表达式与算子共用：
+
+| 函数 | 用途 |
+| --- | --- |
+| `rmb_upper(x)` | 金额大写 |
+| `id_card_birth(x)` / `id_card_gender(x)` / `id_card_valid(x)` | 身份证解析与 18 位校验位校验 |
+| `norm_date(x)` | 统一 `2010/5/3`、`20100503`、`2010年5月3日` 等日期写法 |
+| `sqrt(x)` / `power(x, y)` | 兜底数学函数（内置 SQLite 未编译数学扩展时也能用） |
+
 ### 4.7 流程编译（`engine/mod.rs`）
 
 每个步骤生成一段命名 CTE（`s0`、`s1`、`s2`…），最终拼成一条完整 SQL：
@@ -251,6 +283,9 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   启用步骤的 `require_fields`，与 `project_fields` 比对；`run_flow` 发现缺失时直接写一条
   `failed` 运行记录并返回失败结果（不产出数据集），`/api/flows/validate` 收到
   `project_id` 时也会追加「项目模板中缺少必需字段：X」错误。全局流程不受此约束。
+- **PDF 模板字段纳入同一校验**：项目绑定的 PDF 模板通过 `TemplateBody::all_required_fields`
+  汇总（显式声明 + 页面/矩阵索引字段 + 全部子元素占位符），校验时要求这些字段出现在
+  流程最终输出（有数据列时）或项目字段模板中（无数据列时）。
 
 ### 4.8 节点数据预览（`engine::preview_step`）
 
@@ -290,6 +325,16 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   再按目录 + `名称.后缀` 查找，后缀按配置顺序并同时尝试大写变体（兼容 Windows 导出）。
   配置为空时回退到默认后缀 `jpg / jpeg / png`；找不到文件画空框便于排查，绝不 panic。
 - **非法颜色**按默认值处理（填色非法即视为无填充），单个元素出错不影响整份文档。
+- **页面顺序字段** `page_field`（如考场号）：矩阵模板按该字段的值分组，每个取值从一个新页
+  开始，页序按取值**自然排序**（2 排在 10 之前）；同组超过一页时顺延到下一页，不丢数据。
+  单页模板设置后按该字段排序输出，使同考场页面聚在一起。
+- **矩阵格子索引字段** `matrix_index_field`（如座位号）：值 N 的数据放进第 N 个格子；
+  索引缺失、越界或重复时顺延到剩余空格，保证每行数据都能落格。
+- **页面级元素的数据上下文**：页面级元素（标题等）只拿到本页 `page_field` 的值
+  （合成行），不会串入某一位考生的其它字段。
+- **必需字段校验**：`TemplateBody::all_required_fields()` 把显式声明、页面字段、
+  格子索引字段与所有子元素占位符合并；`render_pdf_data` 开头即检查输入列，
+  缺失时返回 400 并列出模板需要 / 数据缺少的字段。预览与正式渲染共用同一检查。
 
 新增照片元素的三个配置：`photo_dir`（目录，可由系统对话框选择）、
 `photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）。

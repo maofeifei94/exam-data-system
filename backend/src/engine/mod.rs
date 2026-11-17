@@ -74,12 +74,136 @@ fn list_param(params: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn f64_param(params: &Value, key: &str) -> Option<f64> {
+    params.get(key).and_then(|v| match v {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    })
+}
+
+/// 读取多级排序配置：`keys: [{field, order}]`；为空时回退到旧的 `by` + `order`。
+fn sorts_param(params: &Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Some(arr) = params.get("keys").and_then(|v| v.as_array()) {
+        for item in arr {
+            let field = item
+                .get("field")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if field.is_empty() {
+                continue;
+            }
+            let order = match item.get("order").and_then(|v| v.as_str()) {
+                Some("asc") => "ASC",
+                _ => "DESC",
+            };
+            out.push((field, order.to_string()));
+        }
+    }
+    if out.is_empty() {
+        let by = str_param(params, "by");
+        if !by.is_empty() {
+            let order = if str_param(params, "order") == "asc" {
+                "ASC"
+            } else {
+                "DESC"
+            };
+            out.push((by, order.to_string()));
+        }
+    }
+    out
+}
+
+struct AggSpec {
+    field: String,
+    func: String,
+    out: String,
+    decimals: i64,
+}
+
+fn aggregations_param(params: &Value) -> Vec<AggSpec> {
+    let mut out = Vec::new();
+    if let Some(arr) = params.get("aggregations").and_then(|v| v.as_array()) {
+        for item in arr {
+            let func = item
+                .get("func")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if func.is_empty() {
+                continue;
+            }
+            out.push(AggSpec {
+                field: item
+                    .get("field")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                func,
+                out: item
+                    .get("out")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                decimals: item.get("decimals").and_then(|v| v.as_i64()).unwrap_or(2),
+            });
+        }
+    }
+    out
+}
+
+/// 把任意 SQL 值转成文本；整数值不带 `.0`，避免考场号 1 显示成 1.0。
+fn text_sql(var: &str) -> String {
+    format!(
+        "(CASE WHEN TYPEOF({var}) IN ('integer', 'real') AND {var} = CAST({var} AS INTEGER) \
+         THEN CAST(CAST({var} AS INTEGER) AS TEXT) ELSE CAST({var} AS TEXT) END)"
+    )
+}
+
+/// 条件赋值的取值：数字 / `[字段]` / 带引号的表达式按公式编译，其余按普通文字处理。
+fn value_or_expr(raw: &str, cols: &[String]) -> Result<String, String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Ok("NULL".to_string());
+    }
+    let quoted = text.starts_with('\'') && text.ends_with('\'');
+    if text.starts_with('[') || quoted || text.parse::<f64>().is_ok() {
+        expr::compile(text, cols)
+    } else {
+        Ok(format!("'{}'", text.replace('\'', "''")))
+    }
+}
+
+fn agg_label(func: &str, field: &str) -> String {
+    match func {
+        "count" => "数量".to_string(),
+        "count_distinct" => "去重数量".to_string(),
+        "sum" => "合计".to_string(),
+        "avg" => "平均值".to_string(),
+        "min" => "最小值".to_string(),
+        "max" => "最大值".to_string(),
+        "stddev" => "标准差".to_string(),
+        "variance" => "方差".to_string(),
+        "group_concat" => format!("{field}汇总"),
+        _ => format!("{func}({field})"),
+    }
+}
+
 impl<'a> Compiler<'a> {
     fn new(conn: &'a Connection, dataset_id: &str) -> AppResult<Self> {
         let columns = store::get_columns(conn, dataset_id)?;
         if columns.is_empty() {
             return Err(AppError::bad_request("数据集没有任何字段"));
         }
+        // 流程表达式会用到的业务函数（身份证解析、金额大写等）按连接注册。
+        crate::db::register_functions(conn)
+            .map_err(|e| AppError::internal_with_context("注册流程函数失败", e))?;
         let tname = crate::db::table_name(dataset_id)?;
         let items: Vec<String> = columns
             .iter()
@@ -211,6 +335,19 @@ impl<'a> Compiler<'a> {
             "dedupe" => self.op_dedupe(step_index, step, &params),
             "sort" => self.op_sort(step_index, step, &params),
             "limit" => self.op_limit(step_index, step, &params),
+            "random_number" => self.op_random_number(step_index, step, &params),
+            "random_rows" => self.op_random_rows(step_index, step, &params),
+            "group_aggregate" => self.op_group_aggregate(step_index, step, &params),
+            "round_number" => self.op_round_number(step_index, step, &params),
+            "text_concat" => self.op_text_concat(step_index, step, &params),
+            "text_substr" => self.op_text_substr(step_index, step, &params),
+            "text_pad" => self.op_text_pad(step_index, step, &params),
+            "text_replace" => self.op_text_replace(step_index, step, &params),
+            "conditional" => self.op_conditional(step_index, step, &params),
+            "date_calc" => self.op_date_calc(step_index, step, &params),
+            "parse_id_card" => self.op_parse_id_card(step_index, step, &params),
+            "amount_upper" => self.op_amount_upper(step_index, step, &params),
+            "percentage" => self.op_percentage(step_index, step, &params),
             "output" => self.op_output(step_index, step, &params),
             other => Err(format!("不支持的操作符: {other}")),
         }
@@ -496,7 +633,7 @@ impl<'a> Compiler<'a> {
         let decimals = num_param(p, "decimals").unwrap_or(2);
         let on_error = str_param(p, "on_error");
         let base = match to.as_str() {
-            "text" => format!("TEXT({})", q(&col)),
+            "text" => format!("CAST({} AS TEXT)", q(&col)),
             "integer" => format!("CAST({} AS INTEGER)", q(&col)),
             _ => {
                 let c = format!("CAST({} AS REAL)", q(&col));
@@ -512,7 +649,7 @@ impl<'a> Compiler<'a> {
         } else if on_error == "fail" {
             let guard = expr::numeric_guard_sql(&col);
             let bad_sql = self.with_ctes(&format!(
-                "SELECT COUNT(*) FROM {} WHERE TEXT({}) IS NOT NULL AND TRIM(TEXT({})) <> '' AND NOT ({guard})",
+                "SELECT COUNT(*) FROM {} WHERE CAST({} AS TEXT) IS NOT NULL AND TRIM(CAST({} AS TEXT)) <> '' AND NOT ({guard})",
                 self.cur,
                 q(&col),
                 q(&col)
@@ -555,7 +692,7 @@ impl<'a> Compiler<'a> {
         }
         let value = str_param(p, "value");
         let e = format!(
-            "CASE WHEN {} IS NULL OR TRIM(TEXT({})) = '' THEN '{}' ELSE {} END",
+            "CASE WHEN {} IS NULL OR TRIM(CAST({} AS TEXT)) = '' THEN '{}' ELSE {} END",
             q(&col),
             q(&col),
             value.replace('\'', "''"),
@@ -741,23 +878,34 @@ impl<'a> Compiler<'a> {
     }
 
     fn op_sort(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
-        let by = str_param(p, "by");
-        if !self.has_column(&by) {
-            return Err(format!("字段 [{by}] 不存在"));
+        let keys = sorts_param(p);
+        if keys.is_empty() {
+            return Err("请至少设置一个排序字段".to_string());
         }
-        let order = if str_param(p, "order") == "asc" {
-            "ASC"
-        } else {
-            "DESC"
-        };
-        self.order_by = Some(format!("{} {order}", q(&by)));
+        for (field, _) in &keys {
+            if !self.has_column(field) {
+                return Err(format!("字段 [{field}] 不存在"));
+            }
+        }
+        self.order_by = Some(
+            keys.iter()
+                .map(|(f, o)| format!("{} {o}", q(f)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
         Ok(self.log_entry(
             i,
             step,
             "ok",
             self.count_current()?,
             None,
-            Some(format!("结果按 [{by}] {order} 排序")),
+            Some(format!(
+                "结果排序：{}",
+                keys.iter()
+                    .map(|(f, o)| format!("[{f}] {}", if o == "ASC" { "升序" } else { "降序" }))
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            )),
         ))
     }
 
@@ -771,6 +919,766 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             None,
             Some(format!("只输出前 {n} 行")),
+        ))
+    }
+
+    fn op_random_number(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let out = str_param(p, "out");
+        if out.is_empty() {
+            return Err("新字段名不能为空".to_string());
+        }
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let mut lo = f64_param(p, "min").unwrap_or(0.0);
+        let mut hi = f64_param(p, "max").unwrap_or(100.0);
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let e = if str_param(p, "mode") == "decimal" {
+            format!(
+                "ROUND((({lo}) + (ABS(RANDOM() % 1000000) * 1.0 / 1000000.0) * (({hi}) - ({lo}))), {decimals})"
+            )
+        } else {
+            let span = (hi.floor() - lo.ceil() + 1.0).max(1.0) as i64;
+            format!("(ABS(RANDOM() % {span}) + {})", lo.ceil() as i64)
+        };
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("新增随机数字段 [{out}]（{lo} ~ {hi}）")),
+        ))
+    }
+
+    fn op_random_rows(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let mode = str_param(p, "mode");
+        // SQLite 的 RANDOM() 在 ORDER BY 中即随机顺序；抽样再叠加 LIMIT。
+        self.order_by = Some("RANDOM()".to_string());
+        if mode == "sample" {
+            let n = num_param(p, "n").unwrap_or(10).max(0);
+            self.limit = Some(n);
+            Ok(self.log_entry(
+                i,
+                step,
+                "ok",
+                self.count_current()?,
+                None,
+                Some(format!("随机抽取 {n} 行")),
+            ))
+        } else {
+            Ok(self.log_entry(
+                i,
+                step,
+                "ok",
+                self.count_current()?,
+                None,
+                Some("已随机打乱行顺序".to_string()),
+            ))
+        }
+    }
+
+    fn op_group_aggregate(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let groups = list_param(p, "group_by");
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let aggs = aggregations_param(p);
+        if aggs.is_empty() {
+            return Err("请至少添加一个汇总项".to_string());
+        }
+        const FUNCS: &[&str] = &[
+            "count",
+            "count_distinct",
+            "sum",
+            "avg",
+            "min",
+            "max",
+            "group_concat",
+            "stddev",
+            "variance",
+        ];
+        let mut items: Vec<String> = groups
+            .iter()
+            .map(|g| format!("{} AS {}", q(g), q(g)))
+            .collect();
+        let mut names: Vec<String> = self.columns.iter().map(|c| c.name.clone()).collect();
+        let mut new_cols: Vec<DatasetColumn> = Vec::new();
+        let mut summaries: Vec<String> = Vec::new();
+        for agg in &aggs {
+            if !FUNCS.contains(&agg.func.as_str()) {
+                return Err(format!("不支持的汇总方式：{}", agg.func));
+            }
+            let needs_field = agg.func != "count";
+            if needs_field && agg.field.is_empty() {
+                return Err(format!("{} 汇总必须选择字段", agg.func));
+            }
+            if needs_field && !self.has_column(&agg.field) {
+                return Err(format!("汇总字段 [{}] 不存在", agg.field));
+            }
+            let mut out = if agg.out.is_empty() {
+                agg_label(&agg.func, &agg.field)
+            } else {
+                agg.out.clone()
+            };
+            if names.contains(&out) {
+                let mut k = 2;
+                while names.contains(&format!("{out}{k}")) {
+                    k += 1;
+                }
+                out = format!("{out}{k}");
+            }
+            let f = q(&agg.field);
+            let expr = match agg.func.as_str() {
+                "count" => "COUNT(*)".to_string(),
+                "count_distinct" => format!("COUNT(DISTINCT {f})"),
+                "sum" => {
+                    let e = format!("SUM({f})");
+                    if agg.decimals >= 0 {
+                        format!("ROUND({e}, {})", agg.decimals)
+                    } else {
+                        e
+                    }
+                }
+                "avg" => format!("ROUND(AVG({f}), {})", agg.decimals.max(0)),
+                "min" => format!("MIN({f})"),
+                "max" => format!("MAX({f})"),
+                "group_concat" => format!("GROUP_CONCAT({f})"),
+                "stddev" => format!(
+                    "ROUND(SQRT(MAX(0, AVG({f} * {f}) - AVG({f}) * AVG({f}))), {})",
+                    agg.decimals.max(0)
+                ),
+                _ => format!(
+                    "ROUND(MAX(0, AVG({f} * {f}) - AVG({f}) * AVG({f})), {})",
+                    agg.decimals.max(0)
+                ),
+            };
+            items.push(format!("{expr} AS {}", q(&out)));
+            names.push(out.clone());
+            let dtype = match agg.func.as_str() {
+                "group_concat" => "text",
+                _ => "number",
+            };
+            new_cols.push(DatasetColumn {
+                name: out.clone(),
+                dtype: dtype.to_string(),
+            });
+            summaries.push(format!(
+                "{}({}) → [{out}]",
+                agg.func,
+                if agg.field.is_empty() {
+                    "*"
+                } else {
+                    &agg.field
+                }
+            ));
+        }
+        let body = if groups.is_empty() {
+            format!("SELECT {} FROM {}", items.join(", "), self.cur)
+        } else {
+            format!(
+                "SELECT {} FROM {} GROUP BY {}",
+                items.join(", "),
+                self.cur,
+                groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let cte = self.push_cte(body);
+        let mut cols: Vec<DatasetColumn> = groups
+            .iter()
+            .map(|g| DatasetColumn {
+                name: g.clone(),
+                dtype: self
+                    .columns
+                    .iter()
+                    .find(|c| &c.name == g)
+                    .map(|c| c.dtype.clone())
+                    .unwrap_or_else(|| "text".to_string()),
+            })
+            .collect();
+        cols.extend(new_cols);
+        self.columns = cols;
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "分组汇总{}：{}",
+                if groups.is_empty() {
+                    String::new()
+                } else {
+                    format!("（按 {}）", groups.join("、"))
+                },
+                summaries.join("，")
+            )),
+        ))
+    }
+
+    fn op_round_number(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = {
+            let o = str_param(p, "out");
+            if o.is_empty() {
+                col.clone()
+            } else {
+                o
+            }
+        };
+        if out != col && self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let f = q(&col);
+        let e = match str_param(p, "mode").as_str() {
+            "floor" => format!(
+                "(CAST({f} AS INTEGER) - CASE WHEN {f} < 0 AND {f} <> CAST({f} AS INTEGER) THEN 1 ELSE 0 END)"
+            ),
+            "ceil" => format!(
+                "(CAST({f} AS INTEGER) + CASE WHEN {f} > 0 AND {f} <> CAST({f} AS INTEGER) THEN 1 ELSE 0 END)"
+            ),
+            _ => format!("ROUND({f}, {decimals})"),
+        };
+        let cte = if out == col {
+            let body = self.project(&self.cur.clone(), &[(col.clone(), e)], &[]);
+            self.push_cte(body)
+        } else {
+            let body = self.project(&self.cur.clone(), &[], &[(out.clone(), e)]);
+            self.add_column(DatasetColumn {
+                name: out.clone(),
+                dtype: "number".to_string(),
+            });
+            self.push_cte(body)
+        };
+        if let Some(c) = self.columns.iter_mut().find(|c| c.name == col) {
+            c.dtype = "number".to_string();
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("数值取整：[{col}] → [{out}]")),
+        ))
+    }
+
+    fn op_text_concat(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let cols = list_param(p, "columns");
+        if cols.is_empty() {
+            return Err("请至少选择一个参与拼接的字段".to_string());
+        }
+        for c in &cols {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let out = str_param(p, "out");
+        if out.is_empty() {
+            return Err("新字段名不能为空".to_string());
+        }
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let sep = str_param(p, "separator").replace('\'', "''");
+        let parts: Vec<String> = cols
+            .iter()
+            .map(|c| format!("COALESCE({}, '')", text_sql(&q(c))))
+            .collect();
+        let e = parts.join(&format!(" || '{sep}' || "));
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("拼接 {} → [{out}]", cols.join(" + "))),
+        ))
+    }
+
+    fn op_text_substr(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = str_param(p, "out");
+        if out.is_empty() {
+            return Err("新字段名不能为空".to_string());
+        }
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let start = num_param(p, "start").unwrap_or(1).max(1);
+        let length = num_param(p, "length").unwrap_or(0);
+        let e = if length > 0 {
+            format!("SUBSTR({}, {start}, {length})", text_sql(&q(&col)))
+        } else {
+            format!("SUBSTR({}, {start})", text_sql(&q(&col)))
+        };
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("截取 [{col}] → [{out}]")),
+        ))
+    }
+
+    fn op_text_pad(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = {
+            let o = str_param(p, "out");
+            if o.is_empty() {
+                col.clone()
+            } else {
+                o
+            }
+        };
+        if out != col && self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let width = num_param(p, "width").unwrap_or(0).clamp(0, 128);
+        let mut pad = str_param(p, "pad");
+        if pad.is_empty() {
+            pad = "0".to_string();
+        }
+        pad = pad.replace('\'', "''");
+        let filler = pad.repeat(width.max(1) as usize);
+        let f = q(&col);
+        let cast = text_sql(&f);
+        let len = format!("MAX(0, {width} - LENGTH(COALESCE({cast}, '')))");
+        let value = format!("COALESCE({cast}, '')");
+        let e = if str_param(p, "side") == "right" {
+            format!("({value} || SUBSTR('{filler}', 1, {len}))")
+        } else {
+            format!("(SUBSTR('{filler}', 1, {len}) || {value})")
+        };
+        let cte = if out == col {
+            let body = self.project(&self.cur.clone(), &[(col.clone(), e)], &[]);
+            self.push_cte(body)
+        } else {
+            let body = self.project(&self.cur.clone(), &[], &[(out.clone(), e)]);
+            self.push_cte(body)
+        };
+        if out != col {
+            self.add_column(DatasetColumn {
+                name: out.clone(),
+                dtype: "text".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("补位到 {width} 位：[{col}] → [{out}]")),
+        ))
+    }
+
+    fn op_text_replace(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let find = str_param(p, "find");
+        if find.is_empty() {
+            return Err("查找内容不能为空".to_string());
+        }
+        let out = {
+            let o = str_param(p, "out");
+            if o.is_empty() {
+                col.clone()
+            } else {
+                o
+            }
+        };
+        if out != col && self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let replace = str_param(p, "replace");
+        let e = format!(
+            "REPLACE(COALESCE({}, ''), '{}', '{}')",
+            text_sql(&q(&col)),
+            find.replace('\'', "''"),
+            replace.replace('\'', "''")
+        );
+        let cte = if out == col {
+            let body = self.project(&self.cur.clone(), &[(col.clone(), e)], &[]);
+            self.push_cte(body)
+        } else {
+            let body = self.project(&self.cur.clone(), &[], &[(out.clone(), e)]);
+            self.push_cte(body)
+        };
+        if out != col {
+            self.add_column(DatasetColumn {
+                name: out.clone(),
+                dtype: "text".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("文本替换：[{col}] 中的「{find}」→「{replace}」")),
+        ))
+    }
+
+    fn op_conditional(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let out = str_param(p, "out");
+        if out.is_empty() {
+            return Err("新字段名不能为空".to_string());
+        }
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let cols: Vec<String> = self.columns.iter().map(|c| c.name.clone()).collect();
+        let cond = expr::compile(&str_param(p, "condition"), &cols)?;
+        let then = value_or_expr(&str_param(p, "then"), &cols)?;
+        let otherwise = value_or_expr(&str_param(p, "else"), &cols)?;
+        let e = format!("CASE WHEN ({cond}) THEN ({then}) ELSE ({otherwise}) END");
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("按条件生成 [{out}]")),
+        ))
+    }
+
+    fn op_date_calc(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = str_param(p, "out");
+        if out.is_empty() {
+            return Err("新字段名不能为空".to_string());
+        }
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let mode = str_param(p, "mode");
+        let norm = format!("norm_date({})", q(&col));
+        let (e, dtype, desc) = match mode.as_str() {
+            "add_days" => {
+                let days = num_param(p, "days").unwrap_or(0);
+                (
+                    format!("DATE({norm}, '{days} days')"),
+                    "text",
+                    format!("日期加减 {days} 天"),
+                )
+            }
+            "diff_days" => {
+                let other = str_param(p, "other");
+                if other.is_empty() || !self.has_column(&other) {
+                    return Err(format!("对比日期字段 [{other}] 不存在"));
+                }
+                (
+                    format!(
+                        "CAST(julianday({norm}) - julianday(norm_date({})) AS INTEGER)",
+                        q(&other)
+                    ),
+                    "number",
+                    format!("与 [{other}] 相差天数"),
+                )
+            }
+            "year" => (
+                format!("CAST(strftime('%Y', {norm}) AS INTEGER)"),
+                "number",
+                "提取年份".to_string(),
+            ),
+            "month" => (
+                format!("CAST(strftime('%m', {norm}) AS INTEGER)"),
+                "number",
+                "提取月份".to_string(),
+            ),
+            "day" => (
+                format!("CAST(strftime('%d', {norm}) AS INTEGER)"),
+                "number",
+                "提取日".to_string(),
+            ),
+            "weekday" => (
+                format!(
+                    "CASE CAST(strftime('%w', {norm}) AS INTEGER) \
+                     WHEN 0 THEN '星期日' WHEN 1 THEN '星期一' WHEN 2 THEN '星期二' \
+                     WHEN 3 THEN '星期三' WHEN 4 THEN '星期四' WHEN 5 THEN '星期五' \
+                     WHEN 6 THEN '星期六' END"
+                ),
+                "text",
+                "提取星期".to_string(),
+            ),
+            _ => (
+                format!(
+                    "CAST((julianday('now', 'localtime') - julianday({norm})) / 365.2425 AS INTEGER)"
+                ),
+                "number",
+                "计算年龄".to_string(),
+            ),
+        };
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: dtype.to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("{desc} → [{out}]")),
+        ))
+    }
+
+    fn op_parse_id_card(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let birth = str_param(p, "birth_out");
+        let gender = str_param(p, "gender_out");
+        let age = str_param(p, "age_out");
+        let valid = str_param(p, "valid_out");
+        if birth.is_empty() && gender.is_empty() && age.is_empty() && valid.is_empty() {
+            return Err("至少需要输出一个解析结果字段".to_string());
+        }
+        let f = q(&col);
+        let candidates: Vec<(&str, String, &str)> = vec![
+            (&birth, format!("id_card_birth({f})"), "text"),
+            (&gender, format!("id_card_gender({f})"), "text"),
+            (
+                &age,
+                format!(
+                    "CAST((julianday('now', 'localtime') - julianday(id_card_birth({f}))) / 365.2425 AS INTEGER)"
+                ),
+                "number",
+            ),
+            (
+                &valid,
+                format!(
+                    "CASE WHEN TRIM(CAST({f} AS TEXT)) = '' THEN NULL \
+                     WHEN id_card_valid({f}) = 1 THEN '合法' ELSE '非法' END"
+                ),
+                "text",
+            ),
+        ];
+        let mut planned = self.columns.clone();
+        let mut names: Vec<String> = planned.iter().map(|c| c.name.clone()).collect();
+        let mut appends: Vec<(String, String)> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
+        for (name, expr, dtype) in candidates {
+            let name = name.trim();
+            if name.is_empty() || names.contains(&name.to_string()) {
+                continue;
+            }
+            appends.push((name.to_string(), expr));
+            planned.push(DatasetColumn {
+                name: name.to_string(),
+                dtype: dtype.to_string(),
+            });
+            names.push(name.to_string());
+            added.push(name.to_string());
+        }
+        if appends.is_empty() {
+            return Err("解析结果字段与现有字段重名，请换一个名字".to_string());
+        }
+        if str_param(p, "on_error") == "fail" {
+            let sql = self.with_ctes(&format!(
+                "SELECT COUNT(*) FROM {} WHERE TRIM(COALESCE(CAST({f} AS TEXT), '')) <> '' AND id_card_valid({f}) = 0",
+                self.cur
+            ));
+            let bad: i64 = self
+                .conn
+                .query_row(&sql, [], |r| r.get(0))
+                .map_err(|e| format!("身份证校验失败: {e}"))?;
+            if bad > 0 {
+                return Err(format!("有 {bad} 行身份证号校验位不合法，流程终止"));
+            }
+        }
+        let mut items: Vec<String> = planned
+            .iter()
+            .filter(|c| self.has_column(&c.name))
+            .map(|c| format!("{} AS {}", q(&c.name), q(&c.name)))
+            .collect();
+        for (name, expr) in &appends {
+            items.push(format!("{expr} AS {}", q(name)));
+        }
+        let cte = self.push_cte(format!("SELECT {} FROM {}", items.join(", "), self.cur));
+        self.columns = planned;
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("身份证解析：新增 {} 个字段", added.len())),
+        ))
+    }
+
+    fn op_amount_upper(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = {
+            let o = str_param(p, "out");
+            if o.is_empty() {
+                "金额大写".to_string()
+            } else {
+                o
+            }
+        };
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let e = format!("rmb_upper(CAST({} AS REAL))", q(&col));
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("金额大写：[{col}] → [{out}]")),
+        ))
+    }
+
+    fn op_percentage(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = {
+            let o = str_param(p, "out");
+            if o.is_empty() {
+                "占比".to_string()
+            } else {
+                o
+            }
+        };
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let parts = list_param(p, "partition_by");
+        for c in &parts {
+            if !self.has_column(c) {
+                return Err(format!("分组字段 [{c}] 不存在"));
+            }
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let partition = if parts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "PARTITION BY {} ",
+                parts.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let f = q(&col);
+        let e = format!("ROUND({f} * 100.0 / NULLIF(SUM({f}) OVER ({partition}), 0), {decimals})");
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("计算 [{col}] 占比 → [{out}]")),
         ))
     }
 
@@ -1294,12 +2202,226 @@ pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult 
                 }
             }
             "sort" => {
-                let by = str_param(&p, "by");
-                if !cols.contains(&by) {
-                    step_errors.push(format!("字段 [{by}] 不存在"));
+                let keys = sorts_param(&p);
+                if keys.is_empty() {
+                    step_errors.push("请至少设置一个排序字段".into());
+                }
+                for (field, _) in keys {
+                    if !cols.contains(&field) {
+                        step_errors.push(format!("字段 [{field}] 不存在"));
+                    }
                 }
             }
-            "limit" | "output" => {}
+            "limit" | "output" | "random_rows" => {}
+            "random_number" => {
+                let out = str_param(&p, "out");
+                if out.is_empty() {
+                    step_errors.push("新字段名不能为空".into());
+                } else if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
+            "group_aggregate" => {
+                let groups = list_param(&p, "group_by");
+                for g in &groups {
+                    if !cols.contains(g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+                let aggs = aggregations_param(&p);
+                if aggs.is_empty() {
+                    step_errors.push("请至少添加一个汇总项".into());
+                }
+                let mut next: Vec<String> = groups.clone();
+                for agg in &aggs {
+                    const FUNCS: &[&str] = &[
+                        "count",
+                        "count_distinct",
+                        "sum",
+                        "avg",
+                        "min",
+                        "max",
+                        "group_concat",
+                        "stddev",
+                        "variance",
+                    ];
+                    if !FUNCS.contains(&agg.func.as_str()) {
+                        step_errors.push(format!("不支持的汇总方式：{}", agg.func));
+                        continue;
+                    }
+                    if agg.func != "count" {
+                        if agg.field.is_empty() {
+                            step_errors.push(format!("{} 汇总必须选择字段", agg.func));
+                        } else if !cols.contains(&agg.field) {
+                            step_errors.push(format!("汇总字段 [{}] 不存在", agg.field));
+                        }
+                    }
+                    let name = if agg.out.is_empty() {
+                        agg_label(&agg.func, &agg.field)
+                    } else {
+                        agg.out.clone()
+                    };
+                    next.push(name);
+                }
+                cols = next;
+            }
+            "round_number" | "text_pad" | "text_replace" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                if step.operator == "text_replace" && str_param(&p, "find").is_empty() {
+                    step_errors.push("查找内容不能为空".into());
+                }
+                let out = {
+                    let o = str_param(&p, "out");
+                    if o.is_empty() {
+                        col.clone()
+                    } else {
+                        o
+                    }
+                };
+                if out != col && cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else if out != col {
+                    cols.push(out);
+                }
+            }
+            "text_concat" => {
+                let list = list_param(&p, "columns");
+                if list.is_empty() {
+                    step_errors.push("请至少选择一个参与拼接的字段".into());
+                }
+                for c in &list {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                let out = str_param(&p, "out");
+                if out.is_empty() {
+                    step_errors.push("新字段名不能为空".into());
+                } else if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
+            "text_substr" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                let out = str_param(&p, "out");
+                if out.is_empty() {
+                    step_errors.push("新字段名不能为空".into());
+                } else if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
+            "conditional" => {
+                let out = str_param(&p, "out");
+                let cond = str_param(&p, "condition");
+                if out.is_empty() {
+                    step_errors.push("新字段名不能为空".into());
+                } else if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                }
+                if cond.is_empty() {
+                    step_errors.push("判断条件不能为空".into());
+                } else if let Err(e) = expr::compile(&cond, &cols) {
+                    step_errors.push(e);
+                }
+                if !out.is_empty() && !cols.contains(&out) {
+                    cols.push(out);
+                }
+            }
+            "date_calc" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                if str_param(&p, "mode") == "diff_days" {
+                    let other = str_param(&p, "other");
+                    if !cols.contains(&other) {
+                        step_errors.push(format!("对比日期字段 [{other}] 不存在"));
+                    }
+                }
+                let out = str_param(&p, "out");
+                if out.is_empty() {
+                    step_errors.push("新字段名不能为空".into());
+                } else if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
+            "parse_id_card" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                let outs = [
+                    str_param(&p, "birth_out"),
+                    str_param(&p, "gender_out"),
+                    str_param(&p, "age_out"),
+                    str_param(&p, "valid_out"),
+                ];
+                if outs.iter().all(|o| o.is_empty()) {
+                    step_errors.push("至少需要输出一个解析结果字段".into());
+                }
+                for out in outs {
+                    if !out.is_empty() && !cols.contains(&out) {
+                        cols.push(out);
+                    }
+                }
+            }
+            "amount_upper" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                let out = {
+                    let o = str_param(&p, "out");
+                    if o.is_empty() {
+                        "金额大写".to_string()
+                    } else {
+                        o
+                    }
+                };
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
+            "percentage" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                for c in list_param(&p, "partition_by") {
+                    if !cols.contains(&c) {
+                        step_errors.push(format!("分组字段 [{c}] 不存在"));
+                    }
+                }
+                let out = {
+                    let o = str_param(&p, "out");
+                    if o.is_empty() {
+                        "占比".to_string()
+                    } else {
+                        o
+                    }
+                };
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             other => step_errors.push(format!("不支持的操作符: {other}")),
         }
 
@@ -1554,5 +2676,140 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.errors.len(), 1);
         assert!(result.errors[0].message.contains("身份证号"));
+    }
+
+    #[test]
+    fn new_row_operators_add_expected_columns() {
+        let (mut conn, ds_id) = setup();
+        insert_flow(
+            &conn,
+            "f_new",
+            json!([
+                { "id": "s1", "operator": "text_substr",
+                  "params": { "column": "姓名", "start": 1, "length": 1, "out": "姓氏" } },
+                { "id": "s2", "operator": "conditional",
+                  "params": { "condition": "[笔试成绩] >= 80", "then": "合格", "else": "不合格", "out": "结论" } },
+                { "id": "s3", "operator": "amount_upper",
+                  "params": { "column": "笔试成绩", "out": "金额大写" } },
+                { "id": "s4", "operator": "percentage",
+                  "params": { "column": "面试成绩", "out": "占比", "decimals": 2 } },
+                { "id": "s5", "operator": "random_number",
+                  "params": { "out": "抽签号", "mode": "integer", "min": 1, "max": 10 } },
+                { "id": "s6", "operator": "sort",
+                  "params": { "keys": [{ "field": "笔试成绩", "order": "asc" }] } },
+                { "id": "s7", "operator": "output", "params": { "name": "处理结果" } }
+            ]),
+        );
+        let result = run_flow(&mut conn, "f_new", &ds_id).expect("run");
+        assert_eq!(
+            result.status,
+            "success",
+            "{}",
+            result.message.clone().unwrap_or_default()
+        );
+        let page = store::read_rows(&conn, &result.output_dataset_id.expect("output id"), 0, 10)
+            .expect("read");
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        for want in ["姓氏", "结论", "金额大写", "占比", "抽签号"] {
+            assert!(names.contains(&want), "缺少列 {want}");
+        }
+        // 升序后第一行是笔试 70 的王五
+        assert_eq!(page.rows[0][0], json!("王五"));
+        let idx = |name: &str| names.iter().position(|n| *n == name).expect("column");
+        assert_eq!(page.rows[0][idx("结论")], json!("不合格"));
+        assert_eq!(page.rows[0][idx("金额大写")], json!("柒拾元整"));
+        assert_eq!(page.rows[0][idx("姓氏")], json!("王"));
+        let pct = page.rows[0][idx("占比")].as_f64().expect("number");
+        assert!((pct - 26.09).abs() < 0.01, "占比实际 {pct}");
+    }
+
+    #[test]
+    fn group_aggregate_computes_counts_and_averages() {
+        let (mut conn, ds_id) = setup();
+        insert_flow(
+            &conn,
+            "f_group",
+            json!([
+                { "id": "s1", "operator": "conditional",
+                  "params": { "condition": "[笔试成绩] >= 80", "then": "1", "else": "2", "out": "组别" } },
+                { "id": "s2", "operator": "group_aggregate",
+                  "params": {
+                      "group_by": ["组别"],
+                      "aggregations": [
+                          { "func": "count" },
+                          { "func": "avg", "field": "面试成绩", "out": "面试均分", "decimals": 1 },
+                          { "func": "max", "field": "笔试成绩", "out": "最高笔试" },
+                          { "func": "stddev", "field": "面试成绩", "out": "面试标准差", "decimals": 2 }
+                      ]
+                  } },
+                { "id": "s3", "operator": "sort",
+                  "params": { "keys": [{ "field": "组别", "order": "asc" }] } },
+                { "id": "s4", "operator": "output", "params": { "name": "分组统计" } }
+            ]),
+        );
+        let result = run_flow(&mut conn, "f_group", &ds_id).expect("run");
+        assert_eq!(
+            result.status,
+            "success",
+            "{}",
+            result.message.clone().unwrap_or_default()
+        );
+        let page = store::read_rows(&conn, &result.output_dataset_id.expect("output id"), 0, 10)
+            .expect("read");
+        assert_eq!(page.total, 2);
+        assert_eq!(page.columns[0].name, "组别");
+        let names: Vec<&str> = page.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"数量"));
+        assert!(names.contains(&"面试均分"));
+        let idx = |name: &str| names.iter().position(|n| *n == name).expect("column");
+        // 组别 1：张三(80/90)、李四(90/80)
+        assert_eq!(page.rows[0][idx("数量")].as_f64(), Some(2.0));
+        assert_eq!(page.rows[0][idx("面试均分")].as_f64(), Some(85.0));
+        assert_eq!(page.rows[0][idx("最高笔试")].as_f64(), Some(90.0));
+        assert_eq!(
+            page.rows[0][idx("面试标准差")].as_f64(),
+            Some(5.0),
+            "实际：{:?}",
+            page.rows[0][idx("面试标准差")]
+        );
+    }
+
+    #[test]
+    fn parse_id_card_extracts_birth_gender_and_validity() {
+        let conn = Connection::open_in_memory().expect("db");
+        conn.execute_batch(crate::db::SCHEMA).expect("schema");
+        crate::db::register_functions(&conn).expect("functions");
+        let (birth, gender, valid): (Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT id_card_birth('11010519491231002X'), id_card_gender('11010519491231002X'), id_card_valid('11010519491231002X')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("query");
+        assert_eq!(birth.as_deref(), Some("1949-12-31"));
+        assert_eq!(gender.as_deref(), Some("女"));
+        assert_eq!(valid, 1);
+        let bad: i64 = conn
+            .query_row("SELECT id_card_valid('110105194912310021')", [], |r| {
+                r.get(0)
+            })
+            .expect("query");
+        assert_eq!(bad, 0);
+    }
+
+    #[test]
+    fn date_calc_and_normalize_date_handle_multiple_formats() {
+        let conn = Connection::open_in_memory().expect("db");
+        crate::db::register_functions(&conn).expect("functions");
+        let (d1, d2, d3): (String, String, String) = conn
+            .query_row(
+                "SELECT norm_date('2010/5/3'), norm_date('20100503'), norm_date('2010年5月3日')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("query");
+        assert_eq!(d1, "2010-05-03");
+        assert_eq!(d2, "2010-05-03");
+        assert_eq!(d3, "2010-05-03");
     }
 }

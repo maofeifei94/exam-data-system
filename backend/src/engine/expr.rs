@@ -55,6 +55,11 @@ const FUNCTIONS: &[&str] = &[
     "ROUNDUP",
     "GREATEST",
     "LEAST",
+    "RMB_UPPER",
+    "ID_CARD_BIRTH",
+    "ID_CARD_GENDER",
+    "ID_CARD_VALID",
+    "NORM_DATE",
 ];
 
 #[derive(Debug, Clone, PartialEq)]

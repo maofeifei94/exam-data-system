@@ -325,9 +325,36 @@ pub async fn validate(
     let mut result = engine::validate_steps(&steps, &input.columns);
 
     // 项目流程额外校验：必需字段必须真实存在于项目模板，而不是沿用全局字段。
+    let input_columns = input.columns.clone();
     if let Some(project_id) = input.project_id.filter(|id| !id.trim().is_empty()) {
-        let names = state
-            .db(move |conn| engine::scoped_field_names(conn, &project_id))
+        let (names, pdf_fields) = state
+            .db(move |conn| {
+                let names = engine::scoped_field_names(conn, &project_id)?;
+                let tpl_id: String = conn
+                    .query_row(
+                        "SELECT pdf_template_id FROM exam_projects WHERE id = ?1",
+                        params![project_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or_default();
+                let mut fields: Vec<String> = Vec::new();
+                if !tpl_id.is_empty() {
+                    let raw: Option<String> = conn
+                        .query_row(
+                            "SELECT template FROM pdf_templates WHERE id = ?1",
+                            params![tpl_id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if let Some(raw) = raw {
+                        if let Ok(body) = serde_json::from_str::<models::TemplateBody>(&raw) {
+                            fields = body.all_required_fields();
+                        }
+                    }
+                }
+                Ok((names, fields))
+            })
             .await?;
         for (idx, step) in steps.iter().enumerate() {
             if !step.enabled || step.operator != "require_fields" {
@@ -346,6 +373,26 @@ pub async fn validate(
                         message: format!("项目模板中缺少必需字段：{field}"),
                     });
                 }
+            }
+        }
+
+        // PDF 模板（含所有子元素）需要的字段也纳入校验：
+        // 有真实数据列时看流程最终输出，没有数据列时看项目字段模板。
+        let available: Vec<String> = if input_columns.is_empty() {
+            names.clone()
+        } else {
+            result
+                .steps
+                .last()
+                .map(|s| s.output_fields.clone())
+                .unwrap_or(input_columns)
+        };
+        for field in pdf_fields {
+            if !available.iter().any(|f| f == &field) {
+                result.errors.push(models::ValidateError {
+                    step_index: -1,
+                    message: format!("PDF 模板需要字段「{field}」，但流程最终数据中没有该字段"),
+                });
             }
         }
         result.ok = result.errors.is_empty();

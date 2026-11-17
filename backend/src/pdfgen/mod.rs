@@ -453,7 +453,135 @@ fn page_size_mm(p: &PageSetup) -> (f32, f32) {
     }
 }
 
+/// 一页对应的数据：`value` 是页面分组字段的取值（如考场号），
+/// `rows` 是本页包含的数据行下标。
+struct PageSlice {
+    value: String,
+    rows: Vec<usize>,
+}
+
+/// 自然排序：`考场2` 排在 `考场10` 之前，纯数字按数值比较。
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn chunks(s: &str) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        let mut cur = String::new();
+        let mut cur_digit = None;
+        for ch in s.chars() {
+            let is_digit = ch.is_ascii_digit();
+            if cur_digit != Some(is_digit) && !cur.is_empty() {
+                out.push((cur_digit.unwrap_or(false), std::mem::take(&mut cur)));
+            }
+            cur.push(ch);
+            cur_digit = Some(is_digit);
+        }
+        if !cur.is_empty() {
+            out.push((cur_digit.unwrap_or(false), cur));
+        }
+        out
+    }
+    let (ca, cb) = (chunks(a.trim()), chunks(b.trim()));
+    for i in 0..ca.len().max(cb.len()) {
+        match (ca.get(i), cb.get(i)) {
+            (Some((da, sa)), Some((db, sb))) => {
+                let ord = if *da && *db {
+                    match (sa.parse::<u128>(), sb.parse::<u128>()) {
+                        (Ok(x), Ok(y)) => x.cmp(&y),
+                        _ => sa.cmp(sb),
+                    }
+                } else {
+                    sa.cmp(sb)
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => break,
+        }
+    }
+    Ordering::Equal
+}
+
+/// 按页面字段把行切成页；未指定字段时按每页格子数顺序切分。
+/// 同组数据超过一页时顺延到下一页（页面字段值保持不变），避免丢数据。
+fn build_matrix_slices(
+    rows: &[Vec<String>],
+    page_idx: Option<usize>,
+    per_page: usize,
+) -> Vec<PageSlice> {
+    let per_page = per_page.max(1);
+    let mut slices: Vec<PageSlice> = Vec::new();
+    if let Some(pi) = page_idx {
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, row) in rows.iter().enumerate() {
+            let key = row.get(pi).cloned().unwrap_or_default().trim().to_string();
+            groups.entry(key).or_default().push(i);
+        }
+        let mut keys: Vec<String> = groups.keys().cloned().collect();
+        keys.sort_by(|a, b| natural_cmp(a, b));
+        for key in keys {
+            let idxs = groups.remove(&key).unwrap_or_default();
+            for chunk in idxs.chunks(per_page) {
+                slices.push(PageSlice {
+                    value: key.clone(),
+                    rows: chunk.to_vec(),
+                });
+            }
+        }
+    } else {
+        for chunk in (0..rows.len()).collect::<Vec<_>>().chunks(per_page) {
+            slices.push(PageSlice {
+                value: String::new(),
+                rows: chunk.to_vec(),
+            });
+        }
+    }
+    slices
+}
+
+/// 计算矩阵每个格子的数据行：索引字段值 N 放进第 N 个格子；
+/// 索引缺失、越界或冲突的数据顺延到剩余空格。
+fn build_cells(
+    rows: &[Vec<String>],
+    row_nos: &[usize],
+    seat_idx: Option<usize>,
+    per_page: usize,
+) -> Vec<Option<usize>> {
+    let mut cells: Vec<Option<usize>> = vec![None; per_page];
+    let mut leftovers: Vec<usize> = Vec::new();
+    for &row_no in row_nos {
+        if let Some(si) = seat_idx {
+            let seat = rows
+                .get(row_no)
+                .and_then(|r| r.get(si))
+                .and_then(|s| s.trim().parse::<i64>().ok());
+            if let Some(v) = seat {
+                let pos = v - 1;
+                if pos >= 0 && (pos as usize) < per_page && cells[pos as usize].is_none() {
+                    cells[pos as usize] = Some(row_no);
+                    continue;
+                }
+            }
+        }
+        leftovers.push(row_no);
+    }
+    for row_no in leftovers {
+        if let Some(slot) = cells.iter_mut().position(|c| c.is_none()) {
+            cells[slot] = Some(row_no);
+        }
+    }
+    cells
+}
+
 /// 纯渲染入口：数据已提前读出，因此在 CPU 密集的排版过程中不再占用数据库连接。
+///
+/// 分页规则：
+/// - 未设置页面字段：单页模板一行一页，矩阵模板按格子数顺序分页（原有行为）；
+/// - 设置了页面字段（如考场号）：按该字段分组，每组从一个新页开始，页面按取值自然排序；
+/// - 设置了矩阵索引字段（如座位号）：格子位置由索引值决定（1 表示第 1 格），
+///   非法或冲突的索引按剩余空格顺序补位，避免丢数据。
 pub fn render_pdf_data(
     col_meta: &[DatasetColumn],
     rows: &[Vec<String>],
@@ -470,6 +598,21 @@ pub fn render_pdf_data(
         .map(|(i, c)| (c.name.clone(), i))
         .collect();
 
+    // 模板根声明的必需字段（含子元素占位符冒泡上来的字段）必须在输入数据中存在。
+    let required = body.all_required_fields();
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|f| !index.contains_key(f.as_str()))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return Err(AppError::bad_request(format!(
+            "PDF 模板需要字段：{}；输入数据缺少：{}",
+            required.join("、"),
+            missing.join("、")
+        )));
+    }
+
     let (page_w, page_h) = page_size_mm(&body.page);
     let m = &body.page.margin_mm;
     let content_x = m.left;
@@ -483,6 +626,14 @@ pub fn render_pdf_data(
 
     let photo_dir = opts.photo_dir.clone();
     let total_rows = rows.len() as i64;
+    let page_idx = index
+        .get(body.page_field.trim())
+        .copied()
+        .filter(|_| !body.page_field.trim().is_empty());
+    let seat_idx = index
+        .get(body.matrix_index_field.trim())
+        .copied()
+        .filter(|_| !body.matrix_index_field.trim().is_empty());
 
     if kind == "matrix" {
         let matrix_el = body.elements.iter().find(|e| e.etype == "matrix");
@@ -490,12 +641,18 @@ pub fn render_pdf_data(
             .and_then(|e| e.matrix.as_ref())
             .map(|m| (m.cols.max(1), m.rows.max(1)))
             .unwrap_or((1, 1));
-        let per_page = cols * grid_rows;
-        let pages = if total_rows == 0 {
-            1
-        } else {
-            (total_rows + per_page - 1) / per_page
-        };
+        let per_page = (cols * grid_rows).max(1) as usize;
+
+        // 1) 按页面字段分组，每组独立分页；页面按字段取值自然排序。
+        let mut slices = build_matrix_slices(rows, page_idx, per_page);
+        if slices.is_empty() {
+            slices.push(PageSlice {
+                value: String::new(),
+                rows: Vec::new(),
+            });
+        }
+
+        let pages = slices.len() as i64;
         let start_page = opts.only_page.unwrap_or(1).max(1);
         let end_page = if opts.only_page.is_some() {
             start_page
@@ -505,6 +662,7 @@ pub fn render_pdf_data(
 
         let mut first_used = false;
         for page in start_page..=end_page.min(pages) {
+            let slice = &slices[(page - 1) as usize];
             let (pi, li) = if !first_used {
                 first_used = true;
                 (first_page, first_layer)
@@ -519,14 +677,20 @@ pub fn render_pdf_data(
                 page_h,
                 photo_dir: photo_dir.as_deref(),
             };
-            let first = (page - 1) * per_page;
-            let on_page = (total_rows - first).clamp(0, per_page);
+            let on_page = slice.rows.len() as i64;
 
+            // 页面级元素只认识本页的分组值（如考场号），不会串入某个考生的数据。
+            let mut page_row: Vec<String> = vec![String::new(); col_meta.len()];
+            if let Some(pi) = page_idx {
+                if pi < page_row.len() {
+                    page_row[pi] = slice.value.clone();
+                }
+            }
             let page_ctx = Ctx {
-                row: &[],
+                row: &page_row,
                 index: &index,
                 index_no: 0,
-                no: first,
+                no: slice.rows.first().map(|i| *i as i64 + 1).unwrap_or(0),
                 page,
                 pages,
                 count: on_page,
@@ -560,12 +724,15 @@ pub fn render_pdf_data(
                 let cell_w = el.w_mm / cols as f32;
                 let cell_h = el.h_mm / grid_rows as f32;
 
-                // 每条数据填入一个单元格，子元素被复制到所有格子
-                for k in 0..on_page {
-                    let row_no = first + k;
-                    let row = &rows[row_no as usize];
-                    let cx = k % cols;
-                    let cy = k / cols;
+                // 2) 计算每个格子的数据：座位号（索引字段）→ 格子位置；
+                //    索引缺失/非法/重复的数据顺延到剩余空格，保证不丢人。
+                let cells = build_cells(rows, &slice.rows, seat_idx, per_page);
+
+                for (k, slot) in cells.iter().enumerate() {
+                    let Some(row_no) = *slot else { continue };
+                    let row = &rows[row_no];
+                    let cx = k % cols as usize;
+                    let cy = k / cols as usize;
                     let origin = Origin {
                         x: matrix_origin.x + cx as f32 * cell_w,
                         y_top: matrix_origin.y_top + cy as f32 * cell_h,
@@ -573,8 +740,8 @@ pub fn render_pdf_data(
                     let ctx = Ctx {
                         row,
                         index: &index,
-                        index_no: k + 1,
-                        no: row_no + 1,
+                        index_no: k as i64 + 1,
+                        no: row_no as i64 + 1,
                         page,
                         pages,
                         count: on_page,
@@ -584,7 +751,20 @@ pub fn render_pdf_data(
             }
         }
     } else {
-        let pages = total_rows.max(if total_rows == 0 { 1 } else { 0 });
+        // 单页模板：默认一行一页；设置页面字段后按该字段自然排序，使同考场的页面聚在一起。
+        let order: Vec<usize> = if let Some(pi) = page_idx {
+            let mut v: Vec<usize> = (0..rows.len()).collect();
+            v.sort_by(|&a, &b| {
+                natural_cmp(
+                    rows[a].get(pi).map(|s| s.as_str()).unwrap_or(""),
+                    rows[b].get(pi).map(|s| s.as_str()).unwrap_or(""),
+                )
+            });
+            v
+        } else {
+            (0..rows.len()).collect()
+        };
+        let pages = order.len().max(1) as i64;
         let start_page = opts.only_page.unwrap_or(1).max(1);
         let end_page = if opts.only_page.is_some() {
             start_page
@@ -607,17 +787,13 @@ pub fn render_pdf_data(
                 page_h,
                 photo_dir: photo_dir.as_deref(),
             };
-            let row_no = page - 1;
-            let row: &[String] = if (row_no as usize) < rows.len() {
-                &rows[row_no as usize]
-            } else {
-                &[]
-            };
+            let row_no = order.get((page - 1) as usize).copied();
+            let row: &[String] = row_no.map(|i| rows[i].as_slice()).unwrap_or(&[]);
             let ctx = Ctx {
                 row,
                 index: &index,
                 index_no: page,
-                no: page,
+                no: row_no.map(|i| i as i64 + 1).unwrap_or(0),
                 page,
                 pages,
                 count: total_rows,
@@ -683,6 +859,122 @@ mod tests {
         assert!(resolve_photo("", dir.to_str(), &[]).is_none());
         assert!(resolve_photo("不存在", dir.to_str(), &["jpg".to_string()]).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn required_fields_bubble_up_from_matrix_cells() {
+        let mut body = TemplateBody {
+            page_field: "考场号".into(),
+            matrix_index_field: "座位号".into(),
+            required_fields: vec!["身份证号".into()],
+            ..Default::default()
+        };
+        let mut matrix = TemplateElement::empty("m", "matrix");
+        let mut text = TemplateElement::empty("t", "text");
+        text.text = "{姓名} / {{准考证号}} / {{page}}".into();
+        matrix.children.push(text);
+        body.elements.push(matrix);
+        assert_eq!(
+            body.all_required_fields(),
+            vec!["身份证号", "考场号", "座位号", "姓名", "准考证号"]
+        );
+    }
+
+    #[test]
+    fn matrix_pages_follow_page_field_natural_order() {
+        let rows = vec![
+            vec!["1".into(), "张三".into(), "2".into()],
+            vec!["1".into(), "李四".into(), "1".into()],
+            vec!["2".into(), "王五".into(), "3".into()],
+            vec!["10".into(), "赵六".into(), "1".into()],
+        ];
+        let slices = build_matrix_slices(&rows, Some(0), 4);
+        let values: Vec<&str> = slices.iter().map(|s| s.value.as_str()).collect();
+        assert_eq!(values, vec!["1", "2", "10"]);
+        assert_eq!(slices[0].rows, vec![0, 1]);
+        assert_eq!(slices[2].rows, vec![3]);
+
+        let cells = build_cells(&rows, &slices[0].rows, Some(2), 4);
+        // 座位号 1/2 → 第 0/1 格
+        assert_eq!(cells, vec![Some(1), Some(0), None, None]);
+    }
+
+    #[test]
+    fn duplicate_or_invalid_seat_falls_back_to_free_cells() {
+        let rows = vec![
+            vec!["张三".into(), "1".into()],
+            vec!["李四".into(), "1".into()],
+            vec!["王五".into(), "99".into()],
+        ];
+        let cells = build_cells(&rows, &[0, 1, 2], Some(1), 4);
+        assert_eq!(cells, vec![Some(0), Some(1), Some(2), None]);
+    }
+
+    #[test]
+    fn render_rejects_input_missing_required_fields() {
+        let mut body = TemplateBody::default();
+        let mut el = TemplateElement::empty("t", "text");
+        el.text = "{姓名}".into();
+        body.elements.push(el);
+        let cols = vec![DatasetColumn {
+            name: "考场号".into(),
+            dtype: "text".into(),
+        }];
+        let err = render_pdf_data(&cols, &[], &body, "single", &RenderOpts::default())
+            .expect_err("missing field");
+        assert!(err.to_string().contains("姓名"), "实际错误：{err}");
+    }
+
+    #[test]
+    fn render_paginates_matrix_by_room_and_seat() {
+        let mut body = TemplateBody {
+            page_field: "考场号".into(),
+            matrix_index_field: "座位号".into(),
+            ..Default::default()
+        };
+        let mut matrix = TemplateElement::empty("m", "matrix");
+        matrix.x_mm = 10.0;
+        matrix.y_mm = 10.0;
+        matrix.w_mm = 120.0;
+        matrix.h_mm = 100.0;
+        matrix.matrix = Some(MatrixSetup {
+            rows: 2,
+            cols: 2,
+            gap_x_mm: 0.0,
+            gap_y_mm: 0.0,
+            cell_h_mm: 30.0,
+            origin_y_mm: 0.0,
+            show_grid: true,
+            show_border: true,
+        });
+        let mut text = TemplateElement::empty("t", "text");
+        text.text = "{姓名}({考场号}-{座位号})".into();
+        matrix.children.push(text);
+        body.elements.push(matrix);
+        body.normalize("matrix");
+        let cols = vec![
+            DatasetColumn {
+                name: "考场号".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "座位号".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "姓名".into(),
+                dtype: "text".into(),
+            },
+        ];
+        let rows = vec![
+            vec!["1".into(), "2".into(), "张三".into()],
+            vec!["1".into(), "1".into(), "李四".into()],
+            vec!["2".into(), "1".into(), "王五".into()],
+        ];
+        let bytes =
+            render_pdf_data(&cols, &rows, &body, "matrix", &RenderOpts::default()).expect("render");
+        assert!(bytes.starts_with(b"%PDF"));
+        assert!(bytes.len() > 1000);
     }
 
     #[test]

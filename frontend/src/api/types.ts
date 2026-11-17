@@ -208,7 +208,9 @@ export interface OperatorParam {
     | 'columns'
     | 'expr'
     | 'fields'
-    | 'mappings';
+    | 'mappings'
+    | 'sorts'
+    | 'aggregations';
   required: boolean;
   default?: any;
   options?: string[];
@@ -367,6 +369,14 @@ export interface PdfTemplate {
   page: PageSetup;
   matrix: MatrixSetup;
   elements: TemplateElement[];
+  /** 页面分组/排序依据（如考场号）：每个取值一页，页面按取值排序 */
+  page_field: string;
+  /** 矩阵格子索引依据（如座位号）：取值 N 放入第 N 个格子 */
+  matrix_index_field: string;
+  /** 模板显式声明的必需字段 */
+  required_fields: string[];
+  /** 显式声明 + 子元素占位符合并后的完整必需字段 */
+  all_required_fields: string[];
   scope: Scope;
   project_id: string;
   source_id: string;
@@ -381,8 +391,23 @@ export interface PdfTemplateInput {
   page: PageSetup;
   matrix: MatrixSetup;
   elements: TemplateElement[];
+  page_field?: string;
+  matrix_index_field?: string;
+  required_fields?: string[];
   scope?: Scope;
   project_id?: string;
+}
+
+export interface SortKey {
+  field: string;
+  order: 'asc' | 'desc';
+}
+
+export interface AggregationSpec {
+  func: string;
+  field?: string;
+  out?: string;
+  decimals?: number;
 }
 
 export interface ImportResult {

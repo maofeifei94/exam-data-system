@@ -1452,6 +1452,14 @@ function ParamControl({ param, value, columns, fields, onChange }: ParamControlP
     return <MappingsControl param={param} value={value} columns={columns} onChange={onChange} />;
   }
 
+  if (param.type === 'sorts') {
+    return <SortsControl param={param} value={value} columns={columns} onChange={onChange} />;
+  }
+
+  if (param.type === 'aggregations') {
+    return <AggregationsControl param={param} value={value} columns={columns} onChange={onChange} />;
+  }
+
   if (param.type === 'number') {
     return (
       <label className="field">
@@ -1557,6 +1565,141 @@ function ColumnsControl({ param, value, columns, onChange }: ListControlProps) {
           ))}
         </div>
       ) : null}
+      {param.help ? <span className="field-hint">{param.help}</span> : null}
+    </div>
+  );
+}
+
+interface SortKeyValue {
+  field: string;
+  order: 'asc' | 'desc';
+}
+
+function SortsControl({ param, value, columns, onChange }: ListControlProps) {
+  const rows = Array.isArray(value) ? (value as SortKeyValue[]) : [];
+  const update = (index: number, patch: Partial<SortKeyValue>) => {
+    onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  };
+  return (
+    <div className="field">
+      <span className="field-label">{param.label}</span>
+      {rows.map((row, index) => (
+        <div key={index} className="mapping-row">
+          <select
+            value={row.field ?? ''}
+            onChange={(event) => update(index, { field: event.target.value })}
+          >
+            <option value="">选择字段…</option>
+            {columns.map((column) => (
+              <option key={column} value={column}>
+                {column}
+              </option>
+            ))}
+          </select>
+          <select
+            value={row.order ?? 'desc'}
+            onChange={(event) => update(index, { order: event.target.value as 'asc' | 'desc' })}
+          >
+            <option value="asc">升序</option>
+            <option value="desc">降序</option>
+          </select>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => onChange([...rows, { field: columns[0] ?? '', order: 'asc' }])}
+      >
+        添加排序字段
+      </button>
+      {param.help ? <span className="field-hint">{param.help}</span> : null}
+    </div>
+  );
+}
+
+interface AggregationValue {
+  func: string;
+  field?: string;
+  out?: string;
+  decimals?: number;
+}
+
+const AGG_OPTIONS: Array<{ value: string; label: string; needsField: boolean }> = [
+  { value: 'count', label: '计数', needsField: false },
+  { value: 'count_distinct', label: '去重计数', needsField: true },
+  { value: 'sum', label: '合计', needsField: true },
+  { value: 'avg', label: '平均值', needsField: true },
+  { value: 'min', label: '最小值', needsField: true },
+  { value: 'max', label: '最大值', needsField: true },
+  { value: 'group_concat', label: '拼接', needsField: true },
+  { value: 'stddev', label: '标准差', needsField: true },
+  { value: 'variance', label: '方差', needsField: true },
+];
+
+function AggregationsControl({ param, value, columns, onChange }: ListControlProps) {
+  const rows = Array.isArray(value) ? (value as AggregationValue[]) : [];
+  const update = (index: number, patch: Partial<AggregationValue>) => {
+    onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  };
+  return (
+    <div className="field">
+      <span className="field-label">{param.label}</span>
+      {rows.map((row, index) => {
+        const needsField = AGG_OPTIONS.find((item) => item.value === row.func)?.needsField ?? true;
+        return (
+          <div key={index} className="mapping-row">
+            <select
+              value={row.func ?? 'count'}
+              onChange={(event) => update(index, { func: event.target.value })}
+            >
+              {AGG_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={row.field ?? ''}
+              disabled={!needsField}
+              onChange={(event) => update(index, { field: event.target.value })}
+            >
+              <option value="">{needsField ? '选择字段…' : '无需字段'}</option>
+              {columns.map((column) => (
+                <option key={column} value={column}>
+                  {column}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              placeholder="输出列名"
+              value={row.out ?? ''}
+              onChange={(event) => update(index, { out: event.target.value })}
+            />
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => onChange([...rows, { func: 'count', out: '' }])}
+      >
+        添加汇总项
+      </button>
       {param.help ? <span className="field-hint">{param.help}</span> : null}
     </div>
   );

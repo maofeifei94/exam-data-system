@@ -628,6 +628,15 @@ pub struct TemplateBody {
     pub matrix: MatrixSetup,
     #[serde(default)]
     pub elements: Vec<TemplateElement>,
+    /// 页面分组/排序依据字段（如考场号）：每个不同取值一页，页面按该值排序
+    #[serde(default)]
+    pub page_field: String,
+    /// 矩阵单元格索引依据字段（如座位号）：取值 N 的行放进第 N 个格子
+    #[serde(default)]
+    pub matrix_index_field: String,
+    /// 模板显式声明的必需字段；与子元素中的占位符合并后作为模板整体所需字段
+    #[serde(default)]
+    pub required_fields: Vec<String>,
 }
 fn default_page() -> PageSetup {
     PageSetup {
@@ -643,7 +652,70 @@ impl Default for TemplateBody {
             page: default_page(),
             matrix: default_matrix(),
             elements: Vec::new(),
+            page_field: String::new(),
+            matrix_index_field: String::new(),
+            required_fields: Vec::new(),
         }
+    }
+}
+
+/// `{{index}}` 等内置变量不属于数据字段。
+const BUILTIN_TOKENS: &[&str] = &["index", "no", "page", "pages", "count"];
+
+fn push_field(out: &mut Vec<String>, name: &str) {
+    let name = name.trim();
+    if name.is_empty() || BUILTIN_TOKENS.contains(&name) {
+        return;
+    }
+    if !out.iter().any(|f| f == name) {
+        out.push(name.to_string());
+    }
+}
+
+/// 扫描 `{字段}` / `{{字段}}` 占位符。
+fn collect_placeholders(text: &str, out: &mut Vec<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] != '{' {
+            i += 1;
+            continue;
+        }
+        let double = i + 1 < chars.len() && chars[i + 1] == '{';
+        let start = if double { i + 2 } else { i + 1 };
+        let close: &[char] = if double { &['}', '}'] } else { &['}'] };
+        let mut j = start;
+        let mut found = None;
+        while j + close.len() <= chars.len() {
+            if chars[j..j + close.len()] == *close {
+                found = Some(j);
+                break;
+            }
+            j += 1;
+        }
+        if let Some(end) = found {
+            let key: String = chars[start..end].iter().collect();
+            push_field(out, &key);
+            i = end + close.len();
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn collect_element_fields(el: &TemplateElement, out: &mut Vec<String>) {
+    if el.etype == "text" {
+        collect_placeholders(&el.text, out);
+        push_field(out, &el.field);
+    } else if el.etype == "image" {
+        if el.photo_name.trim().is_empty() {
+            push_field(out, &el.field);
+        } else {
+            collect_placeholders(&el.photo_name, out);
+        }
+    }
+    for child in &el.children {
+        collect_element_fields(child, out);
     }
 }
 
@@ -722,6 +794,20 @@ impl TemplateBody {
         page_elements.push(matrix_el);
         self.elements = page_elements;
     }
+
+    /// 模板整体需要的字段：显式声明 + 页面/矩阵索引字段 + 所有子元素占位符。
+    pub fn all_required_fields(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for f in &self.required_fields {
+            push_field(&mut out, f);
+        }
+        push_field(&mut out, &self.page_field);
+        push_field(&mut out, &self.matrix_index_field);
+        for el in &self.elements {
+            collect_element_fields(el, &mut out);
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -733,6 +819,12 @@ pub struct PdfTemplate {
     pub page: PageSetup,
     pub matrix: MatrixSetup,
     pub elements: Vec<TemplateElement>,
+    pub page_field: String,
+    pub matrix_index_field: String,
+    /// 模板显式声明的必需字段
+    pub required_fields: Vec<String>,
+    /// 显式声明与子元素占位符合并后的完整必需字段
+    pub all_required_fields: Vec<String>,
     pub scope: String,
     pub project_id: String,
     pub source_id: String,
@@ -753,6 +845,12 @@ pub struct PdfTemplateInput {
     pub matrix: MatrixSetup,
     #[serde(default)]
     pub elements: Vec<TemplateElement>,
+    #[serde(default)]
+    pub page_field: String,
+    #[serde(default)]
+    pub matrix_index_field: String,
+    #[serde(default)]
+    pub required_fields: Vec<String>,
     #[serde(default)]
     pub scope: Option<String>,
     #[serde(default)]
