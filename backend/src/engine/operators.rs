@@ -572,6 +572,20 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "zero_score_check",
+            "单科零分校验",
+            "校验",
+            "检查指定科目中是否存在 0 分或缺考空值，输出需要人工复核的行数，避免异常成绩直接发布。",
+            vec![
+                with_help(
+                    p("columns", "参与检查的科目字段", "columns", true, json!([])),
+                    "如语文、数学、英语等单科成绩列",
+                ),
+                with_help(p("include_blank", "空值也视为异常", "bool", false, json!(false)), "开启后缺考（空值）同样提示复核"),
+                with_options(p("on_error", "发现异常时", "enum", false, json!("warn")), &["fail", "warn"]),
+            ],
+        ),
+        def(
             "range_check",
             "数值范围校验",
             "校验",

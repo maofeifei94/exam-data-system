@@ -265,6 +265,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号 / 统一社会信用代码校验 |
 | `invoice_validate` | 发票代码 / 号码校验：代码须为 10 或 12 位数字，号码须为 8 或 20 位数字，空值可选忽略 |
+| `zero_score_check` | 单科零分校验：检查指定科目是否存在 0 分或缺考空值，提示人工复核 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `sum_check` | 合计一致性校验：校验合计字段是否等于各明细字段之和（总成绩、发票金额） |
 | `outlier_check` | 异常值检测：按分组均值与标准差检测偏离超过 k 倍的异常值，可输出标记列 |
@@ -409,7 +410,8 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   相对路径按渲染请求的 `photo_dir` 查找，缺失或解码失败时静默跳过。
   路径支持 `{字段}` 占位符，其中字段同样纳入必需字段校验，适合证书底纹、防伪底图。
 - **页眉页脚 / 页码 / 水印**：`header_text`、`footer_text`、`watermark` 均支持
-  `{字段}` 与 `{{page}}` / `{{pages}}` / `{{count}}` 占位符，每页绘制一次；
+  `{字段}` 与 `{{page}}` / `{{pages}}` / `{{count}}` / `{{date}}` / `{{time}}` 占位符，每页绘制一次；
+  `{{date}}` / `{{time}}` 输出渲染时的本地日期与时间，适合「打印日期」；
   `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」，
   `page_number_start` 设置页码起始值（首页即显示为该值），
   `page_number_skip_first` 让封面等首页不显示页码；

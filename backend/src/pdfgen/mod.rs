@@ -71,6 +71,8 @@ impl<'a> Ctx<'a> {
             "pages" => self.pages.to_string(),
             "count" => self.count.to_string(),
             "total" => self.all_rows.len().to_string(),
+            "date" => chrono::Local::now().format("%Y-%m-%d").to_string(),
+            "time" => chrono::Local::now().format("%H:%M").to_string(),
             other => self
                 .stat(other)
                 .unwrap_or_else(|| self.value(other).to_string()),

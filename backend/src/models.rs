@@ -738,7 +738,9 @@ impl Default for TemplateBody {
 }
 
 /// `{{index}}` 等内置变量不属于数据字段。
-const BUILTIN_TOKENS: &[&str] = &["index", "no", "page", "pages", "count", "total"];
+const BUILTIN_TOKENS: &[&str] = &[
+    "index", "no", "page", "pages", "count", "total", "date", "time",
+];
 
 /// 统计占位符（如 `sum:金额`、`rate:成绩:60`）依赖的仍然是数据字段。
 fn push_token_field(out: &mut Vec<String>, token: &str) {

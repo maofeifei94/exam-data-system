@@ -429,6 +429,7 @@ impl<'a> Compiler<'a> {
             "column_compare" => self.op_column_compare(step_index, step, &params),
             "format_check" => self.op_format_check(step_index, step, &params),
             "invoice_validate" => self.op_invoice_validate(step_index, step, &params),
+            "zero_score_check" => self.op_zero_score_check(step_index, step, &params),
             "range_check" => self.op_range_check(step_index, step, &params),
             "shuffle" => self.op_shuffle(step_index, step, &params),
             "balance_classes" => self.op_balance_classes(step_index, step, &params),
@@ -3061,6 +3062,69 @@ impl<'a> Compiler<'a> {
                 "发票代码/号码格式全部合法".to_string()
             } else {
                 format!("有 {bad} 行发票格式不合法，已按警告继续")
+            }),
+        ))
+    }
+
+    /// 单科零分 / 缺考校验：找出需要人工复核的成绩异常行。
+    fn op_zero_score_check(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let cols = list_param(p, "columns");
+        if cols.is_empty() {
+            return Err("请至少选择一个科目字段".into());
+        }
+        for c in &cols {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let include_blank = bool_param(p, "include_blank", false);
+        let mut conds: Vec<String> = Vec::new();
+        for c in &cols {
+            let f = q(c);
+            let blank = format!("TRIM(COALESCE(CAST({f} AS TEXT), '')) = ''");
+            if include_blank {
+                conds.push(format!("({blank}) OR COALESCE(CAST({f} AS REAL), 0) = 0"));
+            } else {
+                conds.push(format!(
+                    "NOT ({blank}) AND COALESCE(CAST({f} AS REAL), 0) = 0"
+                ));
+            }
+        }
+        let sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM {} WHERE {}",
+            self.cur,
+            conds.join(" OR ")
+        ));
+        let bad: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("单科零分校验失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") == "fail" {
+            return Err(format!(
+                "单科零分校验未通过：{} 行在 {} 中存在 0 分{}",
+                bad,
+                cols.join("、"),
+                if include_blank { "或缺考" } else { "" }
+            ));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            None,
+            Some(if bad == 0 {
+                "所选科目均无 0 分或缺考".to_string()
+            } else {
+                format!(
+                    "{bad} 行存在 0 分{}，建议人工复核",
+                    if include_blank { "或缺考" } else { "" }
+                )
             }),
         ))
     }
@@ -6174,6 +6238,17 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "zero_score_check" => {
+                let list = list_param(&p, "columns");
+                if list.is_empty() {
+                    step_errors.push("请至少选择一个科目字段".into());
+                }
+                for c in &list {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+            }
             "voucher_check" => {
                 let col = str_param(&p, "column");
                 if col.is_empty() {
@@ -8350,6 +8425,44 @@ mod tests {
             "f_invoice_warn",
             json!([{ "id": "s1", "operator": "invoice_validate",
                      "params": { "code_column": "发票代码", "number_column": "发票号码", "on_error": "warn" } }]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn zero_score_check_flags_zero_and_blank_scores() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("语文", "number"), ("数学", "number")],
+            &[
+                vec!["张三", "0", "90"],
+                vec!["李四", "80", "90"],
+                vec!["王五", "", "70"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_zero_fail",
+            json!([{ "id": "s1", "operator": "zero_score_check",
+                     "params": { "columns": ["语文", "数学"], "include_blank": false, "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+
+        let blank_fail = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_zero_blank_fail",
+            json!([{ "id": "s1", "operator": "zero_score_check",
+                     "params": { "columns": ["语文", "数学"], "include_blank": true, "on_error": "fail" } }]),
+        );
+        assert_eq!(blank_fail.status, "failed");
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_zero_warn",
+            json!([{ "id": "s1", "operator": "zero_score_check",
+                     "params": { "columns": ["语文", "数学"], "on_error": "warn" } }]),
         );
         assert_eq!(warned.status, "success", "{:?}", warned.message);
     }

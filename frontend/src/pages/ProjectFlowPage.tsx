@@ -123,6 +123,34 @@ const FLOW_PRESETS: Array<{
       { operator: 'balance_check', params: { voucher: '凭证号', debit: '借方金额', credit: '贷方金额', on_error: 'fail' } },
     ],
   },
+  {
+    name: '发票信息校验',
+    description: '校验发票代码/号码格式 → 核对金额 + 税额 = 价税合计',
+    steps: [
+      {
+        operator: 'invoice_validate',
+        params: { code_column: '发票代码', number_column: '发票号码', allow_blank: true, on_error: 'warn' },
+      },
+      {
+        operator: 'sum_check',
+        params: { total: '价税合计', parts: ['金额', '税额'], tolerance: 0.01, on_error: 'warn' },
+      },
+    ],
+  },
+  {
+    name: '成绩复核与总分核对',
+    description: '单科零分/缺考检查 → 核对总成绩是否等于各科之和',
+    steps: [
+      {
+        operator: 'zero_score_check',
+        params: { columns: ['语文', '数学', '英语'], include_blank: true, on_error: 'warn' },
+      },
+      {
+        operator: 'sum_check',
+        params: { total: '总成绩', parts: ['语文', '数学', '英语'], tolerance: 0.01, on_error: 'warn' },
+      },
+    ],
+  },
 ];
 
 const GROUP_COLORS: Record<string, string> = {

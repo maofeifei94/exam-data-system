@@ -250,7 +250,16 @@ export function normalizeTemplate(template: PdfTemplate): TemplateElement[] {
   return normalizeTree([...pageElements, matrix]);
 }
 
-const BUILTIN_TOKENS = new Set(['index', 'no', 'page', 'pages', 'count', 'total']);
+const BUILTIN_TOKENS = new Set([
+  'index',
+  'no',
+  'page',
+  'pages',
+  'count',
+  'total',
+  'date',
+  'time',
+]);
 
 /** 统计占位符（`sum:金额`、`rate:成绩:60`）依赖的是其中的数据字段名。 */
 const STAT_TOKENS = new Set(['sum', 'avg', 'min', 'max', 'std', 'count', 'distinct', 'rate']);
