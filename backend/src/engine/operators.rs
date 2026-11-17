@@ -767,6 +767,35 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "mask_field",
+            "数据脱敏",
+            "字段",
+            "对手机号、身份证号、姓名、银行卡号打码，保护考生与客户隐私，可覆盖原字段或输出新字段。",
+            vec![
+                p("column", "待脱敏字段", "column", true, json!("")),
+                with_options(
+                    p("mode", "脱敏方式", "enum", false, json!("phone")),
+                    &["phone", "id_card", "name", "bank_card", "custom"],
+                ),
+                with_help(
+                    p("keep_head", "保留开头位数（自定义）", "number", false, json!(3)),
+                    "仅 custom 模式使用",
+                ),
+                with_help(
+                    p("keep_tail", "保留结尾位数（自定义）", "number", false, json!(4)),
+                    "仅 custom 模式使用",
+                ),
+                with_help(
+                    p("mask_char", "掩码字符", "text", false, json!("*")),
+                    "默认 *，填多个字符时取第一个",
+                ),
+                with_help(
+                    p("out", "输出字段名（可空）", "text", false, json!("")),
+                    "留空表示直接覆盖原字段",
+                ),
+            ],
+        ),
+        def(
             "value_map",
             "值映射替换",
             "字段",

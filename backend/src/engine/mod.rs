@@ -429,6 +429,7 @@ impl<'a> Compiler<'a> {
             "append_dataset" => self.op_append_dataset(step_index, step, &params),
             "unpivot" => self.op_unpivot(step_index, step, &params),
             "fill_down" => self.op_fill_down(step_index, step, &params),
+            "mask_field" => self.op_mask_field(step_index, step, &params),
             "value_map" => self.op_value_map(step_index, step, &params),
             "text_clean" => self.op_text_clean(step_index, step, &params),
             "sequence" => self.op_sequence(step_index, step, &params),
@@ -3719,6 +3720,89 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_mask_field(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let mode = {
+            let m = str_param(p, "mode");
+            if m.is_empty() {
+                "phone".to_string()
+            } else {
+                m
+            }
+        };
+        let (head, tail) = match mode.as_str() {
+            "phone" => (3i64, 4i64),
+            "id_card" => (6, 4),
+            "name" => (1, 0),
+            "bank_card" => (4, 4),
+            "custom" => (
+                num_param(p, "keep_head").unwrap_or(3).max(0),
+                num_param(p, "keep_tail").unwrap_or(4).max(0),
+            ),
+            other => return Err(format!("未知的脱敏方式: {other}")),
+        };
+        let mask_char = str_param(p, "mask_char").chars().next().unwrap_or('*');
+        let mask_pool: String = std::iter::repeat_n(mask_char, 64).collect();
+        let x = q(&col);
+        let len = format!("LENGTH(COALESCE(CAST({x} AS TEXT), ''))");
+        let mask_len = format!("MAX(0, {len} - {head} - {tail})");
+        let mut parts: Vec<String> = Vec::new();
+        if head > 0 {
+            parts.push(format!("SUBSTR({x}, 1, {head})"));
+        }
+        parts.push(format!(
+            "SUBSTR({}, 1, {mask_len})",
+            sql_literal(&mask_pool)
+        ));
+        if tail > 0 {
+            parts.push(format!("SUBSTR({x}, -{tail})"));
+        }
+        let expr = parts.join(" || ");
+        let out = str_param(p, "out");
+        let cte = if out.is_empty() {
+            let items: Vec<String> = self
+                .columns
+                .iter()
+                .map(|c| {
+                    if c.name == col {
+                        format!("{expr} AS {}", q(&c.name))
+                    } else {
+                        q(&c.name)
+                    }
+                })
+                .collect();
+            self.push_cte(format!("SELECT {} FROM {}", items.join(", "), self.cur))
+        } else {
+            if self.has_column(&out) {
+                return Err(format!("字段 [{out}] 已存在"));
+            }
+            let cte = self.push_cte(format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur));
+            self.add_column(DatasetColumn {
+                name: out.clone(),
+                dtype: "text".to_string(),
+            });
+            cte
+        };
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "脱敏 [{col}]（{mode}）{}",
+                if out.is_empty() {
+                    "，已覆盖原字段".to_string()
+                } else {
+                    format!(" → [{out}]")
+                }
+            )),
+        ))
+    }
+
     fn op_value_map(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
         let col = str_param(p, "column");
         if !self.has_column(&col) {
@@ -6070,6 +6154,29 @@ pub fn validate_steps_with(
                     step_errors.push(format!("排序字段 [{order_by}] 不存在"));
                 }
             }
+            "mask_field" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                let mode = str_param(&p, "mode");
+                if !mode.is_empty()
+                    && !matches!(
+                        mode.as_str(),
+                        "phone" | "id_card" | "name" | "bank_card" | "custom"
+                    )
+                {
+                    step_errors.push(format!("未知的脱敏方式: {mode}"));
+                }
+                let out = str_param(&p, "out");
+                if !out.is_empty() {
+                    if cols.contains(&out) {
+                        step_errors.push(format!("字段 [{out}] 已存在"));
+                    } else {
+                        cols.push(out);
+                    }
+                }
+            }
             "value_map" | "text_clean" | "aging_bucket" => {
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
@@ -7488,6 +7595,36 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn mask_field_masks_phone_id_card_and_name() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("手机号", "text"), ("身份证号", "text")],
+            &[vec!["张三", "13800138000", "110101199001011234"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_mask",
+            json!([
+                { "id": "s1", "operator": "mask_field",
+                  "params": { "column": "手机号", "mode": "phone" } },
+                { "id": "s2", "operator": "mask_field",
+                  "params": { "column": "身份证号", "mode": "id_card", "out": "证件号" } },
+                { "id": "s3", "operator": "mask_field",
+                  "params": { "column": "姓名", "mode": "name" } },
+                { "id": "s4", "operator": "output", "params": { "name": "脱敏结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let row = &page.rows[0];
+        assert_eq!(row[0], json!("张*"));
+        assert_eq!(row[1], json!("138****8000"));
+        assert_eq!(row[2], json!("110101199001011234"));
+        assert_eq!(row[3], json!("110101********1234"));
     }
 
     #[test]
