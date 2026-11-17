@@ -60,6 +60,56 @@ const FLOW_PRESETS: Array<{
   steps: Array<{ operator: string; params: Record<string, unknown> }>;
 }> = [
   {
+    name: '标准考试数据治理',
+    description:
+      '必填校验 → 身份证校验/年龄 → 总分核算 → 范围与零分检查 → 重复标记 → 等级/排名 → 排序输出',
+    steps: [
+      {
+        operator: 'require_fields',
+        params: {
+          fields: ['姓名', '身份证号', '准考证号', '考场号', '座位号', '语文', '数学', '英语'],
+        },
+      },
+      {
+        operator: 'format_check',
+        params: { column: '身份证号', mode: 'id_card', on_error: 'warn' },
+      },
+      {
+        operator: 'age_check',
+        params: { column: '身份证号', min_age: 0, max_age: 0, on_error: 'warn' },
+      },
+      {
+        operator: 'compute',
+        params: { out: '总成绩', expr: '[语文] + [数学] + [英语]', decimals: 1 },
+      },
+      {
+        operator: 'range_check',
+        params: { column: '总成绩', min: 0, max: 450, on_error: 'warn' },
+      },
+      {
+        operator: 'zero_score_check',
+        params: { columns: ['语文', '数学', '英语'], include_blank: true, on_error: 'warn' },
+      },
+      {
+        operator: 'duplicate_flag',
+        params: {
+          columns: ['身份证号'],
+          out: '重复标记',
+          keep_first: true,
+          order_by: '准考证号',
+          order: 'asc',
+        },
+      },
+      {
+        operator: 'grade_level',
+        params: { column: '总成绩', cutoffs: '270,240,210,180', labels: 'A,B,C,D,E', out: '等级' },
+      },
+      { operator: 'rank', params: { by: '总成绩', order: 'desc', method: 'rank', out: '排名' } },
+      { operator: 'sort', params: { keys: [{ field: '总成绩', order: 'desc' }] } },
+      { operator: 'output', params: { name: '标准成绩结果' } },
+    ],
+  },
+  {
     name: '考试成绩处理与排名',
     description: '必需字段校验 → 成绩转数值 → 分数范围校验 → 按成绩排名',
     steps: [

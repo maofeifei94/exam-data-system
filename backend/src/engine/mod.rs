@@ -9964,6 +9964,134 @@ mod tests {
         assert_eq!(warned.status, "success", "{:?}", warned.message);
     }
 
+    /// 生成 18 位合法身份证号（含校验位），用于大数据量测试。
+    fn make_id(seed: usize) -> String {
+        let year = 1985 + seed % 25;
+        let month = 1 + (seed / 25) % 12;
+        let day = 1 + (seed / 300) % 28;
+        let seq = (seed / 8400) % 1000;
+        let body = format!("110105{year:04}{month:02}{day:02}{seq:03}");
+        let weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+        let sum: u32 = body
+            .chars()
+            .zip(weights.iter())
+            .map(|(c, w)| c.to_digit(10).unwrap_or(0) * w)
+            .sum();
+        let codes = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
+        format!("{body}{}", codes[(sum % 11) as usize])
+    }
+
+    /// 标准化考试数据治理流程：10 万行端到端稳定性与性能测试。
+    #[test]
+    #[ignore = "10 万行性能/稳定性测试，按需运行"]
+    fn stress_standard_exam_pipeline_100k_rows() {
+        const N: usize = 100_000;
+        let cols = [
+            ("姓名", "text"),
+            ("身份证号", "text"),
+            ("准考证号", "text"),
+            ("考场号", "text"),
+            ("座位号", "text"),
+            ("语文", "number"),
+            ("数学", "number"),
+            ("英语", "number"),
+        ];
+        let mut owned: Vec<Vec<String>> = Vec::with_capacity(N);
+        for i in 0..N {
+            let chinese = 60 + (i * 37) % 91;
+            let math = 50 + (i * 53) % 101;
+            let english = if i % 5000 == 0 {
+                String::new()
+            } else {
+                (40 + (i * 29) % 111).to_string()
+            };
+            owned.push(vec![
+                format!("考生{i:06}"),
+                make_id(i),
+                format!("2026{:06}", i + 1),
+                (i / 30 + 1).to_string(),
+                (i % 30 + 1).to_string(),
+                chinese.to_string(),
+                if i % 7000 == 0 {
+                    "0".to_string()
+                } else {
+                    math.to_string()
+                },
+                english,
+            ]);
+        }
+        let refs: Vec<Vec<&str>> = owned
+            .iter()
+            .map(|row| row.iter().map(|s| s.as_str()).collect())
+            .collect();
+        let (mut conn, ds_id) = setup_custom(&cols, &refs);
+
+        let pipeline = json!([
+            { "id": "s1", "operator": "require_fields",
+              "params": { "fields": ["姓名", "身份证号", "准考证号", "考场号", "座位号",
+                                     "语文", "数学", "英语"] } },
+            { "id": "s2", "operator": "format_check",
+              "params": { "column": "身份证号", "mode": "id_card", "on_error": "warn" } },
+            { "id": "s3", "operator": "age_check",
+              "params": { "column": "身份证号", "min_age": 0, "max_age": 0, "on_error": "warn" } },
+            { "id": "s4", "operator": "compute",
+              "params": { "out": "总成绩", "expr": "[语文] + [数学] + [英语]", "decimals": 1 } },
+            { "id": "s5", "operator": "range_check",
+              "params": { "column": "总成绩", "min": 0, "max": 450, "on_error": "warn" } },
+            { "id": "s6", "operator": "zero_score_check",
+              "params": { "columns": ["语文", "数学", "英语"], "include_blank": true,
+                          "on_error": "warn" } },
+            { "id": "s7", "operator": "duplicate_flag",
+              "params": { "columns": ["身份证号"], "out": "重复标记", "keep_first": true,
+                          "order_by": "准考证号", "order": "asc" } },
+            { "id": "s8", "operator": "grade_level",
+              "params": { "column": "总成绩", "cutoffs": "270,240,210,180",
+                          "labels": "A,B,C,D,E", "out": "等级" } },
+            { "id": "s9", "operator": "rank",
+              "params": { "by": "总成绩", "order": "desc", "method": "rank", "out": "排名" } },
+            { "id": "s10", "operator": "sort",
+              "params": { "keys": [{ "field": "总成绩", "order": "desc" }] } },
+            { "id": "s11", "operator": "output", "params": { "name": "标准成绩结果" } }
+        ]);
+
+        // 静态校验：字段全部存在、步骤参数合法。
+        let col_names: Vec<String> = cols.iter().map(|(n, _)| n.to_string()).collect();
+        let validated = validate_steps_with(&steps(pipeline.clone()), &col_names, &HashMap::new());
+        assert!(
+            validated.errors.is_empty(),
+            "静态校验失败: {:?}",
+            validated.errors
+        );
+
+        let started = std::time::Instant::now();
+        let result = run_steps(&mut conn, &ds_id, "f_stress_exam", pipeline);
+        let elapsed = started.elapsed();
+        eprintln!("10 万行标准流程耗时: {elapsed:?}");
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        assert!(
+            elapsed < std::time::Duration::from_secs(180),
+            "处理 10 万行耗时过长: {elapsed:?}"
+        );
+
+        let out_id = result.output_dataset_id.expect("output dataset");
+        let page = store::read_rows(&conn, &out_id, 0, 10).expect("read");
+        assert_eq!(page.total, N as i64);
+        let pos = |name: &str| {
+            page.columns
+                .iter()
+                .position(|c| c.name == name)
+                .unwrap_or_else(|| panic!("缺少字段 {name}"))
+        };
+        let (score, rank, grade) = (pos("总成绩"), pos("排名"), pos("等级"));
+        assert_eq!(page.rows[0][rank], json!(1.0));
+        assert!(!page.rows[0][grade].as_str().unwrap_or("").is_empty());
+        // 排序后首行总分应不小于第二行。
+        let first = page.rows[0][score].as_f64().unwrap_or(0.0);
+        let second = page.rows[1][score].as_f64().unwrap_or(0.0);
+        assert!(first >= second, "总成绩未按降序排列: {first} < {second}");
+        assert!(pos("重复标记") < page.columns.len());
+    }
+
     #[test]
     fn bonus_tax_uses_bonus_brackets() {
         let (mut conn, ds_id) = setup_custom(
