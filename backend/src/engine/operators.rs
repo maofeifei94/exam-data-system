@@ -550,6 +550,18 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "bonus_tax",
+            "年终奖个税",
+            "计算",
+            "按全年一次性奖金单独计税：奖金除以 12 定税率与速算扣除数，输出年终奖个税与税后奖金。",
+            vec![
+                p("column", "年终奖金额字段", "column", true, json!("")),
+                p("tax_out", "个税字段名", "text", false, json!("年终奖个税")),
+                p("net_out", "税后奖金字段名", "text", false, json!("税后奖金")),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+            ],
+        ),
+        def(
             "income_tax",
             "个人所得税计算",
             "计算",

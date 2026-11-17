@@ -262,6 +262,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `balance_direction` | 余额方向：按余额正负输出「借 / 贷 / 平」，可设置平账阈值 |
 | `balance_rollforward` | 期末余额：期初余额 + 借方 - 贷方，支持逐行结转或按日期累计流水 |
 | `income_tax` | 个人所得税：按月度七级超额累进税率计算个税与税后收入，支持减除费用与专项扣除字段 |
+| `bonus_tax` | 年终奖个税：按全年一次性奖金单独计税（奖金/12 定税率），输出个税与税后奖金 |
 | `compound_interest` | 复利终值/现值：支持按年/季/月复利，输出终值或现值 |
 | `interest_accrual` | 利息计算：按本金、起止日期与年利率计算计息天数与利息，支持实际/365、实际/360、30/360 |
 | `budget_variance` | 预算执行分析：按部门/科目汇总预算与实际，输出执行率、差额与超支预警 |

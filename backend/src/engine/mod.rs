@@ -427,6 +427,7 @@ impl<'a> Compiler<'a> {
             "depreciation" => self.op_depreciation(step_index, step, &params),
             "allocate" => self.op_allocate(step_index, step, &params),
             "income_tax" => self.op_income_tax(step_index, step, &params),
+            "bonus_tax" => self.op_bonus_tax(step_index, step, &params),
             "balance_rollforward" => self.op_balance_rollforward(step_index, step, &params),
             "amount_unit" => self.op_amount_unit(step_index, step, &params),
             "balance_direction" => self.op_balance_direction(step_index, step, &params),
@@ -2725,6 +2726,66 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("金额单位换算：[{col}] → [{out}]")),
+        ))
+    }
+
+    /// 年终奖个税：奖金/12 定税率，税额 = 奖金 × 税率 - 速算扣除数。
+    fn op_bonus_tax(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let tax_out = defaulted(str_param(p, "tax_out"), "年终奖个税");
+        let net_out = defaulted(str_param(p, "net_out"), "税后奖金");
+        for name in [&tax_out, &net_out] {
+            if self.has_column(name) {
+                return Err(format!("字段 [{name}] 已存在"));
+            }
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let bonus = format!("COALESCE(CAST({} AS REAL), 0)", q(&col));
+        let avg = format!("({bonus} / 12.0)");
+        let brackets = [
+            (3000.0, 0.03, 0.0),
+            (12000.0, 0.10, 210.0),
+            (25000.0, 0.20, 1410.0),
+            (35000.0, 0.25, 2660.0),
+            (55000.0, 0.30, 4410.0),
+            (80000.0, 0.35, 7160.0),
+            (f64::INFINITY, 0.45, 15160.0),
+        ];
+        let mut rate_case = String::from("CASE");
+        for (limit, rate, quick) in brackets {
+            if limit.is_finite() {
+                rate_case.push_str(&format!(
+                    " WHEN {avg} <= {limit} THEN ({bonus} * {rate} - {quick})"
+                ));
+            } else {
+                rate_case.push_str(&format!(" ELSE ({bonus} * {rate} - {quick})"));
+            }
+        }
+        rate_case.push_str(" END");
+        let tax = format!("ROUND({rate_case}, {decimals})");
+        let net = format!("ROUND({bonus} - {tax}, {decimals})");
+        let cte = self.push_cte(format!(
+            "SELECT *, {tax} AS {}, {net} AS {} FROM {}",
+            q(&tax_out),
+            q(&net_out),
+            self.cur
+        ));
+        for name in [&tax_out, &net_out] {
+            self.add_column(DatasetColumn {
+                name: name.clone(),
+                dtype: "number".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("年终奖单独计税：[{col}] → [{tax_out}]")),
         ))
     }
 
@@ -7007,6 +7068,21 @@ pub fn validate_steps_with(
                     cols.push(out);
                 }
             }
+            "bonus_tax" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                for (key, fallback) in [("tax_out", "年终奖个税"), ("net_out", "税后奖金")]
+                {
+                    let out = defaulted(str_param(&p, key), fallback);
+                    if cols.contains(&out) {
+                        step_errors.push(format!("字段 [{out}] 已存在"));
+                    } else {
+                        cols.push(out);
+                    }
+                }
+            }
             "balance_rollforward" => {
                 for key in ["debit", "credit"] {
                     let c = str_param(&p, key);
@@ -9886,6 +9962,43 @@ mod tests {
                                  "on_error": "warn" } }]),
         );
         assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn bonus_tax_uses_bonus_brackets() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("年终奖", "number")],
+            &[
+                vec!["张三", "36000"],
+                vec!["李四", "36001"],
+                vec!["王五", "200000"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_bonus_tax",
+            json!([
+                { "id": "s1", "operator": "bonus_tax", "params": { "column": "年终奖" } },
+                { "id": "s2", "operator": "output", "params": { "name": "年终奖个税" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let col = |name: &str| {
+            page.columns
+                .iter()
+                .position(|c| c.name == name)
+                .expect("column")
+        };
+        let (tax, net) = (col("年终奖个税"), col("税后奖金"));
+        assert_eq!(page.rows[0][tax], json!(1080.0));
+        assert_eq!(page.rows[0][net], json!(34920.0));
+        assert_eq!(page.rows[1][tax], json!(3390.1));
+        assert_eq!(page.rows[1][net], json!(32610.9));
+        assert_eq!(page.rows[2][tax], json!(38590.0));
+        assert_eq!(page.rows[2][net], json!(161410.0));
     }
 
     #[test]
