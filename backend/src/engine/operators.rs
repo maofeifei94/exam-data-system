@@ -523,6 +523,17 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "balance_direction",
+            "余额方向标记",
+            "计算",
+            "根据余额正负输出「借 / 贷 / 平」，便于科目余额表按借贷方向展示。",
+            vec![
+                p("column", "余额字段", "column", true, json!("")),
+                p("out", "方向字段名", "text", false, json!("余额方向")),
+                with_help(p("threshold", "平账阈值", "number", false, json!(0.01)), "绝对值不超过该值视为平"),
+            ],
+        ),
+        def(
             "balance_rollforward",
             "期末余额计算",
             "计算",

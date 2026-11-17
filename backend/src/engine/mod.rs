@@ -429,6 +429,7 @@ impl<'a> Compiler<'a> {
             "income_tax" => self.op_income_tax(step_index, step, &params),
             "balance_rollforward" => self.op_balance_rollforward(step_index, step, &params),
             "amount_unit" => self.op_amount_unit(step_index, step, &params),
+            "balance_direction" => self.op_balance_direction(step_index, step, &params),
             "data_profile" => self.op_data_profile(step_index, step, &params),
             "not_null_check" => self.op_not_null_check(step_index, step, &params),
             "column_compare" => self.op_column_compare(step_index, step, &params),
@@ -2648,6 +2649,43 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("按 [{weight}] 分摊 [{amount}] → [{out}]")),
+        ))
+    }
+
+    /// 余额方向：正数为借、负数为贷、接近零为平。
+    fn op_balance_direction(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let out = defaulted(str_param(p, "out"), "余额方向");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let threshold = f64_param(p, "threshold").unwrap_or(0.01).abs();
+        let f = format!("CAST({} AS REAL)", q(&col));
+        let e = format!(
+            "CASE WHEN {f} IS NULL OR TRIM(COALESCE(CAST({} AS TEXT), '')) = '' THEN '' \
+             WHEN ABS({f}) <= {threshold} THEN '平' WHEN {f} > 0 THEN '借' ELSE '贷' END",
+            q(&col)
+        );
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("余额方向：[{col}] → [{out}]")),
         ))
     }
 
@@ -6827,6 +6865,18 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "balance_direction" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                let out = defaulted(str_param(&p, "out"), "余额方向");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "amount_unit" => {
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
@@ -9319,6 +9369,40 @@ mod tests {
             .expect("column");
         assert_eq!(page.rows[0][idx], json!(""));
         assert_eq!(page.rows[1][idx], json!("重复"));
+    }
+
+    #[test]
+    fn balance_direction_marks_debit_credit_and_flat() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("科目", "text"), ("余额", "number")],
+            &[
+                vec!["A", "100"],
+                vec!["B", "-50"],
+                vec!["C", "0"],
+                vec!["D", ""],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_balance_dir",
+            json!([
+                { "id": "s1", "operator": "balance_direction", "params": { "column": "余额" } },
+                { "id": "s2", "operator": "output", "params": { "name": "余额方向" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let idx = page
+            .columns
+            .iter()
+            .position(|c| c.name == "余额方向")
+            .expect("column");
+        assert_eq!(page.rows[0][idx], json!("借"));
+        assert_eq!(page.rows[1][idx], json!("贷"));
+        assert_eq!(page.rows[2][idx], json!("平"));
+        assert_eq!(page.rows[3][idx], json!(""));
     }
 
     #[test]

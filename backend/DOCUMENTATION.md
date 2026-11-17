@@ -259,6 +259,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `exchange_convert` | 汇率换算：按固定汇率或汇率字段乘/除换算金额 |
 | `loan_payment` | 等额本息月供：按本金、年利率、期限计算月供、总利息与还款总额 |
 | `amount_unit` | 金额单位换算：元与万元互换，便于财务报表按不同单位展示 |
+| `balance_direction` | 余额方向：按余额正负输出「借 / 贷 / 平」，可设置平账阈值 |
 | `balance_rollforward` | 期末余额：期初余额 + 借方 - 贷方，支持逐行结转或按日期累计流水 |
 | `income_tax` | 个人所得税：按月度七级超额累进税率计算个税与税后收入，支持减除费用与专项扣除字段 |
 | `compound_interest` | 复利终值/现值：支持按年/季/月复利，输出终值或现值 |
