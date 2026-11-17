@@ -272,6 +272,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号 / 统一社会信用代码校验 |
 | `invoice_validate` | 发票代码 / 号码校验：代码须为 10 或 12 位数字，号码须为 8 或 20 位数字，空值可选忽略 |
 | `tax_rate_check` | 税率合规校验：仅允许 0/1%/3%/5%/6%/9%/13%，兼容 `6%`、`0.06`、`6` 三种写法 |
+| `age_check` | 年龄资格校验：按身份证号计算年龄并检查报名区间，可输出年龄字段 |
 | `zero_score_check` | 单科零分校验：检查指定科目是否存在 0 分或缺考空值，提示人工复核 |
 | `score_balance_check` | 多科均衡校验：同一行各科最高分与最低分差值超过阈值时预警，可输出偏科标记列 |
 | `recheck_diff` | 成绩复核差异：对比原始成绩与复核成绩，输出分差与「一致 / 有变动」状态 |

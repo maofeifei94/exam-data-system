@@ -652,6 +652,19 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "age_check",
+            "年龄资格校验",
+            "校验",
+            "按身份证号计算年龄并检查是否在报名允许区间内，可输出年龄字段用于核对。",
+            vec![
+                p("column", "身份证号字段", "column", true, json!("")),
+                with_help(p("min_age", "最小年龄", "number", false, json!(0)), "0 表示不限制下限"),
+                with_help(p("max_age", "最大年龄", "number", false, json!(0)), "0 表示不限制上限"),
+                with_help(p("age_out", "年龄输出字段（可空）", "text", false, json!("")), "填写后输出计算出的年龄"),
+                with_options(p("on_error", "发现超龄时", "enum", false, json!("fail")), &["fail", "warn"]),
+            ],
+        ),
+        def(
             "tax_rate_check",
             "税率合规校验",
             "校验",

@@ -436,6 +436,7 @@ impl<'a> Compiler<'a> {
             "format_check" => self.op_format_check(step_index, step, &params),
             "invoice_validate" => self.op_invoice_validate(step_index, step, &params),
             "tax_rate_check" => self.op_tax_rate_check(step_index, step, &params),
+            "age_check" => self.op_age_check(step_index, step, &params),
             "zero_score_check" => self.op_zero_score_check(step_index, step, &params),
             "score_balance_check" => self.op_score_balance_check(step_index, step, &params),
             "recheck_diff" => self.op_recheck_diff(step_index, step, &params),
@@ -3416,6 +3417,71 @@ impl<'a> Compiler<'a> {
                 "发票代码/号码格式全部合法".to_string()
             } else {
                 format!("有 {bad} 行发票格式不合法，已按警告继续")
+            }),
+        ))
+    }
+
+    /// 年龄资格校验：按身份证出生日期计算年龄并检查区间。
+    fn op_age_check(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let min_age = num_param(p, "min_age").unwrap_or(0).max(0);
+        let max_age = num_param(p, "max_age").unwrap_or(0).max(0);
+        let f = q(&col);
+        let age = format!(
+            "CAST((julianday('now', 'localtime') - julianday(id_card_birth({f}))) / 365.2425 AS INTEGER)"
+        );
+        let mut conds = vec![format!(
+            "TRIM(COALESCE(CAST({f} AS TEXT), '')) <> '' AND ({age}) IS NULL"
+        )];
+        if min_age > 0 {
+            conds.push(format!("({age}) < {min_age}"));
+        }
+        if max_age > 0 {
+            conds.push(format!("({age}) > {max_age}"));
+        }
+        let sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM {} WHERE {}",
+            self.cur,
+            conds.join(" OR ")
+        ));
+        let bad: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("年龄校验失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") != "warn" {
+            return Err(format!(
+                "年龄资格校验未通过：{bad} 行超出允许范围（{min_age}~{max_age} 岁）或身份证号无效"
+            ));
+        }
+        let age_out = str_param(p, "age_out");
+        let mut cte = None;
+        if !age_out.is_empty() {
+            if self.has_column(&age_out) {
+                return Err(format!("字段 [{age_out}] 已存在"));
+            }
+            cte = Some(self.push_cte(format!(
+                "SELECT *, {age} AS {} FROM {}",
+                q(&age_out),
+                self.cur
+            )));
+            self.add_column(DatasetColumn {
+                name: age_out,
+                dtype: "number".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            cte,
+            Some(if bad == 0 {
+                "年龄全部符合要求".to_string()
+            } else {
+                format!("{bad} 行年龄超限或身份证号无效，已按警告继续")
             }),
         ))
     }
@@ -7024,6 +7090,20 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "age_check" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                let age = str_param(&p, "age_out");
+                if !age.is_empty() {
+                    if cols.contains(&age) {
+                        step_errors.push(format!("字段 [{age}] 已存在"));
+                    } else {
+                        cols.push(age);
+                    }
+                }
+            }
             "tax_rate_check" => {
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
@@ -9286,6 +9366,48 @@ mod tests {
                      "params": { "code_column": "发票代码", "number_column": "发票号码", "on_error": "warn" } }]),
         );
         assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn age_check_flags_out_of_range_and_invalid_id() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("身份证号", "text")],
+            &[
+                vec!["张三", "110105200001011234"],
+                vec!["李四", "110105202001011234"],
+                vec!["王五", "abc"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_age_fail",
+            json!([{ "id": "s1", "operator": "age_check",
+                     "params": { "column": "身份证号", "min_age": 18, "max_age": 40 } }]),
+        );
+        assert_eq!(failed.status, "failed");
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_age_warn",
+            json!([
+                { "id": "s1", "operator": "age_check",
+                  "params": { "column": "身份证号", "min_age": 18, "max_age": 40,
+                              "age_out": "年龄", "on_error": "warn" } },
+                { "id": "s2", "operator": "output", "params": { "name": "年龄校验" } }
+            ]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+        let page = store::read_rows(&conn, warned.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let idx = page
+            .columns
+            .iter()
+            .position(|c| c.name == "年龄")
+            .expect("column");
+        let age0 = page.rows[0][idx].as_f64().expect("age");
+        assert!(age0 >= 20.0, "expected adult, got {age0}");
     }
 
     #[test]
