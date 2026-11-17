@@ -53,6 +53,78 @@ const NODE_W = FLOW_NODE_W;
 const NODE_H = FLOW_NODE_H;
 const PAD = FLOW_PAD;
 
+/** 内置流程模板：替换当前流程步骤，字段名按常见考试/财务场景预填，应用后可继续调整。 */
+const FLOW_PRESETS: Array<{
+  name: string;
+  description: string;
+  steps: Array<{ operator: string; params: Record<string, unknown> }>;
+}> = [
+  {
+    name: '考试成绩处理与排名',
+    description: '必需字段校验 → 成绩转数值 → 分数范围校验 → 按成绩排名',
+    steps: [
+      { operator: 'require_fields', params: { fields: ['姓名', '准考证号', '成绩'] } },
+      { operator: 'cast', params: { column: '成绩', to: 'number', decimals: 1, on_error: 'null' } },
+      { operator: 'range_check', params: { column: '成绩', min: 0, max: 150, on_error: 'fail' } },
+      { operator: 'rank', params: { by: '成绩', order: 'desc', method: 'rank', out: '排名' } },
+    ],
+  },
+  {
+    name: '考场随机编排',
+    description: '按学校随机打散 → 每 30 人自动分配考场与座位',
+    steps: [
+      { operator: 'shuffle', params: { group_by: ['学校'], out: '随机序号' } },
+      { operator: 'assign_seats', params: { per_room: 30, start_room: 1, room_out: '考场号', seat_out: '座位号' } },
+    ],
+  },
+  {
+    name: '缺考标记与补考名单',
+    description: '按成绩空值标记考试状态 → 只保留缺考行',
+    steps: [
+      {
+        operator: 'absence_flag',
+        params: { columns: ['成绩'], status_out: '考试状态', only_absent: true },
+      },
+    ],
+  },
+  {
+    name: '银行流水对账',
+    description: '选择对方数据集后按单号汇总金额，标记一致/金额不符/单边记录',
+    steps: [
+      {
+        operator: 'reconcile',
+        params: {
+          dataset_id: '',
+          left_key: '单号',
+          left_amount: '金额',
+          right_key: '单号',
+          right_amount: '金额',
+          tolerance: 0.01,
+          mode: 'diff',
+        },
+      },
+    ],
+  },
+  {
+    name: '预算执行分析',
+    description: '按部门汇总预算与实际，输出执行率、差额与超支状态',
+    steps: [
+      {
+        operator: 'budget_variance',
+        params: { budget_column: '预算', actual_column: '实际', group_by: ['部门'] },
+      },
+    ],
+  },
+  {
+    name: '凭证连续性校验',
+    description: '按期间检查凭证号重复与断号，再校验借贷平衡',
+    steps: [
+      { operator: 'voucher_check', params: { column: '凭证号', group_by: ['期间'], check_gap: true, on_error: 'fail' } },
+      { operator: 'balance_check', params: { voucher: '凭证号', debit: '借方金额', credit: '贷方金额', on_error: 'fail' } },
+    ],
+  },
+];
+
 const GROUP_COLORS: Record<string, string> = {
   校验: '#b45309',
   字段: '#0e7490',
@@ -202,6 +274,31 @@ export default function ProjectFlowPage() {
       ] as [string, OperatorDef[]])
       .filter(([, list]) => list.length > 0);
   }, [operatorGroups, operatorQuery]);
+
+  const applyPreset = (name: string) => {
+    const preset = FLOW_PRESETS.find((item) => item.name === name);
+    if (!preset) return;
+    const presetSteps: FlowStep[] = preset.steps.map((item) => {
+      const op = operatorMap.get(item.operator);
+      return {
+        id: newStepId(),
+        operator: item.operator,
+        label: op?.label ?? item.operator,
+        enabled: true,
+        params: { ...defaultParamsFor(op), ...item.params },
+      };
+    });
+    setDraft((prev) => ({
+      ...prev,
+      name: prev.name || preset.name,
+      description: prev.description || preset.description,
+      steps: presetSteps,
+    }));
+    setSelectedId(null);
+    setRunResult(null);
+    setValidateResult(null);
+    show(`已应用模板「${preset.name}」，请按实际字段调整参数`, 'success');
+  };
 
   const selectedStep = draft.steps.find((step) => step.id === selectedId) ?? null;
   const selectedIndex = selectedStep ? draft.steps.findIndex((step) => step.id === selectedStep.id) : -1;
@@ -803,6 +900,23 @@ export default function ProjectFlowPage() {
           </p>
         </div>
         <div className="row-actions">
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: FLOW_PRESETS.map((preset) => ({
+                key: preset.name,
+                label: (
+                  <div>
+                    <div>{preset.name}</div>
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>{preset.description}</div>
+                  </div>
+                ),
+              })),
+              onClick: ({ key }) => applyPreset(key),
+            }}
+          >
+            <button className="btn">流程模板</button>
+          </Dropdown>
           <button className="btn" onClick={autoLayout}>
             自动排版
           </button>
