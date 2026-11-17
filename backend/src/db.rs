@@ -229,7 +229,149 @@ pub fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
             _ => None,
         })
     })?;
+    // - `split_part(文本, 分隔符, 序号)`：按分隔符取第 N 段（从 1 开始）
+    // - `full_to_half(文本)`：全角字符转半角，常用于清洗从网页复制的数据
+    // - `aging_bucket(值, 模式, 分段)`：账龄分段，模式 date / days
+    conn.create_scalar_function("split_part", 3, flags, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        let delim: Option<String> = ctx.get(1)?;
+        let index: Option<i64> = ctx.get(2)?;
+        Ok(split_part(
+            text.as_deref().unwrap_or(""),
+            delim.as_deref().unwrap_or(""),
+            index.unwrap_or(1),
+        ))
+    })?;
+    conn.create_scalar_function("full_to_half", 1, flags, |ctx| {
+        let text: Option<String> = ctx.get(0)?;
+        Ok(text.map(|s| full_to_half(&s)))
+    })?;
+    conn.create_scalar_function("is_mobile", 1, flags, |ctx| {
+        let value: Option<String> = ctx.get(0)?;
+        Ok(value.map(|s| is_mobile(&s) as i64).unwrap_or(0))
+    })?;
+    conn.create_scalar_function("is_email", 1, flags, |ctx| {
+        let value: Option<String> = ctx.get(0)?;
+        Ok(value.map(|s| is_email(&s) as i64).unwrap_or(0))
+    })?;
+    conn.create_scalar_function("is_bank_card", 1, flags, |ctx| {
+        let value: Option<String> = ctx.get(0)?;
+        Ok(value.map(|s| is_bank_card(&s) as i64).unwrap_or(0))
+    })?;
+    conn.create_scalar_function("aging_bucket", 3, flags, |ctx| {
+        let value: Option<String> = ctx.get(0)?;
+        let mode: Option<String> = ctx.get(1)?;
+        let buckets: Option<String> = ctx.get(2)?;
+        Ok(value.and_then(|v| {
+            aging_bucket(
+                &v,
+                mode.as_deref().unwrap_or("days"),
+                buckets.as_deref().unwrap_or("30,60,90,180"),
+            )
+        }))
+    })?;
     Ok(())
+}
+
+/// 按分隔符取第 `index` 段（1 基）。分隔符为空或序号越界时返回空。
+pub fn split_part(text: &str, delim: &str, index: i64) -> Option<String> {
+    if index < 1 {
+        return None;
+    }
+    if delim.is_empty() {
+        return if index == 1 {
+            Some(text.to_string())
+        } else {
+            None
+        };
+    }
+    text.split(delim)
+        .nth((index - 1) as usize)
+        .map(|s| s.to_string())
+}
+
+/// 全角 ASCII（！到～）与全角空格转半角，其余字符原样保留。
+pub fn full_to_half(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '\u{3000}' => ' ',
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(ch as u32 - 0xFEE0).unwrap_or(ch),
+            _ => ch,
+        })
+        .collect()
+}
+
+/// 中国大陆手机号：11 位数字，以 1[3-9] 开头。
+pub fn is_mobile(raw: &str) -> bool {
+    let s = raw.trim();
+    let bytes = s.as_bytes();
+    bytes.len() == 11
+        && bytes.iter().all(|b| b.is_ascii_digit())
+        && bytes[0] == b'1'
+        && (b'3'..=b'9').contains(&bytes[1])
+}
+
+/// 基础邮箱格式：本地部分@域名.后缀，不含空白。
+pub fn is_email(raw: &str) -> bool {
+    let s = raw.trim();
+    if s.is_empty() || s.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let Some((local, domain)) = s.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !domain.contains('@')
+}
+
+/// 银行卡号：16~19 位纯数字。
+pub fn is_bank_card(raw: &str) -> bool {
+    let s = raw.trim();
+    (16..=19).contains(&s.len()) && s.as_bytes().iter().all(|b| b.is_ascii_digit())
+}
+
+/// 按账龄分段返回标签，例如 `0-30天` / `31-90天` / `90天以上`。
+///
+/// `mode = date` 时把值按日期解析，计算距今天数；`mode = days` 时直接按数字天数。
+/// 负数（未到期）统一归入「未到期」。
+pub fn aging_bucket(value: &str, mode: &str, buckets: &str) -> Option<String> {
+    let days = if mode == "date" {
+        let date = normalize_date(value)?;
+        let date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok()?;
+        (chrono::Local::now().date_naive() - date).num_days() as f64
+    } else {
+        value.trim().parse::<f64>().ok()?
+    };
+    if days < 0.0 {
+        return Some("未到期".to_string());
+    }
+    let mut cuts: Vec<i64> = buckets
+        .split(',')
+        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    if cuts.is_empty() {
+        cuts = vec![30, 60, 90, 180];
+    }
+    let days = days.ceil() as i64;
+    let mut start = 1i64;
+    for cut in cuts {
+        if days <= cut {
+            return Some(if start == 1 && cut == 30 {
+                "0-30天".to_string()
+            } else {
+                format!("{start}-{cut}天")
+            });
+        }
+        start = cut + 1;
+    }
+    Some(format!("{start}天以上"))
 }
 
 /// 金额转中文大写，例如 `1234.56` → `壹仟贰佰叁拾肆元伍角陆分`。

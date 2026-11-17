@@ -77,6 +77,14 @@ interface TemplateDraft {
   matrixIndexField: string;
   /** 模板显式声明的必需字段 */
   requiredFields: string[];
+  /** 页眉文字，支持 {字段} 占位符 */
+  headerText: string;
+  /** 页脚文字，支持 {字段} 占位符 */
+  footerText: string;
+  /** 水印文字，为空表示不添加 */
+  watermark: string;
+  /** 页脚显示页码 */
+  showPageNumber: boolean;
   scope: 'global' | 'project';
 }
 
@@ -102,6 +110,10 @@ const EMPTY_DRAFT: TemplateDraft = {
   pageField: '',
   matrixIndexField: '',
   requiredFields: [],
+  headerText: '',
+  footerText: '',
+  watermark: '',
+  showPageNumber: false,
   scope: 'global',
 };
 
@@ -1154,6 +1166,10 @@ export default function TemplatePage({
     page_field: draft.pageField.trim(),
     matrix_index_field: draft.matrixIndexField.trim(),
     required_fields: draft.requiredFields,
+    header_text: draft.headerText.trim(),
+    footer_text: draft.footerText.trim(),
+    watermark: draft.watermark.trim(),
+    show_page_number: draft.showPageNumber,
     scope: draft.id ? draft.scope : scope,
     project_id: draft.id
       ? draft.scope === 'project'
@@ -1980,6 +1996,10 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     pageField: template.page_field ?? '',
     matrixIndexField: template.matrix_index_field ?? '',
     requiredFields: template.required_fields ?? [],
+    headerText: template.header_text ?? '',
+    footerText: template.footer_text ?? '',
+    watermark: template.watermark ?? '',
+    showPageNumber: Boolean(template.show_page_number),
     scope: template.scope === 'project' ? 'project' : 'global',
   };
 }
@@ -2020,6 +2040,9 @@ function PagePanel({
     page_field: draft.pageField,
     matrix_index_field: draft.matrixIndexField,
     required_fields: draft.requiredFields,
+    header_text: draft.headerText,
+    footer_text: draft.footerText,
+    watermark: draft.watermark,
   });
   const missing = available.length > 0 ? required.filter((field) => !available.includes(field)) : [];
 
@@ -2185,6 +2208,57 @@ function PagePanel({
         {missing.length > 0 ? (
           <p className="panel-hint warn">当前预览数据集缺少字段：{missing.join('、')}</p>
         ) : null}
+      </div>
+
+      <div className="tpl-section">
+        <div className="tpl-section-title">页眉页脚与水印</div>
+        <label className="field">
+          <span className="field-label">页眉</span>
+          <input
+            type="text"
+            value={draft.headerText}
+            placeholder="如：{考试名称} · 第 {考场号} 考场"
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, headerText: event.target.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">页脚</span>
+          <input
+            type="text"
+            value={draft.footerText}
+            placeholder="如：{考点名称} · 考试数据导出"
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, footerText: event.target.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span className="field-label">水印</span>
+          <input
+            type="text"
+            list="tpl-field-options"
+            value={draft.watermark}
+            placeholder="如：内部资料 / {考点}；留空不添加"
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, watermark: event.target.value }))
+            }
+          />
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={draft.showPageNumber}
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, showPageNumber: event.target.checked }))
+            }
+          />
+          页脚显示「第 X 页 / 共 Y 页」
+        </label>
+        <p className="panel-hint">
+          支持 {'{字段名}'} 与 {'{{page}}'}、{'{{pages}}'}、{'{{count}}'} 占位符；页眉页脚中的字段也会自动纳入必需字段校验。
+        </p>
       </div>
 
       <div className="tpl-section">

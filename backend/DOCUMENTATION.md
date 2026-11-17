@@ -251,6 +251,25 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `parse_id_card` | 身份证解析：出生日期、性别、年龄、校验位，可配置非法号码直接终止 |
 | `amount_upper` | 金额转中文大写（财务凭证） |
 | `percentage` | 占合计百分比，支持按分组分别计算 |
+| `not_null_check` | 空值校验：指定字段出现 NULL / 空字符串时终止或警告 |
+| `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
+| `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号格式校验 |
+| `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
+| `balance_check` | 按凭证号汇总借贷方，检查每张凭证是否平衡 |
+| `assign_seats` | 按顺序自动编排考场号与座位号，可设每考场人数和起始考场 |
+| `split_column` | 按分隔符把一列拆成多列（`考场-座位` → 考场、座位） |
+| `value_map` | 值映射替换（男→M、缺考→0），未匹配值可选保留 |
+| `text_clean` | 去首尾空白、去空格换行、大小写转换、全角转半角 |
+| `sequence` | 行号/序号，支持分组内重新编号 |
+| `multi_column_stat` | 多列横向合计/平均/最大/最小/计数（多科总分、费用合计） |
+| `cumulative` | 按顺序累计求和（累计发生额、期初余额） |
+| `window_compare` | 同比/环比：与上 N 期比较，输出增长额或增长率 |
+| `aging_bucket` | 账龄分析：按日期或逾期天数划分 0-30 / 31-90 天等区间 |
+| `grade_level` | 按分数阈值划分 A/B/C/D 等级 |
+| `standard_score` | Z 分 / T 分 / 百分位排名，支持按科目或考场分组 |
+| `score_summary` | 成绩统计汇总：人数、平均分、最高/最低分、及格率、优秀率、标准差 |
+| `score_segment` | 分数段统计，可生成一分一段表并输出累计人数 |
+| `pivot` | 透视表：按某列取值展开成多列并汇总（科目成绩、月度收支） |
 
 自定义 SQL 函数在 `db::register_functions` 中随每条连接注册（`engine::Compiler::new`
 也会确保注册），因此表达式与算子共用：
@@ -261,6 +280,10 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `id_card_birth(x)` / `id_card_gender(x)` / `id_card_valid(x)` | 身份证解析与 18 位校验位校验 |
 | `norm_date(x)` | 统一 `2010/5/3`、`20100503`、`2010年5月3日` 等日期写法 |
 | `sqrt(x)` / `power(x, y)` | 兜底数学函数（内置 SQLite 未编译数学扩展时也能用） |
+| `split_part(text, delim, n)` | 按分隔符取第 n 段（1 基），用于拆分字段 |
+| `full_to_half(text)` | 全角字符转半角 |
+| `aging_bucket(value, mode, buckets)` | 账龄区间标签，mode 为 `date` / `days` |
+| `is_mobile(x)` / `is_email(x)` / `is_bank_card(x)` | 格式校验，返回 1 / 0 |
 
 ### 4.7 流程编译（`engine/mod.rs`）
 
@@ -333,8 +356,12 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 - **页面级元素的数据上下文**：页面级元素（标题等）只拿到本页 `page_field` 的值
   （合成行），不会串入某一位考生的其它字段。
 - **必需字段校验**：`TemplateBody::all_required_fields()` 把显式声明、页面字段、
-  格子索引字段与所有子元素占位符合并；`render_pdf_data` 开头即检查输入列，
-  缺失时返回 400 并列出模板需要 / 数据缺少的字段。预览与正式渲染共用同一检查。
+  格子索引字段、页眉页脚 / 水印占位符与所有子元素占位符合并；`render_pdf_data`
+  开头即检查输入列，缺失时返回 400 并列出模板需要 / 数据缺少的字段。预览与正式渲染共用同一检查。
+- **页眉页脚 / 页码 / 水印**：`header_text`、`footer_text`、`watermark` 均支持
+  `{字段}` 与 `{{page}}` / `{{pages}}` / `{{count}}` 占位符，每页绘制一次；
+  `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」。
+  水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词。
 
 新增照片元素的三个配置：`photo_dir`（目录，可由系统对话框选择）、
 `photo_name`（名称模板，字段 + 固定文本组合）、`photo_exts`（候选后缀，多选）。

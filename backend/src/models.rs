@@ -637,6 +637,18 @@ pub struct TemplateBody {
     /// 模板显式声明的必需字段；与子元素中的占位符合并后作为模板整体所需字段
     #[serde(default)]
     pub required_fields: Vec<String>,
+    /// 页眉文字，支持 `{字段}` / `{{page}}` 等占位符，每页绘制一次
+    #[serde(default)]
+    pub header_text: String,
+    /// 页脚文字，支持占位符
+    #[serde(default)]
+    pub footer_text: String,
+    /// 页面水印文字，支持占位符；为空表示不添加水印
+    #[serde(default)]
+    pub watermark: String,
+    /// 页脚右侧显示「第 X 页 / 共 Y 页」
+    #[serde(default)]
+    pub show_page_number: bool,
 }
 fn default_page() -> PageSetup {
     PageSetup {
@@ -655,6 +667,10 @@ impl Default for TemplateBody {
             page_field: String::new(),
             matrix_index_field: String::new(),
             required_fields: Vec::new(),
+            header_text: String::new(),
+            footer_text: String::new(),
+            watermark: String::new(),
+            show_page_number: false,
         }
     }
 }
@@ -803,6 +819,9 @@ impl TemplateBody {
         }
         push_field(&mut out, &self.page_field);
         push_field(&mut out, &self.matrix_index_field);
+        collect_placeholders(&self.header_text, &mut out);
+        collect_placeholders(&self.footer_text, &mut out);
+        collect_placeholders(&self.watermark, &mut out);
         for el in &self.elements {
             collect_element_fields(el, &mut out);
         }
@@ -825,6 +844,10 @@ pub struct PdfTemplate {
     pub required_fields: Vec<String>,
     /// 显式声明与子元素占位符合并后的完整必需字段
     pub all_required_fields: Vec<String>,
+    pub header_text: String,
+    pub footer_text: String,
+    pub watermark: String,
+    pub show_page_number: bool,
     pub scope: String,
     pub project_id: String,
     pub source_id: String,
@@ -851,6 +874,14 @@ pub struct PdfTemplateInput {
     pub matrix_index_field: String,
     #[serde(default)]
     pub required_fields: Vec<String>,
+    #[serde(default)]
+    pub header_text: String,
+    #[serde(default)]
+    pub footer_text: String,
+    #[serde(default)]
+    pub watermark: String,
+    #[serde(default)]
+    pub show_page_number: bool,
     #[serde(default)]
     pub scope: Option<String>,
     #[serde(default)]

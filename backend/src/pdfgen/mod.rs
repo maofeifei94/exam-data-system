@@ -9,7 +9,9 @@
 //! `{{page}}` / `{{pages}}` / `{{count}}`。
 
 use crate::error::{AppError, AppResult};
-use crate::models::{DatasetColumn, MatrixSetup, PageSetup, TemplateBody, TemplateElement};
+use crate::models::{
+    DatasetColumn, Margins, MatrixSetup, PageSetup, TemplateBody, TemplateElement,
+};
 use crate::util;
 use printpdf::path::PaintMode;
 use printpdf::*;
@@ -386,6 +388,69 @@ impl<'a> Painter<'a> {
             self.element(el, ctx, origin);
         }
     }
+
+    /// 页眉、页脚、页码与水印。每页绘制一次，支持页面分组字段（如考场号）。
+    fn page_decoration(&self, body: &TemplateBody, ctx: &Ctx<'_>, page_w: f32, m: &Margins) {
+        let content_w = (page_w - m.left - m.right).max(10.0);
+        let header = interpolate(&body.header_text, ctx);
+        if !header.trim().is_empty() {
+            let y = (m.top - 8.0).max(2.0);
+            self.chrome_text(&header, m.left, y, content_w, "left");
+        }
+        let footer = interpolate(&body.footer_text, ctx);
+        if !footer.trim().is_empty() {
+            let y = self.page_h - m.bottom + 1.5;
+            self.chrome_text(&footer, m.left, y, content_w * 0.72, "left");
+        }
+        if body.show_page_number {
+            let text = format!("第 {} 页 / 共 {} 页", ctx.page, ctx.pages.max(ctx.page));
+            let y = self.page_h - m.bottom + 1.5;
+            let x = m.left + content_w * 0.72;
+            self.chrome_text(&text, x, y, content_w * 0.28, "right");
+        }
+        let watermark = interpolate(&body.watermark, ctx);
+        if !watermark.trim().is_empty() {
+            self.draw_watermark(&watermark, page_w);
+        }
+    }
+
+    fn chrome_text(&self, text: &str, x_mm: f32, y_top: f32, w_mm: f32, align: &str) {
+        let size = 9.0f32;
+        let tw = text_width_mm(text, size);
+        let x = match align {
+            "center" => x_mm + (w_mm - tw) / 2.0,
+            "right" => x_mm + w_mm - tw,
+            _ => x_mm,
+        };
+        // 页眉页脚使用浅灰色，避免与正文抢视线。
+        self.layer
+            .set_fill_color(Color::Rgb(Rgb::new(0.42, 0.45, 0.5, None)));
+        let baseline = self.page_h - (y_top + size * MM_PER_PT * 0.8);
+        self.layer
+            .use_text(text, size, Mm(x), Mm(baseline), self.font);
+    }
+
+    /// 斜向水印：浅灰、居中、旋转 30 度，画在正文之上但不遮挡阅读。
+    fn draw_watermark(&self, text: &str, page_w: f32) {
+        let size = 32.0f32;
+        let tw = text_width_mm(text, size);
+        self.layer.save_graphics_state();
+        self.layer.set_ctm(CurTransMat::TranslateRotate(
+            Pt(page_w / 2.0 * PT_PER_MM),
+            Pt(self.page_h / 2.0 * PT_PER_MM),
+            30.0,
+        ));
+        self.layer
+            .set_fill_color(Color::Rgb(Rgb::new(0.85, 0.85, 0.85, None)));
+        self.layer.use_text(
+            text,
+            size,
+            Mm(-tw / 2.0),
+            Mm(-size * MM_PER_PT / 2.0),
+            self.font,
+        );
+        self.layer.restore_graphics_state();
+    }
 }
 
 /// 默认照片后缀；模板未显式配置时按这个顺序尝试。
@@ -749,6 +814,7 @@ pub fn render_pdf_data(
                     painter.elements(&el.children, &ctx, &origin);
                 }
             }
+            painter.page_decoration(body, &page_ctx, page_w, &body.page.margin_mm);
         }
     } else {
         // 单页模板：默认一行一页；设置页面字段后按该字段自然排序，使同考场的页面聚在一起。
@@ -803,6 +869,7 @@ pub fn render_pdf_data(
                 y_top: content_y_top,
             };
             painter.elements(&body.elements, &ctx, &origin);
+            painter.page_decoration(body, &ctx, page_w, &body.page.margin_mm);
         }
     }
 
@@ -923,6 +990,54 @@ mod tests {
         let err = render_pdf_data(&cols, &[], &body, "single", &RenderOpts::default())
             .expect_err("missing field");
         assert!(err.to_string().contains("姓名"), "实际错误：{err}");
+    }
+
+    #[test]
+    fn header_footer_and_watermark_fields_are_required() {
+        let body = TemplateBody {
+            header_text: "{考场号}".into(),
+            footer_text: "{{page}} / {{pages}} · {考试名称}".into(),
+            watermark: "{考点}".into(),
+            show_page_number: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            body.all_required_fields(),
+            vec!["考场号", "考试名称", "考点"]
+        );
+    }
+
+    #[test]
+    fn render_includes_page_decoration_without_error() {
+        let cols = vec![
+            DatasetColumn {
+                name: "姓名".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "考场号".into(),
+                dtype: "text".into(),
+            },
+        ];
+        let mut body = TemplateBody {
+            page_field: "考场号".into(),
+            header_text: "第 {考场号} 考场".into(),
+            footer_text: "考试数据导出".into(),
+            watermark: "内部资料".into(),
+            show_page_number: true,
+            ..Default::default()
+        };
+        let mut text = TemplateElement::empty("t", "text");
+        text.text = "{姓名}".into();
+        body.elements.push(text);
+        let rows = vec![
+            vec!["张三".into(), "1".into()],
+            vec!["李四".into(), "2".into()],
+        ];
+        let pdf =
+            render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default()).expect("render");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
     }
 
     #[test]

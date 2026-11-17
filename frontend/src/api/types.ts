@@ -377,6 +377,14 @@ export interface PdfTemplate {
   required_fields: string[];
   /** 显式声明 + 子元素占位符合并后的完整必需字段 */
   all_required_fields: string[];
+  /** 页眉文字，支持 {字段} 占位符 */
+  header_text: string;
+  /** 页脚文字，支持 {字段} 占位符 */
+  footer_text: string;
+  /** 水印文字，为空表示不添加 */
+  watermark: string;
+  /** 页脚显示「第 X 页 / 共 Y 页」 */
+  show_page_number: boolean;
   scope: Scope;
   project_id: string;
   source_id: string;
@@ -394,6 +402,10 @@ export interface PdfTemplateInput {
   page_field?: string;
   matrix_index_field?: string;
   required_fields?: string[];
+  header_text?: string;
+  footer_text?: string;
+  watermark?: string;
+  show_page_number?: boolean;
   scope?: Scope;
   project_id?: string;
 }

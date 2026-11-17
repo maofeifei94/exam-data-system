@@ -1452,6 +1452,23 @@ body {
 
 /* ---------------------- 操作符面板 ---------------------- */
 
+.palette-search {
+  width: 100%;
+  margin: 6px 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.palette-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(37, 99, 235, 0.12));
+}
+
 .palette {
   display: flex;
   flex-direction: column;

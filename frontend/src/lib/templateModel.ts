@@ -268,6 +268,9 @@ export function collectRequiredFields(template: {
   page_field?: string;
   matrix_index_field?: string;
   required_fields?: string[];
+  header_text?: string;
+  footer_text?: string;
+  watermark?: string;
 }): string[] {
   const out: string[] = [];
   const add = (name?: string) => {
@@ -277,6 +280,9 @@ export function collectRequiredFields(template: {
   (template.required_fields ?? []).forEach(add);
   add(template.page_field);
   add(template.matrix_index_field);
+  scanPlaceholders(template.header_text ?? '', out);
+  scanPlaceholders(template.footer_text ?? '', out);
+  scanPlaceholders(template.watermark ?? '', out);
   (template.elements ?? []).forEach((element) => collectElementFields(element, out));
   return out;
 }

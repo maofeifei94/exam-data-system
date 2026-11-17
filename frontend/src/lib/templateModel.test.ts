@@ -5,6 +5,7 @@ import {
   DEFAULT_PHOTO_EXTS,
   DEFAULT_PHOTO_NAME,
   appendChild,
+  collectRequiredFields,
   contentSizeMm,
   createElement,
   findElement,
@@ -322,6 +323,19 @@ describe('元素树操作', () => {
     expect(findElement(nested, 'new-child')?.parent?.id).toBe('nested');
   });
 
+  it('页眉页脚与水印中的占位符也计入必需字段', () => {
+    expect(
+      collectRequiredFields({
+        elements: [element('t', { text: '{姓名}' })],
+        page_field: '考场号',
+        matrix_index_field: '座位号',
+        header_text: '{考试名称}',
+        footer_text: '第 {{page}} 页 · {考点}',
+        watermark: '{考点}',
+      }),
+    ).toEqual(['考场号', '座位号', '考试名称', '考点', '姓名']);
+  });
+
   it('isContainer 只把矩阵与矩形视为容器', () => {
     expect(isContainer(element('m', { type: 'matrix' }))).toBe(true);
     expect(isContainer(element('r', { type: 'rect' }))).toBe(true);
@@ -342,6 +356,10 @@ describe('normalizeTemplate', () => {
     matrix_index_field: '',
     required_fields: [],
     all_required_fields: [],
+    header_text: '',
+    footer_text: '',
+    watermark: '',
+    show_page_number: false,
     scope: 'global',
     project_id: '',
     source_id: '',

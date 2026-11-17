@@ -82,7 +82,8 @@ function defaultParamsFor(op: OperatorDef | undefined): Record<string, unknown> 
     } else if (p.type === 'bool') {
       params[p.key] = false;
     } else if (p.type === 'number') {
-      params[p.key] = 0;
+      // 可空数值（如范围校验的最小/最大值）留空表示不限制。
+      params[p.key] = '';
     } else {
       params[p.key] = '';
     }
@@ -152,6 +153,8 @@ export default function ProjectFlowPage() {
   const [validateResult, setValidateResult] = useState<FlowValidateResult | null>(null);
   /** 同时只打开一个节点的插入菜单，选中菜单项后立即关闭，避免子菜单残留 */
   const [addMenu, setAddMenu] = useState<{ stepId: string; mode: InsertMode } | null>(null);
+  /** 操作符搜索关键词，按名称/类型/说明过滤 */
+  const [operatorQuery, setOperatorQuery] = useState('');
 
   const [importOpen, setImportOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -175,6 +178,22 @@ export default function ProjectFlowPage() {
     });
     return [...groups.entries()];
   }, [operators]);
+
+  const filteredOperatorGroups = useMemo(() => {
+    const query = operatorQuery.trim().toLowerCase();
+    if (!query) return operatorGroups;
+    return operatorGroups
+      .map(([group, list]) => [
+        group,
+        list.filter(
+          (op) =>
+            op.label.toLowerCase().includes(query) ||
+            op.type.toLowerCase().includes(query) ||
+            op.description.toLowerCase().includes(query),
+        ),
+      ] as [string, OperatorDef[]])
+      .filter(([, list]) => list.length > 0);
+  }, [operatorGroups, operatorQuery]);
 
   const selectedStep = draft.steps.find((step) => step.id === selectedId) ?? null;
   const selectedIndex = selectedStep ? draft.steps.findIndex((step) => step.id === selectedStep.id) : -1;
@@ -794,8 +813,15 @@ export default function ProjectFlowPage() {
         <aside className="card flow-panel">
           <h3 className="card-title">处理步骤</h3>
           <p className="panel-hint">点击加入流程末尾，或拖到画布中间</p>
+          <input
+            className="palette-search"
+            type="search"
+            value={operatorQuery}
+            placeholder="搜索算子，如 排名、账龄、身份证"
+            onChange={(event) => setOperatorQuery(event.target.value)}
+          />
           <div className="palette">
-            {operatorGroups.map(([group, list]) => (
+            {filteredOperatorGroups.map(([group, list]) => (
               <div key={group} className="palette-group">
                 <div className="palette-group-title">
                   <span className="palette-dot" style={{ background: groupColor(group) }} />
