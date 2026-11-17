@@ -251,6 +251,8 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `parse_id_card` | 身份证解析：出生日期、性别、年龄、校验位，可配置非法号码直接终止 |
 | `amount_upper` | 金额转中文大写（财务凭证） |
 | `percentage` | 占合计百分比，支持按分组分别计算 |
+| `depreciation` | 直线法折旧：月折旧额、累计折旧、净值（可字段指定已计提月数） |
+| `allocate` | 按权重分摊金额，可按项目/部门分组分别分摊 |
 | `data_profile` | 数据概览：逐字段统计非空数、空值数、去重数、最小/最大值、平均值 |
 | `not_null_check` | 空值校验：指定字段出现 NULL / 空字符串时终止或警告 |
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
@@ -359,6 +361,9 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 - **必需字段校验**：`TemplateBody::all_required_fields()` 把显式声明、页面字段、
   格子索引字段、页眉页脚 / 水印占位符与所有子元素占位符合并；`render_pdf_data`
   开头即检查输入列，缺失时返回 400 并列出模板需要 / 数据缺少的字段。预览与正式渲染共用同一检查。
+- **二维码元素**：`type = "qrcode"` 的元素用 `text` 作为编码内容（支持 `{字段}` 占位符），
+  可放准考证号、核验链接等；渲染时用 `qrcode` crate 生成二维码位图并嵌入 PDF，
+  内容为空或编码失败时留空，不影响整页输出。
 - **页眉页脚 / 页码 / 水印**：`header_text`、`footer_text`、`watermark` 均支持
   `{字段}` 与 `{{page}}` / `{{pages}}` / `{{count}}` 占位符，每页绘制一次；
   `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」。

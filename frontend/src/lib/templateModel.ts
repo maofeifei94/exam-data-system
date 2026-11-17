@@ -136,6 +136,14 @@ export function createElement(
       };
     case 'field':
       return { ...base, w_mm: options.w ?? 40, h_mm: options.h ?? 7, field: options.field ?? '姓名' };
+    case 'qrcode':
+      return {
+        ...base,
+        w_mm: options.w ?? 28,
+        h_mm: options.h ?? 28,
+        text: '{{准考证号}}',
+        border: false,
+      };
     case 'matrix':
       return {
         ...base,
@@ -255,6 +263,8 @@ function collectElementFields(element: TemplateElement, out: string[]) {
   } else if (element.type === 'image') {
     if ((element.photo_name ?? '').trim()) scanPlaceholders(element.photo_name ?? '', out);
     else add(element.field);
+  } else if (element.type === 'qrcode') {
+    scanPlaceholders(element.text, out);
   }
   (element.children ?? []).forEach((child) => collectElementFields(child, out));
 }
@@ -399,6 +409,10 @@ export function elementLabel(element: TemplateElement): string {
   }
   if (element.type === 'rect') return '矩形框';
   if (element.type === 'line') return '线条';
+  if (element.type === 'qrcode') {
+    const text = (element.text || '').replace(/\{\{?([^}]+)\}?\}/g, '$1');
+    return `二维码 · ${text || '内容'}`;
+  }
   if (element.type === 'field') return `字段 ${element.field || ''}`;
   const text = (element.text || element.field || '文本').replace(/\{\{?([^}]+)\}?\}/g, '$1');
   return text.length > 12 ? `${text.slice(0, 12)}…` : text;
@@ -412,6 +426,8 @@ export function elementIcon(type: ElementType): string {
       return '▭';
     case 'image':
       return '▣';
+    case 'qrcode':
+      return '▩';
     case 'line':
       return '╱';
     case 'field':

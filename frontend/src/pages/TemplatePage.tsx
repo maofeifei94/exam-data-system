@@ -121,12 +121,13 @@ const ELEMENT_LABELS: Record<ElementType, string> = {
   text: '文本',
   field: '字段',
   image: '图片',
+  qrcode: '二维码',
   line: '线条',
   rect: '矩形',
   matrix: '矩阵',
 };
 
-const INSERT_TYPES: ElementType[] = ['text', 'field', 'image', 'line', 'rect'];
+const INSERT_TYPES: ElementType[] = ['text', 'field', 'image', 'qrcode', 'line', 'rect'];
 
 type RibbonTab = 'home' | 'insert' | 'layout' | 'view';
 
@@ -750,7 +751,11 @@ export default function TemplatePage({
             hittable: false,
           }),
         );
-      } else if (element.type === 'image') {
+      } else if (element.type === 'image' || element.type === 'qrcode') {
+        const isQr = element.type === 'qrcode';
+        const raw = isQr
+          ? element.text || '二维码'
+          : element.photo_name || element.field || '照片';
         node.add(
           new Rect({
             x: 0,
@@ -770,7 +775,7 @@ export default function TemplatePage({
             y: 0,
             width: w,
             height: h,
-            text: `▣ ${(element.photo_name || element.field || '照片').replace(/\{\{?([^}]+)\}?\}/g, '$1')}`,
+            text: `${isQr ? '▩' : '▣'} ${raw.replace(/\{\{?([^}]+)\}?\}/g, '$1')}`,
             fontSize: Math.min(element.font_size * MM_PER_PT, 3.2),
             fill: '#94a3b8',
             textAlign: 'center',
@@ -2387,7 +2392,7 @@ function ElementEditor({
           </p>
           <div className="tpl-mini-actions">
             <span>在此矩阵内插入</span>
-            {(['field', 'text', 'image'] as ElementType[]).map((type) => (
+            {(['field', 'text', 'image', 'qrcode'] as ElementType[]).map((type) => (
               <button key={type} type="button" className="btn btn-sm" onClick={() => onAddChild(type)}>
                 ＋{ELEMENT_LABELS[type]}
               </button>
@@ -2402,7 +2407,7 @@ function ElementEditor({
           <p className="panel-hint">矩形可作为标题框等容器，内部元素随矩形一起移动。</p>
           <div className="tpl-mini-actions">
             <span>在此矩形内插入</span>
-            {(['text', 'field', 'image'] as ElementType[]).map((type) => (
+            {(['text', 'field', 'image', 'qrcode'] as ElementType[]).map((type) => (
               <button key={type} type="button" className="btn btn-sm" onClick={() => onAddChild(type)}>
                 ＋{ELEMENT_LABELS[type]}
               </button>
@@ -2411,22 +2416,30 @@ function ElementEditor({
         </div>
       ) : null}
 
-      {element.type === 'text' || element.type === 'field' ? (
+      {element.type === 'text' || element.type === 'field' || element.type === 'qrcode' ? (
         <div className="tpl-section">
-          <div className="tpl-section-title">内容</div>
+          <div className="tpl-section-title">{element.type === 'qrcode' ? '二维码内容' : '内容'}</div>
           <div className="field">
-            <span className="field-label">文本内容</span>
+            <span className="field-label">
+              {element.type === 'qrcode' ? '编码内容' : '文本内容'}
+            </span>
             <TokenEditor
               mode="template"
-              multiline
+              multiline={element.type !== 'qrcode'}
               fields={columns}
               value={element.text}
               autoEdit={autoEdit}
-              placeholder="输入文本，并用 {{字段名}} 插入字段"
+              placeholder={
+                element.type === 'qrcode'
+                  ? '如 {{准考证号}} 或 https://example.com/verify?id={{准考证号}}'
+                  : '输入文本，并用 {{字段名}} 插入字段'
+              }
               onChange={(text) => onChange({ text })}
             />
             <span className="field-hint">
-              双击胶囊或按 Backspace 可编辑原始 <span className="mono">{'{{字段}}'}</span> 语法
+              {element.type === 'qrcode'
+                ? '二维码内容支持字段占位符，可在准考证、桌贴、核验单上扫码查看。'
+                : '双击胶囊或按 Backspace 可编辑原始 {{字段}} 语法'}
             </span>
           </div>
           {element.type === 'field' ? (

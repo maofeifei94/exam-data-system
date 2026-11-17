@@ -729,6 +729,8 @@ fn collect_element_fields(el: &TemplateElement, out: &mut Vec<String>) {
         } else {
             collect_placeholders(&el.photo_name, out);
         }
+    } else if el.etype == "qrcode" {
+        collect_placeholders(&el.text, out);
     }
     for child in &el.children {
         collect_element_fields(child, out);

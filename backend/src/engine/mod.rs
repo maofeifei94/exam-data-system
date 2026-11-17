@@ -348,6 +348,8 @@ impl<'a> Compiler<'a> {
             "parse_id_card" => self.op_parse_id_card(step_index, step, &params),
             "amount_upper" => self.op_amount_upper(step_index, step, &params),
             "percentage" => self.op_percentage(step_index, step, &params),
+            "depreciation" => self.op_depreciation(step_index, step, &params),
+            "allocate" => self.op_allocate(step_index, step, &params),
             "data_profile" => self.op_data_profile(step_index, step, &params),
             "not_null_check" => self.op_not_null_check(step_index, step, &params),
             "column_compare" => self.op_column_compare(step_index, step, &params),
@@ -1699,6 +1701,132 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("计算 [{col}] 占比 → [{out}]")),
+        ))
+    }
+
+    fn op_depreciation(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let original = str_param(p, "original");
+        if !self.has_column(&original) {
+            return Err(format!("字段 [{original}] 不存在"));
+        }
+        let months_field = str_param(p, "months");
+        if !months_field.is_empty() && !self.has_column(&months_field) {
+            return Err(format!("已计提月数字段 [{months_field}] 不存在"));
+        }
+        let rate = f64_param(p, "salvage_rate")
+            .unwrap_or(5.0)
+            .clamp(0.0, 100.0);
+        let years = f64_param(p, "years").unwrap_or(5.0);
+        if years <= 0.0 {
+            return Err("使用年限必须大于 0".to_string());
+        }
+        let mut outs: Vec<String> = Vec::new();
+        for (key, default) in [
+            ("monthly_out", "月折旧额"),
+            ("accumulated_out", "累计折旧"),
+            ("net_out", "固定资产净值"),
+        ] {
+            let name = {
+                let v = str_param(p, key);
+                if v.is_empty() {
+                    default.to_string()
+                } else {
+                    v
+                }
+            };
+            if self.has_column(&name) || outs.contains(&name) {
+                return Err(format!("字段 [{name}] 已存在"));
+            }
+            outs.push(name);
+        }
+        let orig = format!("CAST({} AS REAL)", q(&original));
+        let depreciable = format!("({orig} * (1.0 - {rate} / 100.0))");
+        let monthly = format!("ROUND({depreciable} / {years} / 12.0, 2)");
+        let months = if months_field.is_empty() {
+            "0".to_string()
+        } else {
+            format!(
+                "CAST(COALESCE(CAST({} AS REAL), 0) AS INTEGER)",
+                q(&months_field)
+            )
+        };
+        let accumulated = format!("ROUND(MIN({depreciable}, ({monthly}) * ({months})), 2)");
+        let net = format!("ROUND({orig} - ({accumulated}), 2)");
+        let cte = self.push_cte(format!(
+            "SELECT *, {monthly} AS {}, {accumulated} AS {}, {net} AS {} FROM {}",
+            q(&outs[0]),
+            q(&outs[1]),
+            q(&outs[2]),
+            self.cur
+        ));
+        for name in &outs {
+            self.add_column(DatasetColumn {
+                name: name.clone(),
+                dtype: "number".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("直线法折旧：残值率 {rate}% / 年限 {years} 年")),
+        ))
+    }
+
+    fn op_allocate(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let amount = str_param(p, "amount");
+        let weight = str_param(p, "weight");
+        for c in [&amount, &weight] {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let out = str_param(p, "out");
+        if out.is_empty() {
+            return Err("分摊结果字段名不能为空".to_string());
+        }
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let parts = list_param(p, "partition_by");
+        for c in &parts {
+            if !self.has_column(c) {
+                return Err(format!("分组字段 [{c}] 不存在"));
+            }
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let partition = if parts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "PARTITION BY {}",
+                parts.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let e = format!(
+            "ROUND(CAST({amount} AS REAL) * CAST({weight} AS REAL) / NULLIF(SUM(CAST({weight} AS REAL)) OVER ({partition}), 0), {decimals})",
+            amount = q(&amount),
+            weight = q(&weight)
+        );
+        let cte = self.push_cte(format!("SELECT *, {e} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("按 [{weight}] 分摊 [{amount}] → [{out}]")),
         ))
     }
 
@@ -3804,6 +3932,59 @@ pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult 
                     cols.push(out);
                 }
             }
+            "depreciation" => {
+                let original = str_param(&p, "original");
+                if !cols.contains(&original) {
+                    step_errors.push(format!("字段 [{original}] 不存在"));
+                }
+                let months = str_param(&p, "months");
+                if !months.is_empty() && !cols.contains(&months) {
+                    step_errors.push(format!("已计提月数字段 [{months}] 不存在"));
+                }
+                if f64_param(&p, "years").unwrap_or(5.0) <= 0.0 {
+                    step_errors.push("使用年限必须大于 0".into());
+                }
+                for (key, default) in [
+                    ("monthly_out", "月折旧额"),
+                    ("accumulated_out", "累计折旧"),
+                    ("net_out", "固定资产净值"),
+                ] {
+                    let name = {
+                        let v = str_param(&p, key);
+                        if v.is_empty() {
+                            default.to_string()
+                        } else {
+                            v
+                        }
+                    };
+                    if cols.contains(&name) {
+                        step_errors.push(format!("字段 [{name}] 已存在"));
+                    } else {
+                        cols.push(name);
+                    }
+                }
+            }
+            "allocate" => {
+                for key in ["amount", "weight"] {
+                    let c = str_param(&p, key);
+                    if !cols.contains(&c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                for c in list_param(&p, "partition_by") {
+                    if !cols.contains(&c) {
+                        step_errors.push(format!("分组字段 [{c}] 不存在"));
+                    }
+                }
+                let out = str_param(&p, "out");
+                if out.is_empty() {
+                    step_errors.push("分摊结果字段名不能为空".into());
+                } else if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "data_profile" => {
                 for c in list_param(&p, "columns") {
                     if !cols.contains(&c) {
@@ -4672,6 +4853,45 @@ mod tests {
         let yi = names.iter().position(|n| *n == "乙").unwrap();
         assert_eq!(bank[jia], json!(500.0));
         assert_eq!(bank[yi], json!(90.0));
+    }
+
+    #[test]
+    fn depreciation_and_allocation_compute_finance_values() {
+        let (mut conn, ds_id) = setup_custom(
+            &[
+                ("资产名称", "text"),
+                ("原值", "number"),
+                ("已计提月数", "number"),
+                ("金额", "number"),
+                ("权重", "number"),
+            ],
+            &[
+                vec!["电脑", "12000", "12", "1000", "1"],
+                vec!["打印机", "6000", "0", "1000", "3"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_dep",
+            json!([
+                { "id": "s1", "operator": "depreciation",
+                  "params": { "original": "原值", "salvage_rate": 5, "years": 5, "months": "已计提月数",
+                              "monthly_out": "月折旧额", "accumulated_out": "累计折旧", "net_out": "净值" } },
+                { "id": "s2", "operator": "allocate",
+                  "params": { "amount": "金额", "weight": "权重", "out": "分摊金额", "decimals": 2 } },
+                { "id": "s3", "operator": "output", "params": { "name": "财务计算" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows[0][5], json!(190.0));
+        assert_eq!(page.rows[0][6], json!(2280.0));
+        assert_eq!(page.rows[0][7], json!(9720.0));
+        assert_eq!(page.rows[1][6], json!(0.0));
+        assert_eq!(page.rows[0][8], json!(250.0));
+        assert_eq!(page.rows[1][8], json!(750.0));
     }
 
     #[test]

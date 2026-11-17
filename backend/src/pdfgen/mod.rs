@@ -194,22 +194,7 @@ fn draw_image(
     if let Some(p) = path {
         if let Ok(bytes) = std::fs::read(&p) {
             if let Ok(img) = printpdf::image_crate::load_from_memory(&bytes) {
-                let (pw, ph) = (img.width() as f32, img.height() as f32);
-                if pw > 0.0 && ph > 0.0 {
-                    let xobj = ImageXObject::from_dynamic_image(&img);
-                    let scale_x = (el.w_mm * PT_PER_MM) / pw;
-                    let scale_y = (el.h_mm * PT_PER_MM) / ph;
-                    Image::from(xobj).add_to_layer(
-                        layer.clone(),
-                        ImageTransform {
-                            translate_x: Some(Mm(llx)),
-                            translate_y: Some(Mm(lly)),
-                            rotate: None,
-                            scale_x: Some(scale_x),
-                            scale_y: Some(scale_y),
-                            dpi: Some(IMAGE_DPI),
-                        },
-                    );
+                if place_image(layer, el, llx, lly, &img) {
                     let _ = doc;
                     return;
                 }
@@ -227,6 +212,71 @@ fn draw_image(
         };
         draw_rect(layer, &placeholder, origin, page_h);
     }
+}
+
+/// 把内存中的图片按元素矩形铺到 PDF 层上；尺寸非法时返回 false。
+fn place_image(
+    layer: &PdfLayerReference,
+    el: &TemplateElement,
+    llx: f32,
+    lly: f32,
+    img: &printpdf::image_crate::DynamicImage,
+) -> bool {
+    let (pw, ph) = (img.width() as f32, img.height() as f32);
+    if pw <= 0.0 || ph <= 0.0 {
+        return false;
+    }
+    let xobj = ImageXObject::from_dynamic_image(img);
+    let scale_x = (el.w_mm * PT_PER_MM) / pw;
+    let scale_y = (el.h_mm * PT_PER_MM) / ph;
+    Image::from(xobj).add_to_layer(
+        layer.clone(),
+        ImageTransform {
+            translate_x: Some(Mm(llx)),
+            translate_y: Some(Mm(lly)),
+            rotate: None,
+            scale_x: Some(scale_x),
+            scale_y: Some(scale_y),
+            dpi: Some(IMAGE_DPI),
+        },
+    );
+    true
+}
+
+/// 把文本编码成二维码并绘制到元素矩形中；内容为空或编码失败时留空。
+fn draw_qr(
+    layer: &PdfLayerReference,
+    el: &TemplateElement,
+    origin: &Origin,
+    text: &str,
+    page_h: f32,
+) {
+    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else {
+        return;
+    };
+    let modules = code.width();
+    let quiet = 2usize;
+    let size = modules + quiet * 2;
+    let mut img = printpdf::image_crate::RgbImage::new(size as u32, size as u32);
+    for pixel in img.pixels_mut() {
+        *pixel = printpdf::image_crate::Rgb([255, 255, 255]);
+    }
+    for y in 0..modules {
+        for x in 0..modules {
+            if code[(x, y)] == qrcode::Color::Dark {
+                img.put_pixel(
+                    (x + quiet) as u32,
+                    (y + quiet) as u32,
+                    printpdf::image_crate::Rgb([0, 0, 0]),
+                );
+            }
+        }
+    }
+    let llx = origin.x + el.x_mm;
+    let ury = page_h - (origin.y_top + el.y_mm);
+    let lly = ury - el.h_mm;
+    let img = printpdf::image_crate::DynamicImage::ImageRgb8(img);
+    place_image(layer, el, llx, lly, &img);
 }
 
 /// 矩阵网格的几何信息：宽度、高度、列数、行数。
@@ -340,6 +390,12 @@ impl<'a> Painter<'a> {
                     ],
                     is_closed: false,
                 });
+            }
+            "qrcode" => {
+                let text = interpolate(&el.text, ctx);
+                if !text.trim().is_empty() {
+                    draw_qr(self.layer, el, origin, &text, self.page_h);
+                }
             }
             "image" => {
                 // 照片名是模板字符串：先按 `{字段}` 占位符插值，再拼接候选后缀查文件。
@@ -1005,6 +1061,26 @@ mod tests {
             body.all_required_fields(),
             vec!["考场号", "考试名称", "考点"]
         );
+    }
+
+    #[test]
+    fn qrcode_element_adds_required_field_and_renders() {
+        let cols = vec![DatasetColumn {
+            name: "准考证号".into(),
+            dtype: "text".into(),
+        }];
+        let mut body = TemplateBody::default();
+        let mut qr = TemplateElement::empty("q", "qrcode");
+        qr.text = "{准考证号}".into();
+        qr.w_mm = 30.0;
+        qr.h_mm = 30.0;
+        body.elements.push(qr);
+        assert_eq!(body.all_required_fields(), vec!["准考证号"]);
+        let rows = vec![vec!["2026001".into()]];
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
+            .expect("render qr");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
     }
 
     #[test]

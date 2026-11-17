@@ -21,6 +21,7 @@ rusqlite = { version = "0.31", features = ["bundled", "functions", "serde_json"]
 calamine = { version = "0.24", features = ["dates"] }
 csv = "1"
 printpdf = { version = "0.7", features = ["embedded_images"] }
+qrcode = { version = "0.14", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
