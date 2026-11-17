@@ -268,6 +268,8 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `invoice_validate` | 发票代码 / 号码校验：代码须为 10 或 12 位数字，号码须为 8 或 20 位数字，空值可选忽略 |
 | `zero_score_check` | 单科零分校验：检查指定科目是否存在 0 分或缺考空值，提示人工复核 |
 | `score_balance_check` | 多科均衡校验：同一行各科最高分与最低分差值超过阈值时预警，可输出偏科标记列 |
+| `recheck_diff` | 成绩复核差异：对比原始成绩与复核成绩，输出分差与「一致 / 有变动」状态 |
+| `trial_balance_check` | 试算平衡校验：逐行比较借方与贷方合计，支持允差与警告模式 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `sum_check` | 合计一致性校验：校验合计字段是否等于各明细字段之和（总成绩、发票金额） |
 | `outlier_check` | 异常值检测：按分组均值与标准差检测偏离超过 k 倍的异常值，可输出标记列 |

@@ -621,6 +621,31 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "recheck_diff",
+            "成绩复核差异",
+            "计算",
+            "对比原始成绩与复核成绩，输出分差与复核状态（一致 / 有变动），用于成绩复查留痕。",
+            vec![
+                p("original", "原始成绩字段", "column", true, json!("")),
+                p("recheck", "复核成绩字段", "column", true, json!("")),
+                p("decimals", "分差保留小数位", "number", false, json!(2)),
+                p("diff_out", "分差字段名", "text", false, json!("分差")),
+                p("flag_out", "复核状态字段名", "text", false, json!("复核状态")),
+            ],
+        ),
+        def(
+            "trial_balance_check",
+            "试算平衡校验",
+            "校验",
+            "按行比较借方合计与贷方合计，检查期初/本期发生额是否平衡，适用于科目余额表。",
+            vec![
+                p("debit_columns", "借方金额字段", "columns", true, json!([])),
+                p("credit_columns", "贷方金额字段", "columns", true, json!([])),
+                with_help(p("tolerance", "允许误差", "number", false, json!(0.01)), "差额绝对值不超过该值视为平衡"),
+                with_options(p("on_error", "不平衡时", "enum", false, json!("fail")), &["fail", "warn"]),
+            ],
+        ),
+        def(
             "range_check",
             "数值范围校验",
             "校验",

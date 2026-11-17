@@ -432,6 +432,8 @@ impl<'a> Compiler<'a> {
             "invoice_validate" => self.op_invoice_validate(step_index, step, &params),
             "zero_score_check" => self.op_zero_score_check(step_index, step, &params),
             "score_balance_check" => self.op_score_balance_check(step_index, step, &params),
+            "recheck_diff" => self.op_recheck_diff(step_index, step, &params),
+            "trial_balance_check" => self.op_trial_balance_check(step_index, step, &params),
             "range_check" => self.op_range_check(step_index, step, &params),
             "shuffle" => self.op_shuffle(step_index, step, &params),
             "balance_classes" => self.op_balance_classes(step_index, step, &params),
@@ -3268,6 +3270,122 @@ impl<'a> Compiler<'a> {
                 "所选科目分差均在阈值内".to_string()
             } else {
                 format!("{bad} 行存在偏科，阈值 {threshold} 分")
+            }),
+        ))
+    }
+
+    /// 成绩复核差异：输出分差与复核状态，便于复查留痕。
+    fn op_recheck_diff(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let original = str_param(p, "original");
+        let recheck = str_param(p, "recheck");
+        for c in [&original, &recheck] {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        if original == recheck {
+            return Err("原始成绩与复核成绩不能是同一字段".into());
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let diff_out = defaulted(str_param(p, "diff_out"), "分差");
+        let flag_out = defaulted(str_param(p, "flag_out"), "复核状态");
+        for name in [&diff_out, &flag_out] {
+            if self.has_column(name) {
+                return Err(format!("字段 [{name}] 已存在"));
+            }
+        }
+        let o = q(&original);
+        let r = q(&recheck);
+        let blank = format!(
+            "TRIM(COALESCE(CAST({o} AS TEXT), '')) = '' OR TRIM(COALESCE(CAST({r} AS TEXT), '')) = ''"
+        );
+        let diff = format!(
+            "CASE WHEN {blank} THEN NULL ELSE ROUND(CAST({r} AS REAL) - CAST({o} AS REAL), {decimals}) END"
+        );
+        let flag = format!(
+            "CASE WHEN {blank} THEN '' \
+             WHEN ABS(CAST({r} AS REAL) - CAST({o} AS REAL)) <= 0.000001 THEN '一致' ELSE '有变动' END"
+        );
+        let cte = self.push_cte(format!(
+            "SELECT *, {diff} AS {}, {flag} AS {} FROM {}",
+            q(&diff_out),
+            q(&flag_out),
+            self.cur
+        ));
+        self.add_column(DatasetColumn {
+            name: diff_out.clone(),
+            dtype: "number".to_string(),
+        });
+        self.add_column(DatasetColumn {
+            name: flag_out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "对比 [{original}] 与 [{recheck}]，输出 [{diff_out}] 与 [{flag_out}]"
+            )),
+        ))
+    }
+
+    /// 试算平衡：逐行比较借方合计与贷方合计。
+    fn op_trial_balance_check(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let debits = list_param(p, "debit_columns");
+        let credits = list_param(p, "credit_columns");
+        if debits.is_empty() || credits.is_empty() {
+            return Err("借方与贷方字段都不能为空".into());
+        }
+        for c in debits.iter().chain(credits.iter()) {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let tolerance = f64_param(p, "tolerance").unwrap_or(0.01).abs();
+        let sum_sql = |cols: &[String]| {
+            cols.iter()
+                .map(|c| format!("COALESCE(CAST({} AS REAL), 0)", q(c)))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+        let cond = format!(
+            "ABS(({}) - ({})) > {tolerance}",
+            sum_sql(&debits),
+            sum_sql(&credits)
+        );
+        let sql = self.with_ctes(&format!("SELECT COUNT(*) FROM {} WHERE {cond}", self.cur));
+        let bad: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("试算平衡校验失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") == "fail" {
+            return Err(format!(
+                "试算平衡校验未通过：{bad} 行借方与贷方合计差超过 {tolerance}"
+            ));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            None,
+            Some(if bad == 0 {
+                "借方与贷方合计全部平衡".to_string()
+            } else {
+                format!("{bad} 行借贷不平衡，已按警告继续")
             }),
         ))
     }
@@ -6436,6 +6554,38 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "recheck_diff" => {
+                let original = str_param(&p, "original");
+                let recheck = str_param(&p, "recheck");
+                for c in [&original, &recheck] {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                if original == recheck {
+                    step_errors.push("原始成绩与复核成绩不能是同一字段".into());
+                }
+                for (key, fallback) in [("diff_out", "分差"), ("flag_out", "复核状态")] {
+                    let out = defaulted(str_param(&p, key), fallback);
+                    if cols.contains(&out) {
+                        step_errors.push(format!("字段 [{out}] 已存在"));
+                    } else {
+                        cols.push(out);
+                    }
+                }
+            }
+            "trial_balance_check" => {
+                let debits = list_param(&p, "debit_columns");
+                let credits = list_param(&p, "credit_columns");
+                if debits.is_empty() || credits.is_empty() {
+                    step_errors.push("借方与贷方字段都不能为空".into());
+                }
+                for c in debits.iter().chain(credits.iter()) {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+            }
             "voucher_check" => {
                 let col = str_param(&p, "column");
                 if col.is_empty() {
@@ -8695,6 +8845,86 @@ mod tests {
         assert_eq!(page.rows[0][flag], json!(""));
         assert_eq!(page.rows[1][flag], json!("偏科"));
         assert_eq!(page.rows[2][flag], json!(""));
+    }
+
+    #[test]
+    fn recheck_diff_outputs_difference_and_status() {
+        let (mut conn, ds_id) = setup_custom(
+            &[
+                ("姓名", "text"),
+                ("原成绩", "number"),
+                ("复核成绩", "number"),
+            ],
+            &[
+                vec!["张三", "80", "80"],
+                vec!["李四", "90", "92"],
+                vec!["王五", "", "70"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_recheck",
+            json!([
+                { "id": "s1", "operator": "recheck_diff",
+                  "params": { "original": "原成绩", "recheck": "复核成绩" } },
+                { "id": "s2", "operator": "output", "params": { "name": "复核结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let col = |name: &str| {
+            page.columns
+                .iter()
+                .position(|c| c.name == name)
+                .expect("column")
+        };
+        let (diff, flag) = (col("分差"), col("复核状态"));
+        assert_eq!(page.rows[0][diff], json!(0.0));
+        assert_eq!(page.rows[0][flag], json!("一致"));
+        assert_eq!(page.rows[1][diff], json!(2.0));
+        assert_eq!(page.rows[1][flag], json!("有变动"));
+        assert_eq!(page.rows[2][diff], json!(null));
+        assert_eq!(page.rows[2][flag], json!(""));
+    }
+
+    #[test]
+    fn trial_balance_check_flags_unbalanced_rows() {
+        let (mut conn, ds_id) = setup_custom(
+            &[
+                ("科目", "text"),
+                ("期初借方", "number"),
+                ("本期借方", "number"),
+                ("期初贷方", "number"),
+                ("本期贷方", "number"),
+            ],
+            &[
+                vec!["A", "100", "50", "100", "50"],
+                vec!["B", "100", "0", "50", "0"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_trial_fail",
+            json!([{ "id": "s1", "operator": "trial_balance_check",
+                     "params": { "debit_columns": ["期初借方", "本期借方"],
+                                 "credit_columns": ["期初贷方", "本期贷方"],
+                                 "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_trial_warn",
+            json!([{ "id": "s1", "operator": "trial_balance_check",
+                     "params": { "debit_columns": ["期初借方", "本期借方"],
+                                 "credit_columns": ["期初贷方", "本期贷方"],
+                                 "on_error": "warn" } }]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
     }
 
     #[test]

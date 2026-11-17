@@ -154,6 +154,31 @@ const FLOW_PRESETS: Array<{
     ],
   },
   {
+    name: '成绩复核差异比对',
+    description: '对比原始成绩与复核成绩，输出分差与复核状态',
+    steps: [
+      {
+        operator: 'recheck_diff',
+        params: { original: '原成绩', recheck: '复核成绩', diff_out: '分差', flag_out: '复核状态' },
+      },
+    ],
+  },
+  {
+    name: '试算平衡校验',
+    description: '比较期初/本期借方与贷方合计，检查科目余额表是否平衡',
+    steps: [
+      {
+        operator: 'trial_balance_check',
+        params: {
+          debit_columns: ['期初借方', '本期借方'],
+          credit_columns: ['期初贷方', '本期贷方'],
+          tolerance: 0.01,
+          on_error: 'warn',
+        },
+      },
+    ],
+  },
+  {
     name: '成绩均衡检查',
     description: '比较各科成绩分差，标记偏科考生',
     steps: [
