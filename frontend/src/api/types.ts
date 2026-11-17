@@ -333,7 +333,7 @@ export interface MatrixSetup {
 
 export interface TemplateElement {
   id: string;
-  type: 'text' | 'field' | 'image' | 'qrcode' | 'line' | 'rect' | 'matrix';
+  type: 'text' | 'field' | 'image' | 'qrcode' | 'barcode' | 'line' | 'rect' | 'matrix';
   x_mm: number;
   y_mm: number;
   w_mm: number;

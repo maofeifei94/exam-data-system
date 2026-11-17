@@ -253,6 +253,8 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `percentage` | 占合计百分比，支持按分组分别计算 |
 | `depreciation` | 直线法折旧：月折旧额、累计折旧、净值（可字段指定已计提月数） |
 | `allocate` | 按权重分摊金额，可按项目/部门分组分别分摊 |
+| `tax_calc` | 税额计算：按税率拆分含税/不含税金额，支持价内税与价外税 |
+| `budget_variance` | 预算执行分析：按部门/科目汇总预算与实际，输出执行率、差额与超支预警 |
 | `data_profile` | 数据概览：逐字段统计非空数、空值数、去重数、最小/最大值、平均值 |
 | `not_null_check` | 空值校验：指定字段出现 NULL / 空字符串时终止或警告 |
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
@@ -371,6 +373,9 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
 - **二维码元素**：`type = "qrcode"` 的元素用 `text` 作为编码内容（支持 `{字段}` 占位符），
   可放准考证号、核验链接等；渲染时用 `qrcode` crate 生成二维码位图并嵌入 PDF，
   内容为空或编码失败时留空，不影响整页输出。
+- **条形码元素**：`type = "barcode"` 的元素用 `text` 作为编码内容（支持 `{字段}` 占位符），
+  使用 Code 128B 编码，支持数字、大小写字母与常见符号；按元素宽高绘制条空并保留两侧静区，
+  适合准考证号、单据编号等场景。内容含中文等非 ASCII 字符时留空，不影响整页输出。
 - **页眉页脚 / 页码 / 水印**：`header_text`、`footer_text`、`watermark` 均支持
   `{字段}` 与 `{{page}}` / `{{pages}}` / `{{count}}` 占位符，每页绘制一次；
   `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」。

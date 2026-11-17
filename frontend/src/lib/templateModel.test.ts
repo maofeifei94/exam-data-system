@@ -329,6 +329,13 @@ describe('元素树操作', () => {
     expect(collectRequiredFields({ elements: [qr] })).toEqual(['准考证号']);
   });
 
+  it('条形码元素的内容占位符计入必需字段', () => {
+    const barcode = createElement('barcode');
+    expect(barcode.text).toBe('{{准考证号}}');
+    expect(barcode.h_mm).toBe(14);
+    expect(collectRequiredFields({ elements: [barcode] })).toEqual(['准考证号']);
+  });
+
   it('页眉页脚与水印中的占位符也计入必需字段', () => {
     expect(
       collectRequiredFields({

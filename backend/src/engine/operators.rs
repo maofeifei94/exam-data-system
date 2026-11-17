@@ -373,6 +373,41 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "tax_calc",
+            "税额计算",
+            "计算",
+            "按税率拆分含税/不含税金额，支持价外税与价内税，适用于发票、报销与合同台账。",
+            vec![
+                p("column", "金额字段", "column", true, json!("")),
+                with_help(p("rate", "税率", "number", true, json!(0.06)), "如 0.06 表示 6%，13% 填 0.13"),
+                with_options(
+                    p("mode", "金额口径", "enum", false, json!("exclusive")),
+                    &["exclusive", "inclusive"],
+                ),
+                with_help(
+                    p("decimals", "保留小数位", "number", false, json!(2)),
+                    "税额与拆出金额按该精度四舍五入",
+                ),
+                p("net_out", "不含税金额字段名", "text", false, json!("不含税金额")),
+                p("tax_out", "税额字段名", "text", false, json!("税额")),
+                p("gross_out", "含税金额字段名", "text", false, json!("含税金额")),
+            ],
+        ),
+        def(
+            "budget_variance",
+            "预算执行分析",
+            "分析",
+            "按部门/科目汇总预算与实际，输出执行率、差额和超支预警，适用于预算控制与费用分析。",
+            vec![
+                p("budget_column", "预算金额字段", "column", true, json!("")),
+                p("actual_column", "实际金额字段", "column", true, json!("")),
+                p("group_by", "分组字段（可空）", "columns", false, json!([])),
+                with_help(p("warning_rate", "超支预警线(%)", "number", false, json!(100)), "执行率高于该值时标记为超支"),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+                p("status_out", "状态字段名", "text", false, json!("预算状态")),
+            ],
+        ),
+        def(
             "data_profile",
             "数据概览",
             "分析",

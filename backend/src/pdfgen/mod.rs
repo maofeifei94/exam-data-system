@@ -353,6 +353,86 @@ fn draw_qr(
     place_image(layer, el, llx, lly, &img);
 }
 
+/// Code 128 的 107 组条空宽度（每组 6 位，终止符 7 位）。
+const CODE128_PATTERNS: [&str; 107] = [
+    "212222", "222122", "222221", "121223", "121322", "131222", "122213", "122312", "132212",
+    "221213", "221312", "231212", "112232", "122132", "122231", "113222", "123122", "123221",
+    "223211", "221132", "221231", "213212", "223112", "312131", "311222", "321122", "321221",
+    "312212", "322112", "322211", "212123", "212321", "232121", "111323", "131123", "131321",
+    "112313", "132113", "132311", "211313", "231113", "231311", "112133", "112331", "132131",
+    "113123", "113321", "133121", "313121", "211331", "231131", "213113", "213311", "213131",
+    "311123", "311321", "331121", "312113", "312311", "332111", "314111", "221411", "431111",
+    "111224", "111422", "121124", "121421", "141122", "141221", "112214", "112412", "122114",
+    "122411", "142112", "142211", "241211", "221114", "413111", "241112", "134111", "111242",
+    "121142", "121241", "114212", "124112", "124211", "411212", "421112", "421211", "212141",
+    "214121", "412121", "111143", "111341", "131141", "114113", "114311", "411113", "411311",
+    "113141", "114131", "311141", "411131", "211412", "211214", "211232", "2331112",
+];
+
+/// Code 128B 编码：仅支持可打印 ASCII（32~126），返回码字序列（含起始、校验与终止）。
+fn code128b_values(text: &str) -> Option<Vec<u8>> {
+    let mut values: Vec<u8> = vec![104]; // Start B
+    for b in text.bytes() {
+        if !(32..=126).contains(&b) {
+            return None;
+        }
+        values.push(b - 32);
+    }
+    let mut checksum = 104u32;
+    for (pos, value) in values.iter().skip(1).enumerate() {
+        checksum += *value as u32 * (pos as u32 + 1);
+    }
+    values.push((checksum % 103) as u8);
+    values.push(106); // Stop
+    Some(values)
+}
+
+/// 把文本编码成 Code 128 条形码，按元素矩形铺满宽度；内容非法时留空。
+fn draw_barcode(
+    layer: &PdfLayerReference,
+    el: &TemplateElement,
+    origin: &Origin,
+    text: &str,
+    page_h: f32,
+) {
+    let Some(values) = code128b_values(text.trim()) else {
+        return;
+    };
+    let modules: u32 = values
+        .iter()
+        .map(|v| {
+            CODE128_PATTERNS[*v as usize]
+                .bytes()
+                .map(|b| (b - b'0') as u32)
+                .sum::<u32>()
+        })
+        .sum();
+    let quiet = 10u32; // 两侧静区，保证扫码枪可识别
+    let total = modules + quiet * 2;
+    let module_w = el.w_mm / total as f32;
+    if module_w <= 0.0 {
+        return;
+    }
+    let llx = origin.x + el.x_mm + quiet as f32 * module_w;
+    let ury = page_h - (origin.y_top + el.y_mm);
+    let lly = (ury - el.h_mm).min(ury);
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+    let mut x = llx;
+    for value in values {
+        let mut is_bar = true;
+        for ch in CODE128_PATTERNS[value as usize].bytes() {
+            let w = (ch - b'0') as f32 * module_w;
+            if is_bar {
+                layer.add_rect(
+                    Rect::new(Mm(x), Mm(lly), Mm(x + w), Mm(ury)).with_mode(PaintMode::Fill),
+                );
+            }
+            x += w;
+            is_bar = !is_bar;
+        }
+    }
+}
+
 /// 矩阵网格的几何信息：宽度、高度、列数、行数。
 struct Grid {
     w: f32,
@@ -469,6 +549,12 @@ impl<'a> Painter<'a> {
                 let text = interpolate(&el.text, ctx);
                 if !text.trim().is_empty() {
                     draw_qr(self.layer, el, origin, &text, self.page_h);
+                }
+            }
+            "barcode" => {
+                let text = interpolate(&el.text, ctx);
+                if !text.trim().is_empty() {
+                    draw_barcode(self.layer, el, origin, &text, self.page_h);
                 }
             }
             "image" => {
@@ -1156,6 +1242,36 @@ mod tests {
         let rows = vec![vec!["2026001".into()]];
         let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
             .expect("render qr");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn barcode_encodes_code128_and_renders() {
+        for (index, pattern) in CODE128_PATTERNS.iter().enumerate() {
+            let expected_len = if index == 106 { 7 } else { 6 };
+            let expected_sum = if index == 106 { 13 } else { 11 };
+            assert_eq!(pattern.len(), expected_len, "pattern {index}");
+            let sum: u32 = pattern.bytes().map(|b| (b - b'0') as u32).sum();
+            assert_eq!(sum, expected_sum, "pattern {index}");
+        }
+        assert_eq!(code128b_values("A"), Some(vec![104, 33, 34, 106]));
+        assert_eq!(code128b_values("中文"), None);
+
+        let cols = vec![DatasetColumn {
+            name: "准考证号".into(),
+            dtype: "text".into(),
+        }];
+        let mut body = TemplateBody::default();
+        let mut barcode = TemplateElement::empty("b", "barcode");
+        barcode.text = "{准考证号}".into();
+        barcode.w_mm = 60.0;
+        barcode.h_mm = 14.0;
+        body.elements.push(barcode);
+        assert_eq!(body.all_required_fields(), vec!["准考证号"]);
+        let rows = vec![vec!["2026001".into()]];
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
+            .expect("render barcode");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
     }

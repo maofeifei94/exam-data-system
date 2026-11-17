@@ -75,6 +75,14 @@ fn list_param(params: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn defaulted(value: String, fallback: &str) -> String {
+    if value.is_empty() {
+        fallback.to_string()
+    } else {
+        value
+    }
+}
+
 fn f64_param(params: &Value, key: &str) -> Option<f64> {
     params.get(key).and_then(|v| match v {
         Value::Number(n) => n.as_f64(),
@@ -388,6 +396,8 @@ impl<'a> Compiler<'a> {
             "parse_id_card" => self.op_parse_id_card(step_index, step, &params),
             "amount_upper" => self.op_amount_upper(step_index, step, &params),
             "percentage" => self.op_percentage(step_index, step, &params),
+            "tax_calc" => self.op_tax_calc(step_index, step, &params),
+            "budget_variance" => self.op_budget_variance(step_index, step, &params),
             "depreciation" => self.op_depreciation(step_index, step, &params),
             "allocate" => self.op_allocate(step_index, step, &params),
             "data_profile" => self.op_data_profile(step_index, step, &params),
@@ -1743,6 +1753,176 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("计算 [{col}] 占比 → [{out}]")),
+        ))
+    }
+
+    fn op_tax_calc(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let rate = f64_param(p, "rate").ok_or_else(|| "税率不能为空".to_string())?;
+        if !(0.0..=1.0).contains(&rate) {
+            return Err("税率应在 0~1 之间（如 13% 填 0.13）".to_string());
+        }
+        let mode = {
+            let m = str_param(p, "mode");
+            if m.is_empty() {
+                "exclusive".to_string()
+            } else {
+                m
+            }
+        };
+        if mode != "exclusive" && mode != "inclusive" {
+            return Err(format!("未知的金额口径: {mode}"));
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let net_out = defaulted(str_param(p, "net_out"), "不含税金额");
+        let tax_out = defaulted(str_param(p, "tax_out"), "税额");
+        let gross_out = defaulted(str_param(p, "gross_out"), "含税金额");
+        for out in [&net_out, &tax_out, &gross_out] {
+            if self.has_column(out) {
+                return Err(format!("字段 [{out}] 已存在"));
+            }
+        }
+        if net_out == tax_out || net_out == gross_out || tax_out == gross_out {
+            return Err("三个输出字段名不能相同".to_string());
+        }
+        let f = format!("CAST({} AS REAL)", q(&col));
+        let net_expr = if mode == "inclusive" {
+            format!("ROUND({f} / (1.0 + {rate}), {decimals})")
+        } else {
+            format!("ROUND({f}, {decimals})")
+        };
+        let tax_expr = if mode == "inclusive" {
+            format!("ROUND({f}, {decimals}) - {net_expr}")
+        } else {
+            format!("ROUND({f} * {rate}, {decimals})")
+        };
+        let gross_expr = if mode == "inclusive" {
+            format!("ROUND({f}, {decimals})")
+        } else {
+            format!("{net_expr} + {tax_expr}")
+        };
+        let cte = self.push_cte(format!(
+            "SELECT *, {net_expr} AS {}, {tax_expr} AS {}, {gross_expr} AS {} FROM {}",
+            q(&net_out),
+            q(&tax_out),
+            q(&gross_out),
+            self.cur
+        ));
+        for out in [&net_out, &tax_out, &gross_out] {
+            self.add_column(DatasetColumn {
+                name: out.clone(),
+                dtype: "number".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "税额计算：[{col}] 按 {:.2}% {}",
+                rate * 100.0,
+                if mode == "inclusive" {
+                    "价内税拆分"
+                } else {
+                    "价外税拆分"
+                }
+            )),
+        ))
+    }
+
+    fn op_budget_variance(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let budget = str_param(p, "budget_column");
+        let actual = str_param(p, "actual_column");
+        for col in [&budget, &actual] {
+            if !self.has_column(col) {
+                return Err(format!("字段 [{col}] 不存在"));
+            }
+        }
+        if budget == actual {
+            return Err("预算金额与实际金额不能是同一字段".to_string());
+        }
+        let groups = list_param(p, "group_by");
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let warning = f64_param(p, "warning_rate").unwrap_or(100.0);
+        let status_out = defaulted(str_param(p, "status_out"), "预算状态");
+        if groups.iter().any(|g| g == &status_out) {
+            return Err(format!("状态字段 [{status_out}] 与分组字段重名"));
+        }
+        let b = format!("COALESCE(SUM(CAST({} AS REAL)), 0)", q(&budget));
+        let a = format!("COALESCE(SUM(CAST({} AS REAL)), 0)", q(&actual));
+        let rate_expr = format!("ROUND({a} * 100.0 / NULLIF({b}, 0), {decimals})");
+        let mut items: Vec<String> = groups
+            .iter()
+            .map(|g| format!("{} AS {}", q(g), q(g)))
+            .collect();
+        items.push(format!("{b} AS {}", q("预算数")));
+        items.push(format!("{a} AS {}", q("实际数")));
+        items.push(format!("{rate_expr} AS {}", q("执行率")));
+        items.push(format!("ROUND({a} - {b}, {decimals}) AS {}", q("差额")));
+        items.push(format!(
+            "CASE WHEN {b} = 0 THEN '无预算' WHEN {rate_expr} > {warning} THEN '超支' ELSE '正常' END AS {}",
+            q(&status_out)
+        ));
+        let group_by = if groups.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " GROUP BY {}",
+                groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let cte = self.push_cte(format!(
+            "SELECT {} FROM {} WHERE {} IS NOT NULL OR {} IS NOT NULL{group_by}",
+            items.join(", "),
+            self.cur,
+            q(&budget),
+            q(&actual)
+        ));
+        let mut cols: Vec<DatasetColumn> = groups
+            .iter()
+            .map(|g| DatasetColumn {
+                name: g.clone(),
+                dtype: self
+                    .columns
+                    .iter()
+                    .find(|c| &c.name == g)
+                    .map(|c| c.dtype.clone())
+                    .unwrap_or_else(|| "text".to_string()),
+            })
+            .collect();
+        for name in ["预算数", "实际数", "执行率", "差额"] {
+            cols.push(DatasetColumn {
+                name: name.to_string(),
+                dtype: "number".to_string(),
+            });
+        }
+        cols.push(DatasetColumn {
+            name: status_out.clone(),
+            dtype: "text".to_string(),
+        });
+        self.columns = cols;
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("预算执行分析：[{budget}] / [{actual}]")),
         ))
     }
 
@@ -4118,6 +4298,63 @@ pub fn validate_steps_with(
                     cols.push(out);
                 }
             }
+            "tax_calc" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                match f64_param(&p, "rate") {
+                    Some(rate) if (0.0..=1.0).contains(&rate) => {}
+                    Some(_) => step_errors.push("税率应在 0~1 之间（如 13% 填 0.13）".into()),
+                    None => step_errors.push("税率不能为空".into()),
+                }
+                let mode = str_param(&p, "mode");
+                if !mode.is_empty() && mode != "exclusive" && mode != "inclusive" {
+                    step_errors.push(format!("未知的金额口径: {mode}"));
+                }
+                let mut outs = Vec::new();
+                for (key, fallback) in [
+                    ("net_out", "不含税金额"),
+                    ("tax_out", "税额"),
+                    ("gross_out", "含税金额"),
+                ] {
+                    let name = defaulted(str_param(&p, key), fallback);
+                    if cols.contains(&name) || outs.contains(&name) {
+                        step_errors.push(format!("字段 [{name}] 已存在"));
+                    } else {
+                        outs.push(name);
+                    }
+                }
+                cols.extend(outs);
+            }
+            "budget_variance" => {
+                for (key, label) in [("budget_column", "预算金额"), ("actual_column", "实际金额")]
+                {
+                    let col = str_param(&p, key);
+                    if !cols.contains(&col) {
+                        step_errors.push(format!("{label}字段 [{col}] 不存在"));
+                    }
+                }
+                if str_param(&p, "budget_column") == str_param(&p, "actual_column") {
+                    step_errors.push("预算金额与实际金额不能是同一字段".into());
+                }
+                let groups = list_param(&p, "group_by");
+                for g in &groups {
+                    if !cols.contains(g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+                let status = defaulted(str_param(&p, "status_out"), "预算状态");
+                if groups.contains(&status) {
+                    step_errors.push(format!("状态字段 [{status}] 与分组字段重名"));
+                }
+                let mut next = groups;
+                for name in ["预算数", "实际数", "执行率", "差额"] {
+                    next.push(name.to_string());
+                }
+                next.push(status);
+                cols = next;
+            }
             "depreciation" => {
                 let original = str_param(&p, "original");
                 if !cols.contains(&original) {
@@ -5463,5 +5700,104 @@ mod tests {
         );
         assert_eq!(result.status, "failed");
         assert!(result.message.unwrap_or_default().contains("超出"));
+    }
+
+    #[test]
+    fn tax_calc_splits_exclusive_and_inclusive_amounts() {
+        let (mut conn, ds_id) = setup_custom(&[("金额", "number")], &[vec!["100"], vec!["113"]]);
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_tax_exclusive",
+            json!([
+                { "id": "s1", "operator": "tax_calc",
+                  "params": { "column": "金额", "rate": 0.13, "mode": "exclusive" } },
+                { "id": "s2", "operator": "output", "params": { "name": "价外税" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        // 金额、不含税金额、税额、含税金额
+        assert_eq!(page.rows[0][1], json!(100.0));
+        assert_eq!(page.rows[0][2], json!(13.0));
+        assert_eq!(page.rows[0][3], json!(113.0));
+
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_tax_inclusive",
+            json!([
+                { "id": "s1", "operator": "tax_calc",
+                  "params": { "column": "金额", "rate": 0.13, "mode": "inclusive" } },
+                { "id": "s2", "operator": "output", "params": { "name": "价内税" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        // 113 含税 → 100 不含税、13 税额、113 含税
+        assert_eq!(page.rows[1][1], json!(100.0));
+        assert_eq!(page.rows[1][2], json!(13.0));
+        assert_eq!(page.rows[1][3], json!(113.0));
+    }
+
+    #[test]
+    fn budget_variance_reports_execution_rate_and_status() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("部门", "text"), ("预算", "number"), ("实际", "number")],
+            &[vec!["研发", "1000", "1100"], vec!["市场", "500", "300"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_budget",
+            json!([
+                { "id": "s1", "operator": "budget_variance",
+                  "params": { "budget_column": "预算", "actual_column": "实际",
+                              "group_by": ["部门"], "warning_rate": 100 } },
+                { "id": "s2", "operator": "output", "params": { "name": "预算执行" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        // 部门、预算数、实际数、执行率、差额、预算状态
+        let row = page
+            .rows
+            .iter()
+            .find(|r| r[0] == json!("研发"))
+            .expect("研发行");
+        assert_eq!(row[1], json!(1000.0));
+        assert_eq!(row[2], json!(1100.0));
+        assert_eq!(row[3], json!(110.0));
+        assert_eq!(row[4], json!(100.0));
+        assert_eq!(row[5], json!("超支"));
+
+        let market = page
+            .rows
+            .iter()
+            .find(|r| r[0] == json!("市场"))
+            .expect("市场行");
+        assert_eq!(market[3], json!(60.0));
+        assert_eq!(market[4], json!(-200.0));
+        assert_eq!(market[5], json!("正常"));
+    }
+
+    #[test]
+    fn validate_steps_checks_tax_and_budget_params() {
+        let columns = vec!["金额".to_string(), "预算".to_string(), "实际".to_string()];
+        let result = validate_steps(
+            &steps(json!([
+                { "id": "s1", "operator": "tax_calc",
+                  "params": { "column": "金额", "rate": 1.5 } },
+                { "id": "s2", "operator": "budget_variance",
+                  "params": { "budget_column": "预算", "actual_column": "预算" } }
+            ])),
+            &columns,
+        );
+        let messages: Vec<String> = result.steps.iter().flat_map(|s| s.errors.clone()).collect();
+        assert!(messages.iter().any(|m| m.contains("税率")));
+        assert!(messages.iter().any(|m| m.contains("同一字段")));
     }
 }
