@@ -265,6 +265,8 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号 / 统一社会信用代码校验 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `sum_check` | 合计一致性校验：校验合计字段是否等于各明细字段之和（总成绩、发票金额） |
+| `outlier_check` | 异常值检测：按分组均值与标准差检测偏离超过 k 倍的异常值，可输出标记列 |
+| `room_capacity_check` | 考场容量校验：检查各考场人数是否超过固定容量或容量字段 |
 | `voucher_check` | 凭证号连续性校验：检查重复与断号，可按期间/账套分组，自动识别「记-001」前缀编号 |
 | `balance_check` | 按凭证号汇总借贷方，检查每张凭证是否平衡 |
 | `shuffle` | 随机打散行顺序；按学校/岗位分组后各组轮流穿插，避免同组考生连号相邻 |

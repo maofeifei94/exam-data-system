@@ -418,6 +418,8 @@ impl<'a> Compiler<'a> {
             "group_top_n" => self.op_group_top_n(step_index, step, &params),
             "assign_seats" => self.op_assign_seats(step_index, step, &params),
             "sum_check" => self.op_sum_check(step_index, step, &params),
+            "outlier_check" => self.op_outlier_check(step_index, step, &params),
+            "room_capacity_check" => self.op_room_capacity_check(step_index, step, &params),
             "voucher_check" => self.op_voucher_check(step_index, step, &params),
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
@@ -2591,6 +2593,137 @@ impl<'a> Compiler<'a> {
                 format!("合计 [{total}] 与明细之和一致")
             } else {
                 format!("有 {bad} 行合计不一致，已按警告继续")
+            }),
+        ))
+    }
+
+    fn op_outlier_check(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let groups = list_param(p, "group_by");
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let k = f64_param(p, "k").unwrap_or(3.0);
+        if k <= 0.0 {
+            return Err("倍数阈值必须大于 0".to_string());
+        }
+        let flag_out = str_param(p, "flag_out");
+        if !flag_out.is_empty() && self.has_column(&flag_out) {
+            return Err(format!("字段 [{flag_out}] 已存在"));
+        }
+        let f = q(&col);
+        let partition = if groups.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "PARTITION BY {} ",
+                groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let avg = format!("AVG(CAST({f} AS REAL)) OVER ({partition})");
+        let var = format!(
+            "MAX(0, AVG(CAST({f} AS REAL) * CAST({f} AS REAL)) OVER ({partition}) - ({avg}) * ({avg}))"
+        );
+        let flag = format!(
+            "CASE WHEN {f} IS NOT NULL AND ABS(CAST({f} AS REAL) - ({avg})) > {k} * SQRT({var}) \
+             THEN '异常' ELSE '' END"
+        );
+        let count_sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM (SELECT {flag} AS \"__flag\" FROM {} WHERE {f} IS NOT NULL) WHERE \"__flag\" = '异常'",
+            self.cur
+        ));
+        let bad: i64 = self
+            .conn
+            .query_row(&count_sql, [], |r| r.get(0))
+            .map_err(|e| format!("异常值检测失败: {e}"))?;
+        let cte = if flag_out.is_empty() {
+            None
+        } else {
+            let cte = self.push_cte(format!(
+                "SELECT *, {flag} AS {} FROM {}",
+                q(&flag_out),
+                self.cur
+            ));
+            self.add_column(DatasetColumn {
+                name: flag_out.clone(),
+                dtype: "text".to_string(),
+            });
+            Some(cte)
+        };
+        if bad > 0 && str_param(p, "on_error") == "fail" {
+            return Err(format!(
+                "字段 [{col}] 检测到 {bad} 个异常值（超过 {k} 倍标准差）"
+            ));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            cte,
+            Some(if bad == 0 {
+                format!("字段 [{col}] 未检测到异常值")
+            } else {
+                format!("字段 [{col}] 检测到 {bad} 个异常值，已按警告继续")
+            }),
+        ))
+    }
+
+    fn op_room_capacity_check(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let room = str_param(p, "room");
+        if !self.has_column(&room) {
+            return Err(format!("字段 [{room}] 不存在"));
+        }
+        let capacity_field = str_param(p, "capacity_field");
+        if !capacity_field.is_empty() && !self.has_column(&capacity_field) {
+            return Err(format!("容量字段 [{capacity_field}] 不存在"));
+        }
+        let capacity = num_param(p, "capacity").unwrap_or(30);
+        let r = q(&room);
+        let having = if capacity_field.is_empty() {
+            format!("COUNT(*) > {capacity}")
+        } else {
+            format!(
+                "COUNT(*) > COALESCE(MAX(CAST({} AS REAL)), 0)",
+                q(&capacity_field)
+            )
+        };
+        let sql = self.with_ctes(&format!(
+            "SELECT COUNT(*) FROM (SELECT {r} FROM {} WHERE TRIM(COALESCE(CAST({r} AS TEXT), '')) <> '' GROUP BY {r} HAVING {having})",
+            self.cur
+        ));
+        let over: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("考场容量校验失败: {e}"))?;
+        if over > 0 && str_param(p, "on_error") != "warn" {
+            return Err(format!("有 {over} 个考场人数超过容量上限"));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            None,
+            Some(if over == 0 {
+                "各考场人数均未超过容量上限".to_string()
+            } else {
+                format!("有 {over} 个考场超容量，已按警告继续")
             }),
         ))
     }
@@ -5670,6 +5803,41 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "outlier_check" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                for g in list_param(&p, "group_by") {
+                    if !cols.contains(&g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+                if f64_param(&p, "k").unwrap_or(3.0) <= 0.0 {
+                    step_errors.push("倍数阈值必须大于 0".into());
+                }
+                let flag = str_param(&p, "flag_out");
+                if !flag.is_empty() {
+                    if cols.contains(&flag) {
+                        step_errors.push(format!("字段 [{flag}] 已存在"));
+                    } else {
+                        cols.push(flag);
+                    }
+                }
+            }
+            "room_capacity_check" => {
+                let room = str_param(&p, "room");
+                if !cols.contains(&room) {
+                    step_errors.push(format!("字段 [{room}] 不存在"));
+                }
+                let cap = str_param(&p, "capacity_field");
+                if !cap.is_empty() && !cols.contains(&cap) {
+                    step_errors.push(format!("容量字段 [{cap}] 不存在"));
+                }
+                if num_param(&p, "capacity").unwrap_or(30) <= 0 {
+                    step_errors.push("容量上限必须大于 0".into());
+                }
+            }
             "sum_check" => {
                 let total = str_param(&p, "total");
                 let parts = list_param(&p, "parts");
@@ -7320,6 +7488,77 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn outlier_check_flags_values_beyond_threshold() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("成绩", "number")],
+            &[
+                vec!["甲", "10"],
+                vec!["乙", "10"],
+                vec!["丙", "10"],
+                vec!["丁", "10"],
+                vec!["戊", "100"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_outlier_warn",
+            json!([
+                { "id": "s1", "operator": "outlier_check",
+                  "params": { "column": "成绩", "k": 1, "flag_out": "异常标记", "on_error": "warn" } },
+                { "id": "s2", "operator": "output", "params": { "name": "异常检测" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let flagged = page.rows.iter().filter(|r| r[2] == json!("异常")).count();
+        assert_eq!(flagged, 1);
+
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_outlier_fail",
+            json!([{ "id": "s1", "operator": "outlier_check",
+                     "params": { "column": "成绩", "k": 1, "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+        assert!(failed.message.unwrap_or_default().contains("异常值"));
+    }
+
+    #[test]
+    fn room_capacity_check_detects_over_capacity_rooms() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text"), ("考场", "text")],
+            &[
+                vec!["甲", "A"],
+                vec!["乙", "A"],
+                vec!["丙", "A"],
+                vec!["丁", "B"],
+                vec!["戊", "B"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_capacity_fail",
+            json!([{ "id": "s1", "operator": "room_capacity_check",
+                     "params": { "room": "考场", "capacity": 2, "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+        assert!(failed.message.unwrap_or_default().contains("超过容量"));
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_capacity_warn",
+            json!([{ "id": "s1", "operator": "room_capacity_check",
+                     "params": { "room": "考场", "capacity": 2, "on_error": "warn" } }]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
     }
 
     #[test]

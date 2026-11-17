@@ -542,6 +542,46 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "outlier_check",
+            "异常值检测",
+            "校验",
+            "按分组计算均值与标准差，检测偏离超过 k 倍的异常值（3σ 原则），可输出异常标记列。",
+            vec![
+                p("column", "检测字段", "column", true, json!("")),
+                with_help(
+                    p("group_by", "分组字段（可空）", "columns", false, json!([])),
+                    "如按科目、部门分别计算均值与标准差",
+                ),
+                with_help(p("k", "倍数阈值", "number", false, json!(3)), "默认 3 倍标准差，越小越严格"),
+                with_help(
+                    p("flag_out", "异常标记字段名（可空）", "text", false, json!("")),
+                    "填写后输出「异常 / 空」标记列",
+                ),
+                with_options(
+                    p("on_error", "发现异常时", "enum", false, json!("warn")),
+                    &["fail", "warn"],
+                ),
+            ],
+        ),
+        def(
+            "room_capacity_check",
+            "考场容量校验",
+            "校验",
+            "检查每个考场人数是否超过容量上限，容量可为固定人数或容量字段。",
+            vec![
+                p("room", "考场字段", "column", true, json!("")),
+                with_help(p("capacity", "容量上限", "number", false, json!(30)), "未指定容量字段时使用该固定值"),
+                with_help(
+                    p("capacity_field", "容量字段（可空）", "column", false, json!("")),
+                    "按每个考场自己的容量上限比较",
+                ),
+                with_options(
+                    p("on_error", "超容量时", "enum", false, json!("fail")),
+                    &["fail", "warn"],
+                ),
+            ],
+        ),
+        def(
             "voucher_check",
             "凭证号连续性校验",
             "校验",
