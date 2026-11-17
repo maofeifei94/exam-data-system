@@ -27,6 +27,7 @@ export const DEFAULT_TABLE: TableSetup = {
   show_header: true,
   show_grid: true,
   summary_label: '合计',
+  wrap: false,
 };
 
 /** 按固定列宽优先、剩余均分的方式计算各列实际宽度。 */

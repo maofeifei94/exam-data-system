@@ -2770,6 +2770,14 @@ function ElementEditor({
             />
             显示网格线
           </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={table.wrap ?? false}
+              onChange={(event) => patchTable({ wrap: event.target.checked })}
+            />
+            单元格文字自动换行（超出列宽时按行高裁剪）
+          </label>
           <div className="tpl-mini-actions">
             <span>列配置</span>
             <button

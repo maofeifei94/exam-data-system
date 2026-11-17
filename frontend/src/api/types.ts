@@ -351,6 +351,8 @@ export interface TableSetup {
   show_grid: boolean;
   /** 汇总行首列文字 */
   summary_label?: string;
+  /** 单元格文字自动换行 */
+  wrap?: boolean;
 }
 
 export interface TemplateElement {

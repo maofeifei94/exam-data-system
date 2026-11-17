@@ -562,6 +562,9 @@ pub struct TableSetup {
     /// 汇总行首列文字（任意列配置了汇总时生效）
     #[serde(default = "default_summary_label")]
     pub summary_label: String,
+    /// 单元格文字自动换行（超出列宽时按行高裁剪）
+    #[serde(default)]
+    pub wrap: bool,
 }
 impl Default for TableSetup {
     fn default() -> Self {
@@ -572,6 +575,7 @@ impl Default for TableSetup {
             show_header: true,
             show_grid: true,
             summary_label: default_summary_label(),
+            wrap: false,
         }
     }
 }

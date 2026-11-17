@@ -696,7 +696,7 @@ impl<'a> Painter<'a> {
         cell.children.clear();
         cell.x_mm = 0.0;
         cell.y_mm = 0.0;
-        cell.wrap = false;
+        cell.wrap = setup.wrap;
         cell.rotate = 0.0;
 
         let mut y = origin.y_top;
@@ -758,7 +758,7 @@ impl<'a> Painter<'a> {
         cell.children.clear();
         cell.x_mm = 0.0;
         cell.y_mm = 0.0;
-        cell.wrap = false;
+        cell.wrap = setup.wrap;
         cell.rotate = 0.0;
         cell.bold = true;
         let mut cx = x;
@@ -2200,6 +2200,7 @@ mod tests {
             show_header: true,
             show_grid: true,
             summary_label: "合计".into(),
+            wrap: true,
         });
         let mut body = TemplateBody::default();
         body.elements.push(table);
