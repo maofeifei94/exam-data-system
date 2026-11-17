@@ -262,7 +262,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `data_profile` | 数据概览：逐字段统计非空数、空值数、去重数、最小/最大值、平均值 |
 | `not_null_check` | 空值校验：指定字段出现 NULL / 空字符串时终止或警告 |
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
-| `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号格式校验 |
+| `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号 / 统一社会信用代码校验 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
 | `sum_check` | 合计一致性校验：校验合计字段是否等于各明细字段之和（总成绩、发票金额） |
 | `voucher_check` | 凭证号连续性校验：检查重复与断号，可按期间/账套分组，自动识别「记-001」前缀编号 |
@@ -272,6 +272,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `join_dataset` | 按关键字段关联另一个数据集（VLOOKUP），可选取字段、左/内连接与字段前缀 |
 | `append_dataset` | 纵向合并另一个数据集，按字段名对齐、缺失补空，可选去重 |
 | `split_column` | 按分隔符把一列拆成多列（`考场-座位` → 考场、座位） |
+| `name_split` | 姓名拆分：识别欧阳、司马、上官等常见复姓，输出姓与名 |
 | `value_map` | 值映射替换（男→M、缺考→0），未匹配值可选保留 |
 | `text_clean` | 去首尾空白、去空格换行、大小写转换、全角转半角 |
 | `sequence` | 行号/序号，支持分组内重新编号 |
@@ -303,6 +304,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `full_to_half(text)` | 全角字符转半角 |
 | `aging_bucket(value, mode, buckets)` | 账龄区间标签，mode 为 `date` / `days` |
 | `is_mobile(x)` / `is_email(x)` / `is_bank_card(x)` | 格式校验，返回 1 / 0 |
+| `is_uscc(x)` | 统一社会信用代码校验（GB 32100-2015，含加权校验位） |
 
 ### 4.7 流程编译（`engine/mod.rs`）
 

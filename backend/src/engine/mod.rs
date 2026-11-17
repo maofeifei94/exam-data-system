@@ -419,6 +419,7 @@ impl<'a> Compiler<'a> {
             "voucher_check" => self.op_voucher_check(step_index, step, &params),
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
+            "name_split" => self.op_name_split(step_index, step, &params),
             "join_dataset" => self.op_join_dataset(step_index, step, &params),
             "append_dataset" => self.op_append_dataset(step_index, step, &params),
             "unpivot" => self.op_unpivot(step_index, step, &params),
@@ -2731,6 +2732,7 @@ impl<'a> Compiler<'a> {
             "id_card" => ("id_card_valid", "身份证号"),
             "email" => ("is_email", "邮箱"),
             "bank_card" => ("is_bank_card", "银行卡号"),
+            "uscc" => ("is_uscc", "统一社会信用代码"),
             _ => ("is_mobile", "手机号"),
         };
         let f = q(&col);
@@ -3057,6 +3059,66 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("按「{delimiter}」拆分 [{col}]，新增 {parts} 列")),
+        ))
+    }
+
+    fn op_name_split(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let surname_out = defaulted(str_param(p, "surname_out"), "姓");
+        let given_out = defaulted(str_param(p, "given_out"), "名");
+        for out in [&surname_out, &given_out] {
+            if self.has_column(out) {
+                return Err(format!("字段 [{out}] 已存在"));
+            }
+        }
+        if surname_out == given_out {
+            return Err("姓与名字段名不能相同".to_string());
+        }
+        // 常见复姓；两字以内无法继续拆分的情况由长度判断兜底。
+        let compound = "'欧阳','司马','上官','诸葛','东方','皇甫','尉迟','公孙','慕容','令狐',\
+                        '长孙','宇文','司徒','司空','夏侯','轩辕','独孤','南宫','西门','东郭',\
+                        '呼延','端木','闻人','赫连','澹台','公冶','太史','申屠','公羊','乐正',\
+                        '宗政','濮阳','淳于','单于','仲孙','钟离','拓跋','百里','东野','鲜于',\
+                        '第五','梁丘','左丘','微生','羊舌','颛孙','巫马','公西','漆雕','南郭'";
+        let src = format!(
+            "(SELECT *, TRIM(CAST({} AS TEXT)) AS \"__full_name\" FROM {}) t",
+            q(&col),
+            self.cur
+        );
+        let surname = format!(
+            "CASE WHEN LENGTH(\"__full_name\") <= 1 THEN \"__full_name\" \
+             WHEN SUBSTR(\"__full_name\", 1, 2) IN ({compound}) THEN SUBSTR(\"__full_name\", 1, 2) \
+             ELSE SUBSTR(\"__full_name\", 1, 1) END"
+        );
+        let given = format!(
+            "CASE WHEN LENGTH(\"__full_name\") <= 1 THEN '' \
+             WHEN SUBSTR(\"__full_name\", 1, 2) IN ({compound}) THEN SUBSTR(\"__full_name\", 3) \
+             ELSE SUBSTR(\"__full_name\", 2) END"
+        );
+        let mut items: Vec<String> = self.columns.iter().map(|c| q(&c.name)).collect();
+        items.push(format!("{surname} AS {}", q(&surname_out)));
+        items.push(format!("{given} AS {}", q(&given_out)));
+        let cte = self.push_cte(format!("SELECT {} FROM {src}", items.join(", ")));
+        self.add_column(DatasetColumn {
+            name: surname_out.clone(),
+            dtype: "text".to_string(),
+        });
+        self.add_column(DatasetColumn {
+            name: given_out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "拆分姓名 [{col}] → [{surname_out}] / [{given_out}]"
+            )),
         ))
     }
 
@@ -5538,6 +5600,25 @@ pub fn validate_steps_with(
                     step_errors.push("拆分段数应在 1~20 之间".into());
                 }
             }
+            "name_split" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                let surname = defaulted(str_param(&p, "surname_out"), "姓");
+                let given = defaulted(str_param(&p, "given_out"), "名");
+                if surname == given {
+                    step_errors.push("姓与名字段名不能相同".into());
+                } else {
+                    for out in [surname, given] {
+                        if cols.contains(&out) {
+                            step_errors.push(format!("字段 [{out}] 已存在"));
+                        } else {
+                            cols.push(out);
+                        }
+                    }
+                }
+            }
             "unpivot" => {
                 let keep = list_param(&p, "keep");
                 let cols_to_melt = list_param(&p, "columns");
@@ -6995,6 +7076,77 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn format_check_supports_unified_social_credit_code() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("单位名称", "text"), ("信用代码", "text")],
+            &[
+                vec!["甲公司", "91350100M000100Y43"],
+                vec!["乙公司", "91350100M000100Y44"],
+            ],
+        );
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_uscc_fail",
+            json!([{ "id": "s1", "operator": "format_check",
+                     "params": { "column": "信用代码", "mode": "uscc", "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+        assert!(failed
+            .message
+            .unwrap_or_default()
+            .contains("统一社会信用代码"));
+
+        let warned = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_uscc_warn",
+            json!([{ "id": "s1", "operator": "format_check",
+                     "params": { "column": "信用代码", "mode": "uscc", "on_error": "warn" } }]),
+        );
+        assert_eq!(warned.status, "success", "{:?}", warned.message);
+    }
+
+    #[test]
+    fn name_split_handles_compound_surnames() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("姓名", "text")],
+            &[vec!["欧阳娜娜"], vec!["张三"], vec!["李"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_name_split",
+            json!([
+                { "id": "s1", "operator": "name_split",
+                  "params": { "column": "姓名", "surname_out": "姓", "given_out": "名" } },
+                { "id": "s2", "operator": "output", "params": { "name": "姓名拆分" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let split_of = |name: &str| {
+            page.rows
+                .iter()
+                .find(|r| r[0] == json!(name))
+                .map(|r| {
+                    (
+                        r[1].as_str().unwrap().to_string(),
+                        r[2].as_str().unwrap().to_string(),
+                    )
+                })
+                .expect("name row")
+        };
+        assert_eq!(
+            split_of("欧阳娜娜"),
+            ("欧阳".to_string(), "娜娜".to_string())
+        );
+        assert_eq!(split_of("张三"), ("张".to_string(), "三".to_string()));
+        assert_eq!(split_of("李"), ("李".to_string(), String::new()));
     }
 
     #[test]

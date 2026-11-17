@@ -258,6 +258,10 @@ pub fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
         let value: Option<String> = ctx.get(0)?;
         Ok(value.map(|s| is_bank_card(&s) as i64).unwrap_or(0))
     })?;
+    conn.create_scalar_function("is_uscc", 1, flags, |ctx| {
+        let value: Option<String> = ctx.get(0)?;
+        Ok(value.map(|s| is_uscc(&s) as i64).unwrap_or(0))
+    })?;
     conn.create_scalar_function("num_suffix", 1, flags, |ctx| {
         let text: Option<String> = ctx.get(0)?;
         Ok(text.as_deref().and_then(num_suffix))
@@ -292,6 +296,30 @@ pub fn split_part(text: &str, delim: &str, index: i64) -> Option<String> {
     text.split(delim)
         .nth((index - 1) as usize)
         .map(|s| s.to_string())
+}
+
+/// 校验统一社会信用代码（18 位）：字符集与加权校验位。
+///
+/// 采用国家标准 GB 32100-2015 的 31 进制字符集与权重。
+pub fn is_uscc(text: &str) -> bool {
+    const CHARSET: &[u8] = b"0123456789ABCDEFGHJKLMNPQRTUWXY";
+    const WEIGHTS: [u32; 17] = [
+        1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28,
+    ];
+    let code = text.trim().to_ascii_uppercase();
+    if code.len() != 18 || !code.is_ascii() {
+        return false;
+    }
+    let bytes = code.as_bytes();
+    let mut sum = 0u32;
+    for (index, byte) in bytes[..17].iter().enumerate() {
+        let Some(value) = CHARSET.iter().position(|c| c == byte) else {
+            return false;
+        };
+        sum += value as u32 * WEIGHTS[index];
+    }
+    let expected = CHARSET[((31 - sum % 31) % 31) as usize];
+    bytes[17] == expected
 }
 
 /// 提取文本末尾的连续数字，例如 `记-001` → 1、`20260012` → 20260012。

@@ -519,12 +519,12 @@ pub fn catalog() -> Vec<OperatorDef> {
             "format_check",
             "格式校验",
             "校验",
-            "校验手机号、身份证号、邮箱、银行卡号等格式，考试报名与财务付款前常用。",
+            "校验手机号、身份证号、邮箱、银行卡号、统一社会信用代码等格式，考试报名与财务付款前常用。",
             vec![
                 p("column", "待校验字段", "column", true, json!("")),
                 with_options(
                     p("mode", "格式类型", "enum", false, json!("mobile")),
-                    &["mobile", "id_card", "email", "bank_card"],
+                    &["mobile", "id_card", "email", "bank_card", "uscc"],
                 ),
                 with_options(p("on_error", "发现格式错误时", "enum", false, json!("fail")), &["fail", "warn"]),
             ],
@@ -627,6 +627,17 @@ pub fn catalog() -> Vec<OperatorDef> {
                 ),
                 with_options(p("join_type", "关联方式", "enum", false, json!("left")), &["left", "inner"]),
                 with_help(p("prefix", "字段前缀", "text", false, json!("")), "如填「档案_」，关联字段会变成「档案_姓名」"),
+            ],
+        ),
+        def(
+            "name_split",
+            "姓名拆分",
+            "字段",
+            "把姓名拆成姓与名，可识别欧阳、司马、上官等常见复姓，适合报名表与准考证分栏。",
+            vec![
+                p("column", "姓名字段", "column", true, json!("")),
+                p("surname_out", "姓字段名", "text", false, json!("姓")),
+                p("given_out", "名字段名", "text", false, json!("名")),
             ],
         ),
         def(
