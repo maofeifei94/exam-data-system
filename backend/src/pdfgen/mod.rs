@@ -692,6 +692,8 @@ impl<'a> Painter<'a> {
     /// 页眉、页脚、页码与水印。每页绘制一次，支持页面分组字段（如考场号）。
     fn page_decoration(&self, body: &TemplateBody, ctx: &Ctx<'_>, page_w: f32, m: &Margins) {
         let content_w = (page_w - m.left - m.right).max(10.0);
+        let chrome_size = body.chrome_font_size.max(4.0);
+        let chrome_color = body.chrome_color.as_str();
         if body.page_border {
             let content_h = (self.page_h - m.top - m.bottom).max(10.0);
             let llx = m.left;
@@ -710,18 +712,39 @@ impl<'a> Painter<'a> {
         let header = interpolate(&body.header_text, ctx);
         if !header.trim().is_empty() {
             let y = (m.top - 8.0).max(2.0);
-            self.chrome_text(&header, m.left, y, content_w, "left");
+            self.chrome_text(
+                &header,
+                m.left,
+                y,
+                content_w,
+                "left",
+                (chrome_size, chrome_color),
+            );
         }
         let footer = interpolate(&body.footer_text, ctx);
         if !footer.trim().is_empty() {
             let y = self.page_h - m.bottom + 1.5;
-            self.chrome_text(&footer, m.left, y, content_w * 0.72, "left");
+            self.chrome_text(
+                &footer,
+                m.left,
+                y,
+                content_w * 0.72,
+                "left",
+                (chrome_size, chrome_color),
+            );
         }
         if body.show_page_number {
             let text = format!("第 {} 页 / 共 {} 页", ctx.page, ctx.pages.max(ctx.page));
             let y = self.page_h - m.bottom + 1.5;
             let x = m.left + content_w * 0.72;
-            self.chrome_text(&text, x, y, content_w * 0.28, "right");
+            self.chrome_text(
+                &text,
+                x,
+                y,
+                content_w * 0.28,
+                "right",
+                (chrome_size, chrome_color),
+            );
         }
         let watermark = interpolate(&body.watermark, ctx);
         if !watermark.trim().is_empty() {
@@ -773,17 +796,25 @@ impl<'a> Painter<'a> {
         );
     }
 
-    fn chrome_text(&self, text: &str, x_mm: f32, y_top: f32, w_mm: f32, align: &str) {
-        let size = 9.0f32;
+    fn chrome_text(
+        &self,
+        text: &str,
+        x_mm: f32,
+        y_top: f32,
+        w_mm: f32,
+        align: &str,
+        style: (f32, &str),
+    ) {
+        let (size, color) = style;
         let tw = text_width_mm(text, size);
         let x = match align {
             "center" => x_mm + (w_mm - tw) / 2.0,
             "right" => x_mm + w_mm - tw,
             _ => x_mm,
         };
-        // 页眉页脚使用浅灰色，避免与正文抢视线。
+        // 默认浅灰色，避免与正文抢视线；模板可自定义颜色。
         self.layer
-            .set_fill_color(Color::Rgb(Rgb::new(0.42, 0.45, 0.5, None)));
+            .set_fill_color(color_of(color).unwrap_or(Color::Rgb(Rgb::new(0.42, 0.45, 0.5, None))));
         let baseline = self.page_h - (y_top + size * MM_PER_PT * 0.8);
         self.layer
             .use_text(text, size, Mm(x), Mm(baseline), self.font);
@@ -1418,6 +1449,27 @@ mod tests {
         let rows = vec![vec!["2026001".into()]];
         let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
             .expect("render qr");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn chrome_font_size_and_color_render() {
+        let cols = vec![DatasetColumn {
+            name: "姓名".into(),
+            dtype: "text".into(),
+        }];
+        let body = TemplateBody {
+            header_text: "考试名单".into(),
+            footer_text: "内部资料".into(),
+            chrome_font_size: 12.0,
+            chrome_color: "#1E40AF".into(),
+            show_page_number: true,
+            ..Default::default()
+        };
+        let rows = vec![vec!["张三".into()]];
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
+            .expect("render chrome");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
     }

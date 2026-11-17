@@ -390,6 +390,10 @@ export interface PdfTemplate {
   header_text: string;
   /** 页脚文字，支持 {字段} 占位符 */
   footer_text: string;
+  /** 页眉页脚字号（pt） */
+  chrome_font_size: number;
+  /** 页眉页脚颜色 */
+  chrome_color: string;
   /** 水印文字，为空表示不添加 */
   watermark: string;
   /** 水印平铺整页（默认单个居中水印） */
@@ -420,6 +424,8 @@ export interface PdfTemplateInput {
   background_image?: string;
   header_text?: string;
   footer_text?: string;
+  chrome_font_size?: number;
+  chrome_color?: string;
   watermark?: string;
   watermark_tile?: boolean;
   show_page_number?: boolean;

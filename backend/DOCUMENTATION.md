@@ -409,7 +409,8 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   路径支持 `{字段}` 占位符，其中字段同样纳入必需字段校验，适合证书底纹、防伪底图。
 - **页眉页脚 / 页码 / 水印**：`header_text`、`footer_text`、`watermark` 均支持
   `{字段}` 与 `{{page}}` / `{{pages}}` / `{{count}}` 占位符，每页绘制一次；
-  `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」。
+  `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」；
+  `chrome_font_size` 与 `chrome_color` 控制页眉页脚字号和颜色（默认 9pt 浅灰）。
   水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；
   打开 `watermark_tile` 后按页面尺寸平铺成网格水印，适合试卷、证照防复印。
 - **页面边框**：`page_border` 打开后沿内容区绘制边框，`page_border_width_mm` 与

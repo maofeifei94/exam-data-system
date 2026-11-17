@@ -83,6 +83,9 @@ interface TemplateDraft {
   headerText: string;
   /** 页脚文字，支持 {字段} 占位符 */
   footerText: string;
+  /** 页眉页脚字号与颜色 */
+  chromeFontSize: number;
+  chromeColor: string;
   /** 水印文字，为空表示不添加 */
   watermark: string;
   /** 水印平铺整页 */
@@ -121,6 +124,8 @@ const EMPTY_DRAFT: TemplateDraft = {
   backgroundImage: '',
   headerText: '',
   footerText: '',
+  chromeFontSize: 9,
+  chromeColor: '#6B7280',
   watermark: '',
   watermarkTile: false,
   showPageNumber: false,
@@ -1200,6 +1205,8 @@ export default function TemplatePage({
     background_image: draft.backgroundImage.trim(),
     header_text: draft.headerText.trim(),
     footer_text: draft.footerText.trim(),
+    chrome_font_size: draft.chromeFontSize,
+    chrome_color: draft.chromeColor,
     watermark: draft.watermark.trim(),
     watermark_tile: draft.watermarkTile,
     show_page_number: draft.showPageNumber,
@@ -2035,6 +2042,8 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     backgroundImage: template.background_image ?? '',
     headerText: template.header_text ?? '',
     footerText: template.footer_text ?? '',
+    chromeFontSize: template.chrome_font_size ?? 9,
+    chromeColor: template.chrome_color ?? '#6B7280',
     watermark: template.watermark ?? '',
     watermarkTile: Boolean(template.watermark_tile),
     showPageNumber: Boolean(template.show_page_number),
@@ -2288,6 +2297,24 @@ function PagePanel({
             }
           />
         </label>
+        <div className="grid-2">
+          <NumberField
+            label="页眉页脚字号 (pt)"
+            step={0.5}
+            value={draft.chromeFontSize}
+            onChange={(value) => onDraft((prev) => ({ ...prev, chromeFontSize: value }))}
+          />
+          <label className="field">
+            <span className="field-label">页眉页脚颜色</span>
+            <input
+              type="color"
+              value={toHex(draft.chromeColor)}
+              onChange={(event) =>
+                onDraft((prev) => ({ ...prev, chromeColor: event.target.value }))
+              }
+            />
+          </label>
+        </div>
         <label className="field">
           <span className="field-label">水印</span>
           <input

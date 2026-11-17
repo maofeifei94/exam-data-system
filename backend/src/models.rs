@@ -654,6 +654,12 @@ pub struct TemplateBody {
     /// 页脚文字，支持占位符
     #[serde(default)]
     pub footer_text: String,
+    /// 页眉页脚字号（pt）
+    #[serde(default = "default_chrome_font_size")]
+    pub chrome_font_size: f32,
+    /// 页眉页脚颜色
+    #[serde(default = "default_chrome_color")]
+    pub chrome_color: String,
     /// 页面水印文字，支持占位符；为空表示不添加水印
     #[serde(default)]
     pub watermark: String,
@@ -677,6 +683,12 @@ pub struct TemplateBody {
 fn default_page_border_width() -> f32 {
     0.4
 }
+fn default_chrome_font_size() -> f32 {
+    9.0
+}
+fn default_chrome_color() -> String {
+    "#6B7280".to_string()
+}
 fn default_page() -> PageSetup {
     PageSetup {
         size: default_page_size(),
@@ -697,6 +709,8 @@ impl Default for TemplateBody {
             background_image: String::new(),
             header_text: String::new(),
             footer_text: String::new(),
+            chrome_font_size: default_chrome_font_size(),
+            chrome_color: default_chrome_color(),
             watermark: String::new(),
             watermark_tile: false,
             show_page_number: false,
@@ -903,6 +917,9 @@ pub struct PdfTemplate {
     pub background_image: String,
     pub header_text: String,
     pub footer_text: String,
+    /// 页眉页脚字号（pt）
+    pub chrome_font_size: f32,
+    pub chrome_color: String,
     pub watermark: String,
     pub watermark_tile: bool,
     pub show_page_number: bool,
@@ -942,6 +959,10 @@ pub struct PdfTemplateInput {
     pub header_text: String,
     #[serde(default)]
     pub footer_text: String,
+    #[serde(default = "default_chrome_font_size")]
+    pub chrome_font_size: f32,
+    #[serde(default = "default_chrome_color")]
+    pub chrome_color: String,
     #[serde(default)]
     pub watermark: String,
     #[serde(default)]

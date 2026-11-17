@@ -400,6 +400,8 @@ describe('normalizeTemplate', () => {
     background_image: '',
     header_text: '',
     footer_text: '',
+    chrome_font_size: 9,
+    chrome_color: '#6B7280',
     watermark: '',
     watermark_tile: false,
     show_page_number: false,
