@@ -58,6 +58,7 @@ const GROUP_COLORS: Record<string, string> = {
   字段: '#0e7490',
   计算: '#0f766e',
   行: '#7c3aed',
+  分析: '#b91c1c',
   输出: '#334155',
 };
 

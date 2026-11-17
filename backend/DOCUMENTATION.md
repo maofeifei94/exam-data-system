@@ -251,6 +251,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `parse_id_card` | 身份证解析：出生日期、性别、年龄、校验位，可配置非法号码直接终止 |
 | `amount_upper` | 金额转中文大写（财务凭证） |
 | `percentage` | 占合计百分比，支持按分组分别计算 |
+| `data_profile` | 数据概览：逐字段统计非空数、空值数、去重数、最小/最大值、平均值 |
 | `not_null_check` | 空值校验：指定字段出现 NULL / 空字符串时终止或警告 |
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号格式校验 |

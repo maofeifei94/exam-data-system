@@ -345,6 +345,16 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "data_profile",
+            "数据概览",
+            "分析",
+            "逐字段统计非空数、空值数、去重数、最小/最大值与平均值，导入后先跑一遍可快速发现数据质量问题。",
+            vec![with_help(
+                p("columns", "统计字段（可空）", "columns", false, json!([])),
+                "留空表示统计全部字段",
+            )],
+        ),
+        def(
             "not_null_check",
             "空值校验",
             "校验",

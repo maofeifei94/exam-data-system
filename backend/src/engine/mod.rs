@@ -348,6 +348,7 @@ impl<'a> Compiler<'a> {
             "parse_id_card" => self.op_parse_id_card(step_index, step, &params),
             "amount_upper" => self.op_amount_upper(step_index, step, &params),
             "percentage" => self.op_percentage(step_index, step, &params),
+            "data_profile" => self.op_data_profile(step_index, step, &params),
             "not_null_check" => self.op_not_null_check(step_index, step, &params),
             "column_compare" => self.op_column_compare(step_index, step, &params),
             "format_check" => self.op_format_check(step_index, step, &params),
@@ -1698,6 +1699,90 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("计算 [{col}] 占比 → [{out}]")),
+        ))
+    }
+
+    fn op_data_profile(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let requested = list_param(p, "columns");
+        let cols: Vec<DatasetColumn> = if requested.is_empty() {
+            self.columns.clone()
+        } else {
+            let mut out: Vec<DatasetColumn> = Vec::new();
+            for name in &requested {
+                let Some(col) = self.columns.iter().find(|c| &c.name == name) else {
+                    return Err(format!("字段 [{name}] 不存在"));
+                };
+                out.push(col.clone());
+            }
+            out
+        };
+        if cols.is_empty() {
+            return Err("没有可统计的字段".to_string());
+        }
+        let mut selects: Vec<String> = Vec::new();
+        for col in &cols {
+            let f = q(&col.name);
+            let avg = if col.dtype == "number" {
+                format!("ROUND(AVG(CAST({f} AS REAL)), 2)")
+            } else {
+                "NULL".to_string()
+            };
+            selects.push(format!(
+                "SELECT '{}' AS \"字段名\",
+                        SUM(CASE WHEN {f} IS NOT NULL AND TRIM(CAST({f} AS TEXT)) <> '' THEN 1 ELSE 0 END) AS \"非空数\",
+                        SUM(CASE WHEN {f} IS NULL OR TRIM(CAST({f} AS TEXT)) = '' THEN 1 ELSE 0 END) AS \"空值数\",
+                        COUNT(DISTINCT {f}) AS \"去重数\",
+                        MIN({f}) AS \"最小值\",
+                        MAX({f}) AS \"最大值\",
+                        {avg} AS \"平均值\"
+                 FROM {}",
+                col.name.replace('\'', "''"),
+                self.cur
+            ));
+        }
+        let cte = self.push_cte(selects.join(" UNION ALL "));
+        self.columns = vec![
+            DatasetColumn {
+                name: "字段名".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "非空数".into(),
+                dtype: "number".into(),
+            },
+            DatasetColumn {
+                name: "空值数".into(),
+                dtype: "number".into(),
+            },
+            DatasetColumn {
+                name: "去重数".into(),
+                dtype: "number".into(),
+            },
+            DatasetColumn {
+                name: "最小值".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "最大值".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "平均值".into(),
+                dtype: "number".into(),
+            },
+        ];
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("已统计 {} 个字段", cols.len())),
         ))
     }
 
@@ -3719,6 +3804,22 @@ pub fn validate_steps(steps: &[FlowStep], columns: &[String]) -> ValidateResult 
                     cols.push(out);
                 }
             }
+            "data_profile" => {
+                for c in list_param(&p, "columns") {
+                    if !cols.contains(&c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                cols = vec![
+                    "字段名".to_string(),
+                    "非空数".to_string(),
+                    "空值数".to_string(),
+                    "去重数".to_string(),
+                    "最小值".to_string(),
+                    "最大值".to_string(),
+                    "平均值".to_string(),
+                ];
+            }
             "not_null_check" => {
                 let list = list_param(&p, "columns");
                 if list.is_empty() {
@@ -4588,6 +4689,30 @@ mod tests {
         );
         assert_eq!(result.status, "failed");
         assert!(result.message.unwrap_or_default().contains("借贷不平衡"));
+    }
+
+    #[test]
+    fn data_profile_summarizes_each_column() {
+        let (mut conn, ds_id) = setup();
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_profile",
+            json!([
+                { "id": "s1", "operator": "data_profile", "params": { "columns": [] } },
+                { "id": "s2", "operator": "output", "params": { "name": "数据概览" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows.len(), 3);
+        assert_eq!(page.columns[0].name, "字段名");
+        assert_eq!(page.rows[0][0], json!("姓名"));
+        assert_eq!(page.rows[0][1], json!(3.0));
+        assert_eq!(page.rows[0][2], json!(0.0));
+        assert_eq!(page.rows[1][0], json!("笔试成绩"));
+        assert_eq!(page.rows[1][6], json!(80.0));
     }
 
     #[test]
