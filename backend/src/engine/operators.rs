@@ -456,6 +456,16 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "append_dataset",
+            "纵向合并数据表",
+            "行",
+            "把另一个数据集的行追加到当前数据下面，按字段名对齐，缺失字段自动补空。适合合并多批报名表、多个月流水。",
+            vec![
+                with_help(p("dataset_id", "追加数据集", "dataset", true, json!("")), "选择要追加到当前数据后面的数据集"),
+                with_help(p("dedupe", "去除完全重复的行", "bool", false, json!(false)), "关闭时保留全部行（UNION ALL）"),
+            ],
+        ),
+        def(
             "join_dataset",
             "关联数据表",
             "字段",

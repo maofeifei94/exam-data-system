@@ -399,6 +399,7 @@ impl<'a> Compiler<'a> {
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
             "join_dataset" => self.op_join_dataset(step_index, step, &params),
+            "append_dataset" => self.op_append_dataset(step_index, step, &params),
             "value_map" => self.op_value_map(step_index, step, &params),
             "text_clean" => self.op_text_clean(step_index, step, &params),
             "sequence" => self.op_sequence(step_index, step, &params),
@@ -2332,6 +2333,57 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_append_dataset(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let right_id = str_param(p, "dataset_id");
+        if right_id.is_empty() {
+            return Err("请选择要追加的数据集".to_string());
+        }
+        let right_cols = store::get_columns(self.conn, &right_id)
+            .map_err(|e| format!("读取追加数据集字段失败: {e}"))?;
+        if right_cols.is_empty() {
+            return Err("追加数据集没有字段".to_string());
+        }
+        let table =
+            crate::db::table_name(&right_id).map_err(|e| format!("追加数据集不可用: {e}"))?;
+        let items: Vec<String> = self
+            .columns
+            .iter()
+            .map(
+                |col| match right_cols.iter().position(|c| c.name == col.name) {
+                    Some(idx) => format!("\"c{idx}\""),
+                    None => "NULL".to_string(),
+                },
+            )
+            .collect();
+        let union = if bool_param(p, "dedupe", false) {
+            "UNION"
+        } else {
+            "UNION ALL"
+        };
+        let body = format!(
+            "SELECT * FROM {} {union} SELECT {} FROM \"{}\"",
+            self.cur,
+            items.join(", "),
+            table
+        );
+        let before = self.count_current()?;
+        let cte = self.push_cte(body);
+        let total = self.count_current()?;
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            total,
+            Some(cte),
+            Some(format!("追加 {} 行（合并后 {total} 行）", total - before)),
+        ))
+    }
+
     fn op_join_dataset(
         &mut self,
         i: i64,
@@ -4211,6 +4263,11 @@ pub fn validate_steps_with(
                     }
                 }
             }
+            "append_dataset" => {
+                if str_param(&p, "dataset_id").is_empty() {
+                    step_errors.push("请选择要追加的数据集".into());
+                }
+            }
             "join_dataset" => {
                 let left = str_param(&p, "left_field");
                 if !cols.contains(&left) {
@@ -5011,6 +5068,63 @@ mod tests {
         let yi = names.iter().position(|n| *n == "乙").unwrap();
         assert_eq!(bank[jia], json!(500.0));
         assert_eq!(bank[yi], json!(90.0));
+    }
+
+    #[test]
+    fn append_dataset_unions_rows_by_column_name() {
+        let (mut conn, left_id) = setup_custom(
+            &[("学号", "text"), ("姓名", "text")],
+            &[vec!["001", "张三"]],
+        );
+        let right_cols = vec![
+            DatasetColumn {
+                name: "姓名".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "学号".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "备注".into(),
+                dtype: "text".into(),
+            },
+        ];
+        let right_rows = vec![
+            vec![Some("李四".into()), Some("002".into()), Some("补录".into())],
+            vec![Some("王五".into()), Some("003".into()), Some("补录".into())],
+        ];
+        let right = store::create_dataset(
+            &mut conn,
+            store::NewDataset {
+                name: "补录名单",
+                kind: "import",
+                source_file: "",
+                origin: "单元测试",
+                project_id: "",
+                columns: &right_cols,
+                rows: &right_rows,
+            },
+        )
+        .expect("right dataset");
+        let result = run_steps(
+            &mut conn,
+            &left_id,
+            "f_append",
+            json!([
+                { "id": "s1", "operator": "append_dataset",
+                  "params": { "dataset_id": right.id.clone(), "dedupe": false } },
+                { "id": "s2", "operator": "output", "params": { "name": "合并名单" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.columns.len(), 2);
+        assert_eq!(page.columns[0].name, "学号");
+        assert_eq!(page.rows.len(), 3);
+        assert_eq!(page.rows[1][0], json!("002"));
+        assert_eq!(page.rows[1][1], json!("李四"));
     }
 
     #[test]
