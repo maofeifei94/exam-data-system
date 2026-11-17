@@ -154,6 +154,16 @@ const FLOW_PRESETS: Array<{
     ],
   },
   {
+    name: '考后参考情况统计',
+    description: '按考点/考场统计应考、实考、缺考人数与参考率',
+    steps: [
+      {
+        operator: 'attendance_stats',
+        params: { column: '成绩', group_by: ['考点', '考场号'], decimals: 1 },
+      },
+    ],
+  },
+  {
     name: '成绩复核差异比对',
     description: '对比原始成绩与复核成绩，输出分差与复核状态',
     steps: [

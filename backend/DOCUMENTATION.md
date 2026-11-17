@@ -299,6 +299,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `grade_level` | 按分数阈值划分 A/B/C/D 等级 |
 | `standard_score` | Z 分 / T 分 / 百分位排名，支持按科目或考场分组 |
 | `score_summary` | 成绩统计汇总：人数、平均分、最高/最低分、及格率、优秀率、标准差 |
+| `attendance_stats` | 参考情况统计：按分组输出应考、实考、缺考人数与参考率（成绩为空视为缺考） |
 | `score_segment` | 分数段统计，可生成一分一段表并输出累计人数 |
 | `pivot` | 透视表：按某列取值展开成多列并汇总（科目成绩、月度收支） |
 | `group_top_n` | 每组取前 N：按分组和排序保留每组前 N 行，输出组内排名 |

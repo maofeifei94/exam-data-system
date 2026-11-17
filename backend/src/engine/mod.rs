@@ -466,6 +466,7 @@ impl<'a> Compiler<'a> {
             "grade_level" => self.op_grade_level(step_index, step, &params),
             "standard_score" => self.op_standard_score(step_index, step, &params),
             "score_summary" => self.op_score_summary(step_index, step, &params),
+            "attendance_stats" => self.op_attendance_stats(step_index, step, &params),
             "score_segment" => self.op_score_segment(step_index, step, &params),
             "pivot" => self.op_pivot(step_index, step, &params),
             "output" => self.op_output(step_index, step, &params),
@@ -5174,6 +5175,89 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    /// 参考情况统计：应考、实考、缺考人数与参考率。
+    fn op_attendance_stats(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let groups = list_param(p, "group_by");
+        for g in &groups {
+            if !self.has_column(g) {
+                return Err(format!("分组字段 [{g}] 不存在"));
+            }
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(1).max(0);
+        let present = format!("TRIM(COALESCE(CAST({} AS TEXT), '')) <> ''", q(&col));
+        let mut items: Vec<String> = groups
+            .iter()
+            .map(|g| format!("{} AS {}", q(g), q(g)))
+            .collect();
+        let summary: Vec<(&str, String)> = vec![
+            ("应考人数", "COUNT(*)".to_string()),
+            (
+                "实考人数",
+                format!("SUM(CASE WHEN {present} THEN 1 ELSE 0 END)"),
+            ),
+            (
+                "缺考人数",
+                format!("SUM(CASE WHEN {present} THEN 0 ELSE 1 END)"),
+            ),
+            (
+                "参考率",
+                format!(
+                    "ROUND(SUM(CASE WHEN {present} THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), {decimals})"
+                ),
+            ),
+        ];
+        for (name, expr) in &summary {
+            items.push(format!("{expr} AS {}", q(name)));
+        }
+        let group_by = if groups.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " GROUP BY {}",
+                groups.iter().map(|g| q(g)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let cte = self.push_cte(format!(
+            "SELECT {} FROM {}{group_by}",
+            items.join(", "),
+            self.cur
+        ));
+        let mut cols: Vec<DatasetColumn> = groups
+            .iter()
+            .map(|g| DatasetColumn {
+                name: g.clone(),
+                dtype: self
+                    .columns
+                    .iter()
+                    .find(|c| &c.name == g)
+                    .map(|c| c.dtype.clone())
+                    .unwrap_or_else(|| "text".to_string()),
+            })
+            .collect();
+        cols.extend(summary.iter().map(|(name, _)| DatasetColumn {
+            name: name.to_string(),
+            dtype: "number".to_string(),
+        }));
+        self.columns = cols;
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("参考情况统计：[{col}]")),
+        ))
+    }
+
     fn op_score_segment(
         &mut self,
         i: i64,
@@ -7132,6 +7216,22 @@ pub fn validate_steps_with(
                 }
                 cols = next;
             }
+            "attendance_stats" => {
+                let c = str_param(&p, "column");
+                if !cols.contains(&c) {
+                    step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+                let mut next = list_param(&p, "group_by");
+                for g in &next {
+                    if !cols.contains(g) {
+                        step_errors.push(format!("分组字段 [{g}] 不存在"));
+                    }
+                }
+                for name in ["应考人数", "实考人数", "缺考人数", "参考率"] {
+                    next.push(name.to_string());
+                }
+                cols = next;
+            }
             "score_segment" => {
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
@@ -8845,6 +8945,49 @@ mod tests {
         assert_eq!(page.rows[0][flag], json!(""));
         assert_eq!(page.rows[1][flag], json!("偏科"));
         assert_eq!(page.rows[2][flag], json!(""));
+    }
+
+    #[test]
+    fn attendance_stats_counts_absent_and_rate() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("考场号", "text"), ("姓名", "text"), ("成绩", "number")],
+            &[
+                vec!["1", "张三", "80"],
+                vec!["1", "李四", ""],
+                vec!["2", "王五", "70"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_attendance",
+            json!([
+                { "id": "s1", "operator": "attendance_stats",
+                  "params": { "column": "成绩", "group_by": ["考场号"] } },
+                { "id": "s2", "operator": "output", "params": { "name": "参考统计" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let col = |name: &str| {
+            page.columns
+                .iter()
+                .position(|c| c.name == name)
+                .expect("column")
+        };
+        let (expected, actual, absent, rate) = (
+            col("应考人数"),
+            col("实考人数"),
+            col("缺考人数"),
+            col("参考率"),
+        );
+        assert_eq!(page.rows[0][expected], json!(2.0));
+        assert_eq!(page.rows[0][actual], json!(1.0));
+        assert_eq!(page.rows[0][absent], json!(1.0));
+        assert_eq!(page.rows[0][rate], json!(50.0));
+        assert_eq!(page.rows[1][expected], json!(1.0));
+        assert_eq!(page.rows[1][rate], json!(100.0));
     }
 
     #[test]

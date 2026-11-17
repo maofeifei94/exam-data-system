@@ -1134,6 +1134,17 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "attendance_stats",
+            "参考情况统计",
+            "计算",
+            "按分组统计应考、实考、缺考人数与参考率；成绩为空视为缺考，适用于考后数据上报。",
+            vec![
+                p("column", "成绩字段", "column", true, json!("")),
+                with_help(p("group_by", "分组字段（可空）", "columns", false, json!([])), "如按考点、考场、学校分组"),
+                p("decimals", "参考率小数位", "number", false, json!(1)),
+            ],
+        ),
+        def(
             "score_segment",
             "分数段统计",
             "计算",
