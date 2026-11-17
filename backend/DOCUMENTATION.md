@@ -427,6 +427,7 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   `show_page_number` 打开后在页脚右侧显示「第 X 页 / 共 Y 页」，
   `page_number_start` 设置页码起始值（首页即显示为该值），
   `page_number_skip_first` 让封面等首页不显示页码；
+  `header_right_text` 在页眉右侧补充文字（如考场号、日期），始终右对齐；
   `header_align` / `footer_align` 控制页眉页脚的对齐方式（left / center / right）；
   `chrome_font_size` 与 `chrome_color` 控制页眉页脚字号和颜色（默认 9pt 浅灰）。
   水印采用浅灰色、居中、旋转 30°，绘制在正文之上，可用「内部资料」「{考点}」等提示词；

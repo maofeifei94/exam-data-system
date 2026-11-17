@@ -436,6 +436,7 @@ describe('normalizeTemplate', () => {
     all_required_fields: [],
     background_image: '',
     header_text: '',
+    header_right_text: '',
     footer_text: '',
     header_align: 'left',
     footer_align: 'left',

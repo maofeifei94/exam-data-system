@@ -747,6 +747,9 @@ pub struct TemplateBody {
     /// 页眉文字，支持 `{字段}` / `{{page}}` 等占位符，每页绘制一次
     #[serde(default)]
     pub header_text: String,
+    /// 页眉右侧附加文字（如考场号、日期），始终右对齐
+    #[serde(default)]
+    pub header_right_text: String,
     /// 页脚文字，支持占位符
     #[serde(default)]
     pub footer_text: String,
@@ -828,6 +831,7 @@ impl Default for TemplateBody {
             required_fields: Vec::new(),
             background_image: String::new(),
             header_text: String::new(),
+            header_right_text: String::new(),
             footer_text: String::new(),
             header_align: default_align(),
             footer_align: default_align(),
@@ -1021,6 +1025,7 @@ impl TemplateBody {
         push_field(&mut out, &self.matrix_index_field);
         collect_placeholders(&self.background_image, &mut out);
         collect_placeholders(&self.header_text, &mut out);
+        collect_placeholders(&self.header_right_text, &mut out);
         collect_placeholders(&self.footer_text, &mut out);
         collect_placeholders(&self.watermark, &mut out);
         for el in &self.elements {
@@ -1051,6 +1056,8 @@ pub struct PdfTemplate {
     /// 页面背景图路径（整页铺满）
     pub background_image: String,
     pub header_text: String,
+    /// 页眉右侧附加文字
+    pub header_right_text: String,
     pub footer_text: String,
     /// 页眉 / 页脚对齐
     pub header_align: String,
@@ -1103,6 +1110,8 @@ pub struct PdfTemplateInput {
     pub background_image: String,
     #[serde(default)]
     pub header_text: String,
+    #[serde(default)]
+    pub header_right_text: String,
     #[serde(default)]
     pub footer_text: String,
     #[serde(default = "default_align")]

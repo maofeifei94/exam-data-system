@@ -60,6 +60,7 @@ fn row_to_template(r: &rusqlite::Row<'_>) -> rusqlite::Result<(PdfTemplate, Stri
             all_required_fields,
             background_image: body.background_image,
             header_text: body.header_text,
+            header_right_text: body.header_right_text,
             footer_text: body.footer_text,
             header_align: body.header_align,
             footer_align: body.footer_align,
@@ -177,6 +178,7 @@ fn body_from_input(input: &PdfTemplateInput, kind: &str) -> TemplateBody {
             .collect(),
         background_image: input.background_image.trim().to_string(),
         header_text: input.header_text.trim().to_string(),
+        header_right_text: input.header_right_text.trim().to_string(),
         footer_text: input.footer_text.trim().to_string(),
         header_align: match input.header_align.trim() {
             "center" | "right" => input.header_align.trim().to_string(),

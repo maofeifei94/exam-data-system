@@ -987,14 +987,31 @@ impl<'a> Painter<'a> {
             );
         }
         let header = interpolate(&body.header_text, ctx);
+        let header_right = interpolate(&body.header_right_text, ctx);
+        let y = (m.top - 8.0).max(2.0);
         if !header.trim().is_empty() {
-            let y = (m.top - 8.0).max(2.0);
+            // 有右侧附加文字时，主文字只占左侧 60%，右侧固定右对齐。
+            let main_w = if header_right.trim().is_empty() {
+                content_w
+            } else {
+                content_w * 0.6
+            };
             self.chrome_text(
                 &header,
                 m.left,
                 y,
-                content_w,
+                main_w,
                 &body.header_align,
+                (chrome_size, chrome_color),
+            );
+        }
+        if !header_right.trim().is_empty() {
+            self.chrome_text(
+                &header_right,
+                m.left + content_w * 0.6,
+                y,
+                content_w * 0.4,
+                "right",
                 (chrome_size, chrome_color),
             );
         }
@@ -2211,6 +2228,7 @@ mod tests {
         let mut body = TemplateBody {
             page_field: "考场号".into(),
             header_text: "第 {考场号} 考场".into(),
+            header_right_text: "打印 {{date}}".into(),
             footer_text: "考试数据导出".into(),
             header_align: "center".into(),
             footer_align: "right".into(),

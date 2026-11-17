@@ -88,6 +88,8 @@ interface TemplateDraft {
   backgroundImage: string;
   /** 页眉文字，支持 {字段} 占位符 */
   headerText: string;
+  /** 页眉右侧附加文字 */
+  headerRightText: string;
   /** 页脚文字，支持 {字段} 占位符 */
   footerText: string;
   /** 页眉 / 页脚对齐 */
@@ -141,6 +143,7 @@ const EMPTY_DRAFT: TemplateDraft = {
   requiredFields: [],
   backgroundImage: '',
   headerText: '',
+  headerRightText: '',
   footerText: '',
   headerAlign: 'left',
   footerAlign: 'left',
@@ -1510,6 +1513,7 @@ export default function TemplatePage({
     required_fields: draft.requiredFields,
     background_image: draft.backgroundImage.trim(),
     header_text: draft.headerText.trim(),
+    header_right_text: draft.headerRightText.trim(),
     footer_text: draft.footerText.trim(),
     header_align: draft.headerAlign,
     footer_align: draft.footerAlign,
@@ -2366,6 +2370,7 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     requiredFields: template.required_fields ?? [],
     backgroundImage: template.background_image ?? '',
     headerText: template.header_text ?? '',
+    headerRightText: template.header_right_text ?? '',
     footerText: template.footer_text ?? '',
     headerAlign: template.header_align ?? 'left',
     footerAlign: template.footer_align ?? 'left',
@@ -2682,6 +2687,17 @@ function PagePanel({
             <option value="center">居中</option>
             <option value="right">右对齐</option>
           </select>
+        </label>
+        <label className="field">
+          <span className="field-label">页眉右侧（可空）</span>
+          <input
+            type="text"
+            value={draft.headerRightText}
+            placeholder="如：第 {考场号} 考场 / {{date}}"
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, headerRightText: event.target.value }))
+            }
+          />
         </label>
         <label className="field">
           <span className="field-label">页脚</span>

@@ -429,6 +429,8 @@ export interface PdfTemplate {
   background_image: string;
   /** 页眉文字，支持 {字段} 占位符 */
   header_text: string;
+  /** 页眉右侧附加文字 */
+  header_right_text: string;
   /** 页脚文字，支持 {字段} 占位符 */
   footer_text: string;
   /** 页眉 / 页脚对齐 */
@@ -473,6 +475,7 @@ export interface PdfTemplateInput {
   required_fields?: string[];
   background_image?: string;
   header_text?: string;
+  header_right_text?: string;
   footer_text?: string;
   header_align?: 'left' | 'center' | 'right';
   footer_align?: 'left' | 'center' | 'right';

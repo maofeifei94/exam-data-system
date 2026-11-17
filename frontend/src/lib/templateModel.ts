@@ -346,6 +346,7 @@ export function collectRequiredFields(template: {
   required_fields?: string[];
   background_image?: string;
   header_text?: string;
+  header_right_text?: string;
   footer_text?: string;
   watermark?: string;
 }): string[] {
@@ -359,6 +360,7 @@ export function collectRequiredFields(template: {
   add(template.matrix_index_field);
   scanPlaceholders(template.background_image ?? '', out);
   scanPlaceholders(template.header_text ?? '', out);
+  scanPlaceholders(template.header_right_text ?? '', out);
   scanPlaceholders(template.footer_text ?? '', out);
   scanPlaceholders(template.watermark ?? '', out);
   (template.elements ?? []).forEach((element) => collectElementFields(element, out));
