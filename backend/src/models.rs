@@ -708,7 +708,9 @@ const BUILTIN_TOKENS: &[&str] = &["index", "no", "page", "pages", "count", "tota
 
 /// 统计占位符（如 `sum:金额`、`rate:成绩:60`）依赖的仍然是数据字段。
 fn push_token_field(out: &mut Vec<String>, token: &str) {
+    // 去掉 `|默认值` 后再解析字段名，默认值不是数据字段。
     let token = token.trim();
+    let token = token.split('|').next().unwrap_or(token).trim();
     if let Some((func, rest)) = token.split_once(':') {
         let field = match func.trim() {
             "rate" => rest.split(':').next().unwrap_or(""),

@@ -349,6 +349,14 @@ describe('元素树操作', () => {
     ).toEqual(['考场号', '座位号', '考试名称', '考点', '姓名']);
   });
 
+  it('带默认值的占位符只把字段名计入必需字段', () => {
+    expect(
+      collectRequiredFields({
+        elements: [element('t', { text: '{姓名|无名} / {{备注|无}} / {{sum:成绩|0}}' })],
+      }),
+    ).toEqual(['姓名', '备注', '成绩']);
+  });
+
   it('背景图路径中的占位符也计入必需字段', () => {
     expect(
       collectRequiredFields({

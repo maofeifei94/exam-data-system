@@ -254,8 +254,10 @@ const BUILTIN_TOKENS = new Set(['index', 'no', 'page', 'pages', 'count', 'total'
 const STAT_TOKENS = new Set(['sum', 'avg', 'min', 'max', 'std', 'count', 'distinct', 'rate']);
 
 function tokenField(name: string): string {
-  const [func, ...rest] = name.split(':');
-  if (!STAT_TOKENS.has(func.trim())) return name;
+  // 去掉 `|默认值`；默认值不是数据字段，不参与必需字段校验。
+  const base = name.split('|')[0].trim();
+  const [func, ...rest] = base.split(':');
+  if (!STAT_TOKENS.has(func.trim())) return base;
   const field = func.trim() === 'rate' ? rest[0] ?? '' : rest.join(':');
   return field.trim();
 }

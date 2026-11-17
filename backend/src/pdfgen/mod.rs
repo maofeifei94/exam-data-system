@@ -54,7 +54,17 @@ impl<'a> Ctx<'a> {
     }
 
     fn lookup(&self, key: &str) -> String {
-        match key.trim() {
+        let key = key.trim();
+        // `{字段|默认值}`：字段为空时输出默认值，避免模板出现空白。
+        if let Some((name, fallback)) = key.split_once('|') {
+            let value = self.lookup(name.trim());
+            return if value.trim().is_empty() {
+                fallback.to_string()
+            } else {
+                value
+            };
+        }
+        match key {
             "index" => self.index_no.to_string(),
             "no" => self.no.to_string(),
             "page" => self.page.to_string(),
@@ -1515,6 +1525,34 @@ mod tests {
             .expect("render barcode");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn placeholders_support_default_values() {
+        let rows = vec![vec!["".to_string(), "张三".to_string()]];
+        let index: HashMap<String, usize> =
+            [("备注".to_string(), 0usize), ("姓名".to_string(), 1usize)]
+                .into_iter()
+                .collect();
+        let ctx = Ctx {
+            row: &rows[0],
+            index: &index,
+            all_rows: &rows,
+            index_no: 1,
+            no: 1,
+            page: 1,
+            pages: 2,
+            count: 1,
+        };
+        assert_eq!(ctx.lookup("备注|无"), "无");
+        assert_eq!(ctx.lookup("姓名|无"), "张三");
+        assert_eq!(ctx.lookup("page|第 1 页"), "1");
+
+        let mut body = TemplateBody::default();
+        let mut text = TemplateElement::empty("t", "text");
+        text.text = "{备注|无}".into();
+        body.elements.push(text);
+        assert_eq!(body.all_required_fields(), vec!["备注"]);
     }
 
     #[test]
