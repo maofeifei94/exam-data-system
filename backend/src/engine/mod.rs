@@ -429,6 +429,8 @@ impl<'a> Compiler<'a> {
             "append_dataset" => self.op_append_dataset(step_index, step, &params),
             "unpivot" => self.op_unpivot(step_index, step, &params),
             "fill_down" => self.op_fill_down(step_index, step, &params),
+            "coalesce_columns" => self.op_coalesce_columns(step_index, step, &params),
+            "score_scale" => self.op_score_scale(step_index, step, &params),
             "mask_field" => self.op_mask_field(step_index, step, &params),
             "value_map" => self.op_value_map(step_index, step, &params),
             "text_clean" => self.op_text_clean(step_index, step, &params),
@@ -3720,6 +3722,98 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_coalesce_columns(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let cols = list_param(p, "columns");
+        if cols.is_empty() {
+            return Err("请至少选择一个候选字段".to_string());
+        }
+        for c in &cols {
+            if !self.has_column(c) {
+                return Err(format!("字段 [{c}] 不存在"));
+            }
+        }
+        let out = defaulted(str_param(p, "out"), "合并值");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let trim = bool_param(p, "trim", true);
+        let exprs: Vec<String> = cols
+            .iter()
+            .map(|c| {
+                if trim {
+                    format!("NULLIF(TRIM(CAST({} AS TEXT)), '')", q(c))
+                } else {
+                    format!("NULLIF(CAST({} AS TEXT), '')", q(c))
+                }
+            })
+            .collect();
+        let expr = format!("COALESCE({}, '')", exprs.join(", "));
+        let cte = self.push_cte(format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "text".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!("合并 {} 列取首个非空 → [{out}]", cols.len())),
+        ))
+    }
+
+    fn op_score_scale(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let col = str_param(p, "column");
+        if !self.has_column(&col) {
+            return Err(format!("字段 [{col}] 不存在"));
+        }
+        let from_full = f64_param(p, "from_full").unwrap_or(150.0);
+        let to_full = f64_param(p, "to_full").unwrap_or(100.0);
+        if from_full <= 0.0 || to_full <= 0.0 {
+            return Err("原满分与目标满分都必须大于 0".to_string());
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let out = defaulted(str_param(p, "out"), "折算成绩");
+        if self.has_column(&out) {
+            return Err(format!("字段 [{out}] 已存在"));
+        }
+        let raw = format!(
+            "ROUND(CAST({} AS REAL) * {to_full} / {from_full}, {decimals})",
+            q(&col)
+        );
+        let expr = if bool_param(p, "cap", true) {
+            format!("MIN({to_full}, MAX(0, {raw}))")
+        } else {
+            raw
+        };
+        let cte = self.push_cte(format!("SELECT *, {expr} AS {} FROM {}", q(&out), self.cur));
+        self.add_column(DatasetColumn {
+            name: out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "满分换算 [{col}]：{from_full} → {to_full} → [{out}]"
+            )),
+        ))
+    }
+
     fn op_mask_field(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
         let col = str_param(p, "column");
         if !self.has_column(&col) {
@@ -6154,6 +6248,40 @@ pub fn validate_steps_with(
                     step_errors.push(format!("排序字段 [{order_by}] 不存在"));
                 }
             }
+            "coalesce_columns" => {
+                let list = list_param(&p, "columns");
+                if list.is_empty() {
+                    step_errors.push("请至少选择一个候选字段".into());
+                }
+                for c in &list {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
+                }
+                let out = defaulted(str_param(&p, "out"), "合并值");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
+            "score_scale" => {
+                let col = str_param(&p, "column");
+                if !cols.contains(&col) {
+                    step_errors.push(format!("字段 [{col}] 不存在"));
+                }
+                if f64_param(&p, "from_full").unwrap_or(150.0) <= 0.0
+                    || f64_param(&p, "to_full").unwrap_or(100.0) <= 0.0
+                {
+                    step_errors.push("原满分与目标满分都必须大于 0".into());
+                }
+                let out = defaulted(str_param(&p, "out"), "折算成绩");
+                if cols.contains(&out) {
+                    step_errors.push(format!("字段 [{out}] 已存在"));
+                } else {
+                    cols.push(out);
+                }
+            }
             "mask_field" => {
                 let col = str_param(&p, "column");
                 if !cols.contains(&col) {
@@ -7595,6 +7723,71 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn coalesce_columns_takes_first_non_empty_value() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("电话1", "text"), ("电话2", "text"), ("备注", "text")],
+            &[
+                vec!["", "13800138000", "x"],
+                vec!["13900139000", "13800138000", ""],
+                vec!["", "", "y"],
+            ],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_coalesce",
+            json!([
+                { "id": "s1", "operator": "coalesce_columns",
+                  "params": { "columns": ["电话1", "电话2", "备注"], "out": "联系方式" } },
+                { "id": "s2", "operator": "output", "params": { "name": "合并结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let values: Vec<&str> = page.rows.iter().map(|r| r[3].as_str().unwrap()).collect();
+        assert_eq!(values, vec!["13800138000", "13900139000", "y"]);
+    }
+
+    #[test]
+    fn score_scale_converts_and_caps_full_marks() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("成绩", "number")],
+            &[vec!["90"], vec!["100"], vec!["160"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_scale_cap",
+            json!([
+                { "id": "s1", "operator": "score_scale",
+                  "params": { "column": "成绩", "from_full": 150, "to_full": 100, "cap": true } },
+                { "id": "s2", "operator": "output", "params": { "name": "折算成绩" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let values: Vec<f64> = page.rows.iter().map(|r| r[1].as_f64().unwrap()).collect();
+        assert_eq!(values, vec![60.0, 66.67, 100.0]);
+
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_scale_open",
+            json!([
+                { "id": "s1", "operator": "score_scale",
+                  "params": { "column": "成绩", "from_full": 150, "to_full": 100, "cap": false } },
+                { "id": "s2", "operator": "output", "params": { "name": "折算成绩不封顶" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows[2][1], json!(106.67));
     }
 
     #[test]

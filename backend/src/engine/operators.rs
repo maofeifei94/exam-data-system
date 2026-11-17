@@ -767,6 +767,34 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "coalesce_columns",
+            "多列合并取非空",
+            "字段",
+            "按顺序取第一个非空值合并为一列，适合多来源电话、地址、备注的去空合并。",
+            vec![
+                p("columns", "候选字段", "columns", true, json!([])),
+                p("out", "输出字段名", "text", true, json!("合并值")),
+                p("trim", "去除首尾空白", "bool", false, json!(true)),
+            ],
+        ),
+        def(
+            "score_scale",
+            "满分换算",
+            "计算",
+            "把成绩按原满分折算到目标满分，如 150 分制转 100 分制，可设置上下限。",
+            vec![
+                p("column", "成绩字段", "column", true, json!("")),
+                p("from_full", "原满分", "number", true, json!(150)),
+                p("to_full", "目标满分", "number", true, json!(100)),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+                with_help(
+                    p("cap", "限制在 0~目标满分", "bool", false, json!(true)),
+                    "超出范围时截断，关闭后按公式原样计算",
+                ),
+                p("out", "输出字段名", "text", false, json!("折算成绩")),
+            ],
+        ),
+        def(
             "mask_field",
             "数据脱敏",
             "字段",
