@@ -670,7 +670,11 @@ impl<'a> Painter<'a> {
         }
         let watermark = interpolate(&body.watermark, ctx);
         if !watermark.trim().is_empty() {
-            self.draw_watermark(&watermark, page_w);
+            if body.watermark_tile {
+                self.draw_watermark_tiles(&watermark, page_w, self.page_h);
+            } else {
+                self.draw_watermark(&watermark, page_w);
+            }
         }
     }
 
@@ -750,6 +754,36 @@ impl<'a> Painter<'a> {
             self.font,
         );
         self.layer.restore_graphics_state();
+    }
+
+    /// 平铺水印：按页面尺寸铺成网格，每个水印旋转 30°，常用于试卷与证照防复印。
+    fn draw_watermark_tiles(&self, text: &str, page_w: f32, page_h: f32) {
+        let size = 14.0f32;
+        let tw = text_width_mm(text, size);
+        let cols = ((page_w / 60.0).ceil() as i32).max(2);
+        let rows = ((page_h / 50.0).ceil() as i32).max(3);
+        self.layer
+            .set_fill_color(Color::Rgb(Rgb::new(0.88, 0.88, 0.88, None)));
+        for row in 0..rows {
+            for col in 0..cols {
+                let cx = page_w * (col as f32 + 0.5) / cols as f32;
+                let cy = page_h * (row as f32 + 0.5) / rows as f32;
+                self.layer.save_graphics_state();
+                self.layer.set_ctm(CurTransMat::TranslateRotate(
+                    Pt(cx * PT_PER_MM),
+                    Pt(cy * PT_PER_MM),
+                    30.0,
+                ));
+                self.layer.use_text(
+                    text,
+                    size,
+                    Mm(-tw / 2.0),
+                    Mm(-size * MM_PER_PT / 2.0),
+                    self.font,
+                );
+                self.layer.restore_graphics_state();
+            }
+        }
     }
 }
 
@@ -1329,6 +1363,24 @@ mod tests {
         let rows = vec![vec!["2026001".into()]];
         let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
             .expect("render qr");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn tiled_watermark_renders_repeated_text() {
+        let cols = vec![DatasetColumn {
+            name: "姓名".into(),
+            dtype: "text".into(),
+        }];
+        let body = TemplateBody {
+            watermark: "内部资料".into(),
+            watermark_tile: true,
+            ..Default::default()
+        };
+        let rows = vec![vec!["张三".into()]];
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
+            .expect("render tiled watermark");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
     }

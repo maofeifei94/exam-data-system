@@ -390,6 +390,8 @@ export interface PdfTemplate {
   footer_text: string;
   /** 水印文字，为空表示不添加 */
   watermark: string;
+  /** 水印平铺整页（默认单个居中水印） */
+  watermark_tile: boolean;
   /** 页脚显示「第 X 页 / 共 Y 页」 */
   show_page_number: boolean;
   scope: Scope;
@@ -413,6 +415,7 @@ export interface PdfTemplateInput {
   header_text?: string;
   footer_text?: string;
   watermark?: string;
+  watermark_tile?: boolean;
   show_page_number?: boolean;
   scope?: Scope;
   project_id?: string;

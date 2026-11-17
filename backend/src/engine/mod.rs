@@ -400,6 +400,7 @@ impl<'a> Compiler<'a> {
             "parse_id_card" => self.op_parse_id_card(step_index, step, &params),
             "amount_upper" => self.op_amount_upper(step_index, step, &params),
             "percentage" => self.op_percentage(step_index, step, &params),
+            "interest_accrual" => self.op_interest_accrual(step_index, step, &params),
             "compound_interest" => self.op_compound_interest(step_index, step, &params),
             "tax_calc" => self.op_tax_calc(step_index, step, &params),
             "budget_variance" => self.op_budget_variance(step_index, step, &params),
@@ -1765,6 +1766,96 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("计算 [{col}] 占比 → [{out}]")),
+        ))
+    }
+
+    fn op_interest_accrual(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let principal = str_param(p, "principal");
+        let start_col = str_param(p, "start_date");
+        let end_col = str_param(p, "end_date");
+        for col in [&principal, &start_col, &end_col] {
+            if !self.has_column(col) {
+                return Err(format!("字段 [{col}] 不存在"));
+            }
+        }
+        let rate = f64_param(p, "annual_rate").ok_or_else(|| "年利率不能为空".to_string())?;
+        if rate < 0.0 {
+            return Err("年利率不能为负数".to_string());
+        }
+        let basis = {
+            let b = str_param(p, "basis");
+            if b.is_empty() {
+                "actual365".to_string()
+            } else {
+                b
+            }
+        };
+        let basis_days = match basis.as_str() {
+            "actual365" => 365.0,
+            "actual360" | "thirty360" => 360.0,
+            other => return Err(format!("未知的计息基准: {other}")),
+        };
+        let days_out = defaulted(str_param(p, "days_out"), "计息天数");
+        let interest_out = defaulted(str_param(p, "interest_out"), "利息");
+        for out in [&days_out, &interest_out] {
+            if self.has_column(out) {
+                return Err(format!("字段 [{out}] 已存在"));
+            }
+        }
+        if days_out == interest_out {
+            return Err("计息天数与利息字段名不能相同".to_string());
+        }
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let start = format!("norm_date(CAST({} AS TEXT))", q(&start_col));
+        let end = format!("norm_date(CAST({} AS TEXT))", q(&end_col));
+        let days = if basis == "thirty360" {
+            format!(
+                "CASE WHEN {start} IS NULL OR {end} IS NULL THEN NULL ELSE \
+                 (CAST(substr({end},1,4) AS INTEGER) - CAST(substr({start},1,4) AS INTEGER)) * 360 + \
+                 (CAST(substr({end},6,2) AS INTEGER) - CAST(substr({start},6,2) AS INTEGER)) * 30 + \
+                 (MIN(CAST(substr({end},9,2) AS INTEGER), 30) - MIN(CAST(substr({start},9,2) AS INTEGER), 30)) END"
+            )
+        } else {
+            format!("CAST(julianday({end}) - julianday({start}) AS INTEGER)")
+        };
+        let interest = format!(
+            "ROUND(CAST({} AS REAL) * {rate} * ({days}) / {basis_days}, {decimals})",
+            q(&principal)
+        );
+        let cte = self.push_cte(format!(
+            "SELECT *, {days} AS {}, {interest} AS {} FROM {}",
+            q(&days_out),
+            q(&interest_out),
+            self.cur
+        ));
+        self.add_column(DatasetColumn {
+            name: days_out.clone(),
+            dtype: "number".to_string(),
+        });
+        self.add_column(DatasetColumn {
+            name: interest_out.clone(),
+            dtype: "number".to_string(),
+        });
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "利息计算：[{principal}] · 年利率 {:.2}% · {}",
+                rate * 100.0,
+                match basis.as_str() {
+                    "actual360" => "实际/360",
+                    "thirty360" => "30/360",
+                    _ => "实际/365",
+                }
+            )),
         ))
     }
 
@@ -5013,6 +5104,42 @@ pub fn validate_steps_with(
                     "对账结果".to_string(),
                 ];
             }
+            "interest_accrual" => {
+                for (key, label) in [
+                    ("principal", "本金"),
+                    ("start_date", "起息日"),
+                    ("end_date", "到期日"),
+                ] {
+                    let col = str_param(&p, key);
+                    if !cols.contains(&col) {
+                        step_errors.push(format!("{label}字段 [{col}] 不存在"));
+                    }
+                }
+                match f64_param(&p, "annual_rate") {
+                    Some(rate) if rate >= 0.0 => {}
+                    Some(_) => step_errors.push("年利率不能为负数".into()),
+                    None => step_errors.push("年利率不能为空".into()),
+                }
+                let basis = str_param(&p, "basis");
+                if !basis.is_empty()
+                    && !matches!(basis.as_str(), "actual365" | "actual360" | "thirty360")
+                {
+                    step_errors.push(format!("未知的计息基准: {basis}"));
+                }
+                let days_out = defaulted(str_param(&p, "days_out"), "计息天数");
+                let interest_out = defaulted(str_param(&p, "interest_out"), "利息");
+                if days_out == interest_out {
+                    step_errors.push("计息天数与利息字段名不能相同".into());
+                } else {
+                    for out in [&days_out, &interest_out] {
+                        if cols.contains(out) {
+                            step_errors.push(format!("字段 [{out}] 已存在"));
+                        } else {
+                            cols.push(out.clone());
+                        }
+                    }
+                }
+            }
             "compound_interest" => {
                 let col = str_param(&p, "column");
                 if !cols.contains(&col) {
@@ -6687,6 +6814,47 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn interest_accrual_supports_day_count_bases() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("本金", "number"), ("起息日", "text"), ("到期日", "text")],
+            &[vec!["100000", "2026/1/1", "2026/7/1"]],
+        );
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_interest_365",
+            json!([
+                { "id": "s1", "operator": "interest_accrual",
+                  "params": { "principal": "本金", "start_date": "起息日", "end_date": "到期日",
+                              "annual_rate": 0.05, "basis": "actual365" } },
+                { "id": "s2", "operator": "output", "params": { "name": "利息" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows[0][3], json!(181.0));
+        assert_eq!(page.rows[0][4], json!(2479.45));
+
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_interest_30_360",
+            json!([
+                { "id": "s1", "operator": "interest_accrual",
+                  "params": { "principal": "本金", "start_date": "起息日", "end_date": "到期日",
+                              "annual_rate": 0.05, "basis": "thirty360" } },
+                { "id": "s2", "operator": "output", "params": { "name": "利息30/360" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows[0][3], json!(180.0));
+        assert_eq!(page.rows[0][4], json!(2500.0));
     }
 
     #[test]

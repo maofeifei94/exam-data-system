@@ -393,6 +393,7 @@ describe('normalizeTemplate', () => {
     header_text: '',
     footer_text: '',
     watermark: '',
+    watermark_tile: false,
     show_page_number: false,
     scope: 'global',
     project_id: '',

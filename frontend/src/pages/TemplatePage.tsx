@@ -85,6 +85,8 @@ interface TemplateDraft {
   footerText: string;
   /** 水印文字，为空表示不添加 */
   watermark: string;
+  /** 水印平铺整页 */
+  watermarkTile: boolean;
   /** 页脚显示页码 */
   showPageNumber: boolean;
   scope: 'global' | 'project';
@@ -116,6 +118,7 @@ const EMPTY_DRAFT: TemplateDraft = {
   headerText: '',
   footerText: '',
   watermark: '',
+  watermarkTile: false,
   showPageNumber: false,
   scope: 'global',
 };
@@ -1191,6 +1194,7 @@ export default function TemplatePage({
     header_text: draft.headerText.trim(),
     footer_text: draft.footerText.trim(),
     watermark: draft.watermark.trim(),
+    watermark_tile: draft.watermarkTile,
     show_page_number: draft.showPageNumber,
     scope: draft.id ? draft.scope : scope,
     project_id: draft.id
@@ -2022,6 +2026,7 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     headerText: template.header_text ?? '',
     footerText: template.footer_text ?? '',
     watermark: template.watermark ?? '',
+    watermarkTile: Boolean(template.watermark_tile),
     showPageNumber: Boolean(template.show_page_number),
     scope: template.scope === 'project' ? 'project' : 'global',
   };
@@ -2281,6 +2286,16 @@ function PagePanel({
               onDraft((prev) => ({ ...prev, watermark: event.target.value }))
             }
           />
+        </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={draft.watermarkTile}
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, watermarkTile: event.target.checked }))
+            }
+          />
+          水印平铺整页（防复印）
         </label>
         <label className="checkbox-row">
           <input

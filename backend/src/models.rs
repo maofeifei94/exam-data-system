@@ -653,6 +653,9 @@ pub struct TemplateBody {
     /// 页面水印文字，支持占位符；为空表示不添加水印
     #[serde(default)]
     pub watermark: String,
+    /// 水印是否平铺整页（默认单个居中水印）
+    #[serde(default)]
+    pub watermark_tile: bool,
     /// 页脚右侧显示「第 X 页 / 共 Y 页」
     #[serde(default)]
     pub show_page_number: bool,
@@ -678,6 +681,7 @@ impl Default for TemplateBody {
             header_text: String::new(),
             footer_text: String::new(),
             watermark: String::new(),
+            watermark_tile: false,
             show_page_number: false,
         }
     }
@@ -878,6 +882,7 @@ pub struct PdfTemplate {
     pub header_text: String,
     pub footer_text: String,
     pub watermark: String,
+    pub watermark_tile: bool,
     pub show_page_number: bool,
     pub scope: String,
     pub project_id: String,
@@ -913,6 +918,8 @@ pub struct PdfTemplateInput {
     pub footer_text: String,
     #[serde(default)]
     pub watermark: String,
+    #[serde(default)]
+    pub watermark_tile: bool,
     #[serde(default)]
     pub show_page_number: bool,
     #[serde(default)]

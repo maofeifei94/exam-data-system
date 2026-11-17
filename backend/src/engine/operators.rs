@@ -408,6 +408,25 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "interest_accrual",
+            "利息计算",
+            "计算",
+            "按本金、起止日期、年利率与计息基准计算计息天数与利息，适用于借款、存款与应收计息。",
+            vec![
+                p("principal", "本金字段", "column", true, json!("")),
+                p("start_date", "起息日字段", "column", true, json!("")),
+                p("end_date", "到期日字段", "column", true, json!("")),
+                with_help(p("annual_rate", "年利率", "number", true, json!(0.05)), "如 5% 填 0.05"),
+                with_options(
+                    p("basis", "计息基准", "enum", false, json!("actual365")),
+                    &["actual365", "actual360", "thirty360"],
+                ),
+                p("days_out", "计息天数字段名", "text", false, json!("计息天数")),
+                p("interest_out", "利息字段名", "text", false, json!("利息")),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+            ],
+        ),
+        def(
             "compound_interest",
             "复利终值/现值",
             "计算",

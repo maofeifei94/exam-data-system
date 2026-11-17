@@ -60,6 +60,7 @@ fn row_to_template(r: &rusqlite::Row<'_>) -> rusqlite::Result<(PdfTemplate, Stri
             header_text: body.header_text,
             footer_text: body.footer_text,
             watermark: body.watermark,
+            watermark_tile: body.watermark_tile,
             show_page_number: body.show_page_number,
             scope: r.get(5)?,
             project_id: r.get(6)?,
@@ -161,6 +162,7 @@ fn body_from_input(input: &PdfTemplateInput, kind: &str) -> TemplateBody {
         header_text: input.header_text.trim().to_string(),
         footer_text: input.footer_text.trim().to_string(),
         watermark: input.watermark.trim().to_string(),
+        watermark_tile: input.watermark_tile,
         show_page_number: input.show_page_number,
     };
     body.normalize(kind);
