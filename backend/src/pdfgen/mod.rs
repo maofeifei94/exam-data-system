@@ -1511,8 +1511,45 @@ pub fn render_pdf_data(
         let summary = table_summary_row(&setup, rows, &index);
         let summary_h = if summary.is_some() { row_h } else { 0.0 };
         let per_page = (((table_el.h_mm - header_h - summary_h) / row_h).floor() as usize).max(1);
-        let pages = rows.len().div_ceil(per_page).max(1) as i64;
         let widths = table_column_widths(&setup, table_el.w_mm.max(10.0));
+
+        // 设置页面字段时按该字段分组，每组另起一页；组内再按行高分页。
+        let order: Vec<usize> = if let Some(pi) = page_idx {
+            let mut v: Vec<usize> = (0..rows.len()).collect();
+            v.sort_by(|&a, &b| {
+                natural_cmp(
+                    rows[a].get(pi).map(|s| s.as_str()).unwrap_or(""),
+                    rows[b].get(pi).map(|s| s.as_str()).unwrap_or(""),
+                )
+            });
+            v
+        } else {
+            (0..rows.len()).collect()
+        };
+        let mut page_groups: Vec<(Vec<usize>, String)> = Vec::new();
+        let mut current: Vec<usize> = Vec::new();
+        let mut group_value = String::new();
+        for idx in order {
+            let group = page_idx
+                .and_then(|pi| rows[idx].get(pi).cloned())
+                .unwrap_or_default();
+            if !current.is_empty()
+                && (current.len() >= per_page || (page_idx.is_some() && group != group_value))
+            {
+                page_groups.push((std::mem::take(&mut current), group_value.clone()));
+            }
+            if current.is_empty() {
+                group_value = group;
+            }
+            current.push(idx);
+        }
+        if !current.is_empty() {
+            page_groups.push((current, group_value));
+        }
+        if page_groups.is_empty() {
+            page_groups.push((Vec::new(), String::new()));
+        }
+        let pages = page_groups.len() as i64;
         let start_page = opts.only_page.unwrap_or(1).max(1);
         let end_page = if opts.only_page.is_some() {
             start_page
@@ -1535,16 +1572,24 @@ pub fn render_pdf_data(
                 page_h,
                 photo_dir: photo_dir.as_deref(),
             };
-            let empty_row: Vec<String> = Vec::new();
+            let (indices, group) = &page_groups[(page - 1) as usize];
+            let page_rows: Vec<Vec<String>> = indices.iter().map(|i| rows[*i].clone()).collect();
+            // 页面级元素只认识本页的分组值（如考场号 / 学校）。
+            let mut page_row: Vec<String> = vec![String::new(); col_meta.len()];
+            if let Some(pi) = page_idx {
+                if pi < page_row.len() {
+                    page_row[pi] = group.clone();
+                }
+            }
             let page_ctx = Ctx {
-                row: &empty_row,
+                row: &page_row,
                 index: &index,
                 all_rows: rows,
                 index_no: 0,
-                no: (page - 1) * per_page as i64 + 1,
+                no: indices.first().map(|i| *i as i64 + 1).unwrap_or(0),
                 page,
                 pages,
-                count: total_rows,
+                count: indices.len() as i64,
             };
             let page_origin = Origin {
                 x: content_x,
@@ -1558,10 +1603,7 @@ pub fn render_pdf_data(
                 x: content_x + table_el.x_mm,
                 y_top: content_y_top + table_el.y_mm,
             };
-            let from = (page - 1) as usize * per_page;
-            let to = (from + per_page).min(rows.len());
-            let slice = &rows[from.min(rows.len())..to];
-            painter.table(&setup, table_el, &widths, slice, &index, &table_origin);
+            painter.table(&setup, table_el, &widths, &page_rows, &index, &table_origin);
             if page == pages {
                 if let Some(summary) = &summary {
                     // 汇总行固定在数据区底部，不随最后一页行数浮动。
@@ -2133,6 +2175,58 @@ mod tests {
             .expect("render table");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn render_table_groups_pages_by_page_field() {
+        let cols = vec![
+            DatasetColumn {
+                name: "学校".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "姓名".into(),
+                dtype: "text".into(),
+            },
+        ];
+        let mut table = TemplateElement::empty("tb", "table");
+        table.w_mm = 160.0;
+        table.h_mm = 60.0;
+        table.table = Some(TableSetup {
+            columns: vec![
+                TableColumn {
+                    field: "学校".into(),
+                    label: "学校".into(),
+                    width_mm: 0.0,
+                    align: "left".into(),
+                    summary: String::new(),
+                },
+                TableColumn {
+                    field: "姓名".into(),
+                    label: "姓名".into(),
+                    width_mm: 0.0,
+                    align: "left".into(),
+                    summary: String::new(),
+                },
+            ],
+            row_height_mm: 8.0,
+            header_height_mm: 8.0,
+            ..Default::default()
+        });
+        let mut body = TemplateBody {
+            page_field: "学校".into(),
+            header_text: "{学校} 报名名单".into(),
+            ..Default::default()
+        };
+        body.elements.push(table);
+        let rows = vec![
+            vec!["乙中学".into(), "张三".into()],
+            vec!["甲中学".into(), "李四".into()],
+            vec!["乙中学".into(), "王五".into()],
+        ];
+        let pdf = render_pdf_data(&cols, &rows, &body, "table", &RenderOpts::default())
+            .expect("render grouped table");
+        assert!(pdf.starts_with(b"%PDF"));
     }
 
     #[test]
