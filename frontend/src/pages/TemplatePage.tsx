@@ -77,6 +77,8 @@ interface TemplateDraft {
   matrixIndexField: string;
   /** 模板显式声明的必需字段 */
   requiredFields: string[];
+  /** 页面背景图路径，整页铺满并保持比例 */
+  backgroundImage: string;
   /** 页眉文字，支持 {字段} 占位符 */
   headerText: string;
   /** 页脚文字，支持 {字段} 占位符 */
@@ -110,6 +112,7 @@ const EMPTY_DRAFT: TemplateDraft = {
   pageField: '',
   matrixIndexField: '',
   requiredFields: [],
+  backgroundImage: '',
   headerText: '',
   footerText: '',
   watermark: '',
@@ -1184,6 +1187,7 @@ export default function TemplatePage({
     page_field: draft.pageField.trim(),
     matrix_index_field: draft.matrixIndexField.trim(),
     required_fields: draft.requiredFields,
+    background_image: draft.backgroundImage.trim(),
     header_text: draft.headerText.trim(),
     footer_text: draft.footerText.trim(),
     watermark: draft.watermark.trim(),
@@ -2014,6 +2018,7 @@ function toDraft(template: PdfTemplate): TemplateDraft {
     pageField: template.page_field ?? '',
     matrixIndexField: template.matrix_index_field ?? '',
     requiredFields: template.required_fields ?? [],
+    backgroundImage: template.background_image ?? '',
     headerText: template.header_text ?? '',
     footerText: template.footer_text ?? '',
     watermark: template.watermark ?? '',
@@ -2058,6 +2063,7 @@ function PagePanel({
     page_field: draft.pageField,
     matrix_index_field: draft.matrixIndexField,
     required_fields: draft.requiredFields,
+    background_image: draft.backgroundImage,
     header_text: draft.headerText,
     footer_text: draft.footerText,
     watermark: draft.watermark,
@@ -2229,7 +2235,19 @@ function PagePanel({
       </div>
 
       <div className="tpl-section">
-        <div className="tpl-section-title">页眉页脚与水印</div>
+        <div className="tpl-section-title">页面背景、页眉页脚与水印</div>
+        <label className="field">
+          <span className="field-label">背景图（可空）</span>
+          <input
+            type="text"
+            value={draft.backgroundImage}
+            placeholder="如 bg.png 或 /path/bg.png，整页铺满并保持比例"
+            onChange={(event) =>
+              onDraft((prev) => ({ ...prev, backgroundImage: event.target.value }))
+            }
+          />
+          <span className="field-hint">相对路径按渲染时的照片目录查找，适合证书底纹、防伪底图。</span>
+        </label>
         <label className="field">
           <span className="field-label">页眉</span>
           <input

@@ -382,6 +382,8 @@ export interface PdfTemplate {
   required_fields: string[];
   /** 显式声明 + 子元素占位符合并后的完整必需字段 */
   all_required_fields: string[];
+  /** 页面背景图路径，整页铺满并保持比例 */
+  background_image: string;
   /** 页眉文字，支持 {字段} 占位符 */
   header_text: string;
   /** 页脚文字，支持 {字段} 占位符 */
@@ -407,6 +409,7 @@ export interface PdfTemplateInput {
   page_field?: string;
   matrix_index_field?: string;
   required_fields?: string[];
+  background_image?: string;
   header_text?: string;
   footer_text?: string;
   watermark?: string;

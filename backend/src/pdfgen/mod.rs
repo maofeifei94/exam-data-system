@@ -674,6 +674,46 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// 整页背景图：按 cover 方式铺满并居中，缺失或解码失败时静默跳过。
+    fn background(&self, template: &str, ctx: &Ctx<'_>, page_w: f32, page_h: f32) {
+        let name = interpolate(template, ctx);
+        if name.trim().is_empty() {
+            return;
+        }
+        let Some(path) = resolve_photo(&name, self.photo_dir, &[]) else {
+            return;
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        let Ok(img) = printpdf::image_crate::load_from_memory(&bytes) else {
+            return;
+        };
+        let (pw, ph) = (img.width() as f32, img.height() as f32);
+        if pw <= 0.0 || ph <= 0.0 {
+            return;
+        }
+        let target_w = page_w * PT_PER_MM;
+        let target_h = page_h * PT_PER_MM;
+        let scale = (target_w / pw).max(target_h / ph);
+        let draw_w = pw * scale;
+        let draw_h = ph * scale;
+        let x_mm = (target_w - draw_w) / 2.0 / PT_PER_MM;
+        let y_mm = (target_h - draw_h) / 2.0 / PT_PER_MM;
+        let xobj = ImageXObject::from_dynamic_image(&img);
+        Image::from(xobj).add_to_layer(
+            self.layer.clone(),
+            ImageTransform {
+                translate_x: Some(Mm(x_mm)),
+                translate_y: Some(Mm(y_mm)),
+                rotate: None,
+                scale_x: Some(scale),
+                scale_y: Some(scale),
+                dpi: Some(IMAGE_DPI),
+            },
+        );
+    }
+
     fn chrome_text(&self, text: &str, x_mm: f32, y_top: f32, w_mm: f32, align: &str) {
         let size = 9.0f32;
         let tw = text_width_mm(text, size);
@@ -1026,6 +1066,8 @@ pub fn render_pdf_data(
                 y_top: content_y_top,
             };
 
+            painter.background(&body.background_image, &page_ctx, page_w, page_h);
+
             // 页面级元素：标题、标题框等（矩阵本身单独处理）
             for el in body.elements.iter().filter(|e| e.etype != "matrix") {
                 painter.element(el, &page_ctx, &page_origin);
@@ -1131,6 +1173,7 @@ pub fn render_pdf_data(
                 x: content_x,
                 y_top: content_y_top,
             };
+            painter.background(&body.background_image, &ctx, page_w, page_h);
             painter.elements(&body.elements, &ctx, &origin);
             painter.page_decoration(body, &ctx, page_w, &body.page.margin_mm);
         }
@@ -1288,6 +1331,45 @@ mod tests {
             .expect("render qr");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn background_image_covers_page_and_missing_file_is_ignored() {
+        const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82";
+        let dir = temp_dir("bg");
+        std::fs::write(dir.join("bg.png"), PNG).expect("write bg");
+        let cols = vec![DatasetColumn {
+            name: "姓名".into(),
+            dtype: "text".into(),
+        }];
+        let rows = vec![vec!["张三".into()]];
+        let body = TemplateBody {
+            background_image: "bg.png".into(),
+            ..Default::default()
+        };
+        let opts = RenderOpts {
+            photo_dir: dir.to_str().map(|s| s.to_string()),
+            only_page: None,
+        };
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &opts).expect("render bg");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
+
+        // 背景图缺失时静默跳过，不影响整份文档
+        let missing = TemplateBody {
+            background_image: "not-exist.png".into(),
+            ..Default::default()
+        };
+        let pdf = render_pdf_data(&cols, &rows, &missing, "single", &opts).expect("render missing");
+        assert!(pdf.starts_with(b"%PDF"));
+
+        // 背景图路径中的占位符同样计入必需字段
+        let required = TemplateBody {
+            background_image: "{底图}".into(),
+            ..Default::default()
+        };
+        assert_eq!(required.all_required_fields(), vec!["底图"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

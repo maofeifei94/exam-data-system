@@ -349,6 +349,16 @@ describe('元素树操作', () => {
     ).toEqual(['考场号', '座位号', '考试名称', '考点', '姓名']);
   });
 
+  it('背景图路径中的占位符也计入必需字段', () => {
+    expect(
+      collectRequiredFields({
+        elements: [],
+        background_image: 'bg-{考点}.png',
+        header_text: '{考试名称}',
+      }),
+    ).toEqual(['考点', '考试名称']);
+  });
+
   it('统计占位符只把字段名计入必需字段', () => {
     expect(
       collectRequiredFields({
@@ -379,6 +389,7 @@ describe('normalizeTemplate', () => {
     matrix_index_field: '',
     required_fields: [],
     all_required_fields: [],
+    background_image: '',
     header_text: '',
     footer_text: '',
     watermark: '',

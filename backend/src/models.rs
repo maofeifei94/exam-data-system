@@ -641,6 +641,9 @@ pub struct TemplateBody {
     /// 模板显式声明的必需字段；与子元素中的占位符合并后作为模板整体所需字段
     #[serde(default)]
     pub required_fields: Vec<String>,
+    /// 页面背景图路径：整页铺满并保持比例，相对路径按渲染请求的 photo_dir 查找
+    #[serde(default)]
+    pub background_image: String,
     /// 页眉文字，支持 `{字段}` / `{{page}}` 等占位符，每页绘制一次
     #[serde(default)]
     pub header_text: String,
@@ -671,6 +674,7 @@ impl Default for TemplateBody {
             page_field: String::new(),
             matrix_index_field: String::new(),
             required_fields: Vec::new(),
+            background_image: String::new(),
             header_text: String::new(),
             footer_text: String::new(),
             watermark: String::new(),
@@ -843,6 +847,7 @@ impl TemplateBody {
         }
         push_field(&mut out, &self.page_field);
         push_field(&mut out, &self.matrix_index_field);
+        collect_placeholders(&self.background_image, &mut out);
         collect_placeholders(&self.header_text, &mut out);
         collect_placeholders(&self.footer_text, &mut out);
         collect_placeholders(&self.watermark, &mut out);
@@ -868,6 +873,8 @@ pub struct PdfTemplate {
     pub required_fields: Vec<String>,
     /// 显式声明与子元素占位符合并后的完整必需字段
     pub all_required_fields: Vec<String>,
+    /// 页面背景图路径（整页铺满）
+    pub background_image: String,
     pub header_text: String,
     pub footer_text: String,
     pub watermark: String,
@@ -898,6 +905,8 @@ pub struct PdfTemplateInput {
     pub matrix_index_field: String,
     #[serde(default)]
     pub required_fields: Vec<String>,
+    #[serde(default)]
+    pub background_image: String,
     #[serde(default)]
     pub header_text: String,
     #[serde(default)]

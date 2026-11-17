@@ -297,6 +297,7 @@ export function collectRequiredFields(template: {
   page_field?: string;
   matrix_index_field?: string;
   required_fields?: string[];
+  background_image?: string;
   header_text?: string;
   footer_text?: string;
   watermark?: string;
@@ -309,6 +310,7 @@ export function collectRequiredFields(template: {
   (template.required_fields ?? []).forEach(add);
   add(template.page_field);
   add(template.matrix_index_field);
+  scanPlaceholders(template.background_image ?? '', out);
   scanPlaceholders(template.header_text ?? '', out);
   scanPlaceholders(template.footer_text ?? '', out);
   scanPlaceholders(template.watermark ?? '', out);
