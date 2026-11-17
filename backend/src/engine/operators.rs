@@ -408,6 +408,27 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "reconcile",
+            "对账核对",
+            "分析",
+            "按关键字段汇总本方与对方数据集金额，逐项比对并标记一致、金额不符或单边记录，适用于银行流水与账簿对账。",
+            vec![
+                p("dataset_id", "对方数据集", "dataset", true, json!("")),
+                p("left_key", "本方关键字段", "column", true, json!("")),
+                p("left_amount", "本方金额字段", "column", true, json!("")),
+                p("right_key", "对方关键字段", "dataset_column", true, json!("")),
+                p("right_amount", "对方金额字段", "dataset_column", true, json!("")),
+                with_help(
+                    p("tolerance", "允许差异", "number", false, json!(0.01)),
+                    "金额差异在允许范围内视为一致",
+                ),
+                with_options(
+                    p("mode", "输出范围", "enum", false, json!("diff")),
+                    &["diff", "all"],
+                ),
+            ],
+        ),
+        def(
             "data_profile",
             "数据概览",
             "分析",

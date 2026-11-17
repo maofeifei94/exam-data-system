@@ -398,6 +398,7 @@ impl<'a> Compiler<'a> {
             "percentage" => self.op_percentage(step_index, step, &params),
             "tax_calc" => self.op_tax_calc(step_index, step, &params),
             "budget_variance" => self.op_budget_variance(step_index, step, &params),
+            "reconcile" => self.op_reconcile(step_index, step, &params),
             "depreciation" => self.op_depreciation(step_index, step, &params),
             "allocate" => self.op_allocate(step_index, step, &params),
             "data_profile" => self.op_data_profile(step_index, step, &params),
@@ -1924,6 +1925,125 @@ impl<'a> Compiler<'a> {
             self.count_current()?,
             Some(cte),
             Some(format!("预算执行分析：[{budget}] / [{actual}]")),
+        ))
+    }
+
+    fn op_reconcile(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let right_id = str_param(p, "dataset_id");
+        if right_id.is_empty() {
+            return Err("请选择对方数据集".to_string());
+        }
+        let left_key = str_param(p, "left_key");
+        let left_amount = str_param(p, "left_amount");
+        for col in [&left_key, &left_amount] {
+            if !self.has_column(col) {
+                return Err(format!("字段 [{col}] 不存在"));
+            }
+        }
+        let right_cols = store::get_columns(self.conn, &right_id)
+            .map_err(|e| format!("读取对方数据集字段失败: {e}"))?;
+        if right_cols.is_empty() {
+            return Err("对方数据集没有字段".to_string());
+        }
+        let right_key = str_param(p, "right_key");
+        let right_amount = str_param(p, "right_amount");
+        let right_key_idx = right_cols
+            .iter()
+            .position(|c| c.name == right_key)
+            .ok_or_else(|| format!("对方数据集没有字段 [{right_key}]"))?;
+        let right_amount_idx = right_cols
+            .iter()
+            .position(|c| c.name == right_amount)
+            .ok_or_else(|| format!("对方数据集没有字段 [{right_amount}]"))?;
+        let table =
+            crate::db::table_name(&right_id).map_err(|e| format!("对方数据集不可用: {e}"))?;
+        let tolerance = f64_param(p, "tolerance").unwrap_or(0.01).max(0.0);
+        let mode = {
+            let m = str_param(p, "mode");
+            if m.is_empty() {
+                "diff".to_string()
+            } else {
+                m
+            }
+        };
+        if mode != "diff" && mode != "all" {
+            return Err(format!("未知的输出范围: {mode}"));
+        }
+        let l_key = format!("CAST({} AS TEXT)", q(&left_key));
+        let l_amount = format!("CAST({} AS REAL)", q(&left_amount));
+        let r_key = format!("CAST(\"c{right_key_idx}\" AS TEXT)");
+        let r_amount = format!("CAST(\"c{right_amount_idx}\" AS REAL)");
+        let left_set = format!(
+            "(SELECT {l_key} AS \"__k__\", COALESCE(SUM({l_amount}), 0) AS \"__amt__\" FROM {} WHERE {l_key} IS NOT NULL AND {l_key} <> '' GROUP BY {l_key})",
+            self.cur
+        );
+        let right_set = format!(
+            "(SELECT {r_key} AS \"__k__\", COALESCE(SUM({r_amount}), 0) AS \"__amt__\" FROM \"{table}\" WHERE {r_key} IS NOT NULL AND {r_key} <> '' GROUP BY {r_key})"
+        );
+        let diff = "ROUND(l.\"__amt__\" - r.\"__amt__\", 2)";
+        let body = format!(
+            "SELECT l.\"__k__\" AS {}, l.\"__amt__\" AS {}, r.\"__amt__\" AS {}, {diff} AS {}, \
+             CASE WHEN r.\"__k__\" IS NULL THEN '本方独有' \
+                  WHEN ABS(l.\"__amt__\" - r.\"__amt__\") <= {tolerance} THEN '一致' \
+                  ELSE '金额不符' END AS {} \
+             FROM {left_set} l LEFT JOIN {right_set} r ON l.\"__k__\" = r.\"__k__\" \
+             UNION ALL \
+             SELECT r.\"__k__\" AS {}, 0 AS {}, r.\"__amt__\" AS {}, ROUND(0 - r.\"__amt__\", 2) AS {}, '对方独有' AS {} \
+             FROM {right_set} r LEFT JOIN {left_set} l ON l.\"__k__\" = r.\"__k__\" \
+             WHERE l.\"__k__\" IS NULL",
+            q("对账键"),
+            q("本方金额"),
+            q("对方金额"),
+            q("差异"),
+            q("对账结果"),
+            q("对账键"),
+            q("本方金额"),
+            q("对方金额"),
+            q("差异"),
+            q("对账结果"),
+        );
+        let body = if mode == "diff" {
+            format!("SELECT * FROM ({body}) WHERE {} <> '一致'", q("对账结果"))
+        } else {
+            body
+        };
+        let cte = self.push_cte(body);
+        self.columns = vec![
+            DatasetColumn {
+                name: "对账键".to_string(),
+                dtype: "text".to_string(),
+            },
+            DatasetColumn {
+                name: "本方金额".to_string(),
+                dtype: "number".to_string(),
+            },
+            DatasetColumn {
+                name: "对方金额".to_string(),
+                dtype: "number".to_string(),
+            },
+            DatasetColumn {
+                name: "差异".to_string(),
+                dtype: "number".to_string(),
+            },
+            DatasetColumn {
+                name: "对账结果".to_string(),
+                dtype: "text".to_string(),
+            },
+        ];
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "对账核对：[{left_key}] / [{right_key}]{}",
+                if mode == "diff" {
+                    "（仅输出差异）"
+                } else {
+                    ""
+                }
+            )),
         ))
     }
 
@@ -4413,6 +4533,43 @@ pub fn validate_steps_with(
                 next.push(status);
                 cols = next;
             }
+            "reconcile" => {
+                for (key, label) in [("left_key", "本方关键"), ("left_amount", "本方金额")]
+                {
+                    let col = str_param(&p, key);
+                    if !cols.contains(&col) {
+                        step_errors.push(format!("{label}字段 [{col}] 不存在"));
+                    }
+                }
+                let right_id = str_param(&p, "dataset_id");
+                if right_id.is_empty() {
+                    step_errors.push("请选择对方数据集".into());
+                } else if let Some(right_cols) = join_datasets.get(&right_id) {
+                    for (key, label) in [("right_key", "对方关键"), ("right_amount", "对方金额")]
+                    {
+                        let col = str_param(&p, key);
+                        if !right_cols.iter().any(|c| c.name == col) {
+                            step_errors.push(format!("{label}字段 [{col}] 不存在"));
+                        }
+                    }
+                }
+                match f64_param(&p, "tolerance") {
+                    Some(v) if v >= 0.0 => {}
+                    Some(_) => step_errors.push("允许差异不能为负数".into()),
+                    None => {}
+                }
+                let mode = str_param(&p, "mode");
+                if !mode.is_empty() && mode != "diff" && mode != "all" {
+                    step_errors.push(format!("未知的输出范围: {mode}"));
+                }
+                cols = vec![
+                    "对账键".to_string(),
+                    "本方金额".to_string(),
+                    "对方金额".to_string(),
+                    "差异".to_string(),
+                    "对账结果".to_string(),
+                ];
+            }
             "depreciation" => {
                 let original = str_param(&p, "original");
                 if !cols.contains(&original) {
@@ -5907,5 +6064,89 @@ mod tests {
         // 随机序号为 1、1、1、2、2、2
         let seqs: Vec<f64> = page.rows.iter().map(|r| r[2].as_f64().unwrap()).collect();
         assert_eq!(seqs, vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn reconcile_marks_matched_mismatched_and_one_sided_entries() {
+        let (mut conn, left_id) = setup_custom(
+            &[("单号", "text"), ("金额", "number")],
+            &[vec!["A", "100"], vec!["B", "50"], vec!["C", "20"]],
+        );
+        let right_cols = vec![
+            DatasetColumn {
+                name: "单号".into(),
+                dtype: "text".into(),
+            },
+            DatasetColumn {
+                name: "金额".into(),
+                dtype: "number".into(),
+            },
+        ];
+        let right_rows = vec![
+            vec![Some("A".to_string()), Some("100".to_string())],
+            vec![Some("B".to_string()), Some("40".to_string())],
+            vec![Some("D".to_string()), Some("10".to_string())],
+        ];
+        let right = store::create_dataset(
+            &mut conn,
+            store::NewDataset {
+                name: "银行流水",
+                kind: "import",
+                source_file: "",
+                origin: "单元测试",
+                project_id: "",
+                columns: &right_cols,
+                rows: &right_rows,
+            },
+        )
+        .expect("right dataset");
+
+        let result = run_steps(
+            &mut conn,
+            &left_id,
+            "f_reconcile_all",
+            json!([
+                { "id": "s1", "operator": "reconcile",
+                  "params": { "dataset_id": right.id, "left_key": "单号", "left_amount": "金额",
+                              "right_key": "单号", "right_amount": "金额", "mode": "all" } },
+                { "id": "s2", "operator": "output", "params": { "name": "对账结果" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows.len(), 4);
+        let status_of = |key: &str| {
+            page.rows
+                .iter()
+                .find(|r| r[0] == json!(key))
+                .map(|r| r[4].as_str().unwrap().to_string())
+                .expect("key row")
+        };
+        assert_eq!(status_of("A"), "一致");
+        assert_eq!(status_of("B"), "金额不符");
+        assert_eq!(status_of("C"), "本方独有");
+        assert_eq!(status_of("D"), "对方独有");
+        let b = page.rows.iter().find(|r| r[0] == json!("B")).expect("B 行");
+        assert_eq!(b[1], json!(50.0));
+        assert_eq!(b[2], json!(40.0));
+        assert_eq!(b[3], json!(10.0));
+
+        // 仅差异模式应过滤掉一致记录
+        let result = run_steps(
+            &mut conn,
+            &left_id,
+            "f_reconcile_diff",
+            json!([
+                { "id": "s1", "operator": "reconcile",
+                  "params": { "dataset_id": right.id, "left_key": "单号", "left_amount": "金额",
+                              "right_key": "单号", "right_amount": "金额", "mode": "diff" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        assert_eq!(page.rows.len(), 3);
+        assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
     }
 }

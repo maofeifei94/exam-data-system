@@ -326,7 +326,13 @@ pub async fn validate(
     // 「关联数据表」的静态校验需要知道右表字段，先按需读取。
     let join_ids: Vec<String> = steps
         .iter()
-        .filter(|s| s.enabled && matches!(s.operator.as_str(), "join_dataset" | "append_dataset"))
+        .filter(|s| {
+            s.enabled
+                && matches!(
+                    s.operator.as_str(),
+                    "join_dataset" | "append_dataset" | "reconcile"
+                )
+        })
         .filter_map(|s| {
             s.params
                 .get("dataset_id")

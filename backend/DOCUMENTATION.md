@@ -255,6 +255,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `allocate` | 按权重分摊金额，可按项目/部门分组分别分摊 |
 | `tax_calc` | 税额计算：按税率拆分含税/不含税金额，支持价内税与价外税 |
 | `budget_variance` | 预算执行分析：按部门/科目汇总预算与实际，输出执行率、差额与超支预警 |
+| `reconcile` | 对账核对：按关键字段汇总双方金额，标记一致、金额不符、本方独有、对方独有，支持金额容差与仅看差异 |
 | `data_profile` | 数据概览：逐字段统计非空数、空值数、去重数、最小/最大值、平均值 |
 | `not_null_check` | 空值校验：指定字段出现 NULL / 空字符串时终止或警告 |
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
