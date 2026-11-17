@@ -254,6 +254,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `depreciation` | 直线法折旧：月折旧额、累计折旧、净值（可字段指定已计提月数） |
 | `allocate` | 按权重分摊金额，可按项目/部门分组分别分摊 |
 | `tax_calc` | 税额计算：按税率拆分含税/不含税金额，支持价内税与价外税 |
+| `loan_payment` | 等额本息月供：按本金、年利率、期限计算月供、总利息与还款总额 |
 | `budget_variance` | 预算执行分析：按部门/科目汇总预算与实际，输出执行率、差额与超支预警 |
 | `reconcile` | 对账核对：按关键字段汇总双方金额，标记一致、金额不符、本方独有、对方独有，支持金额容差与仅看差异 |
 | `data_profile` | 数据概览：逐字段统计非空数、空值数、去重数、最小/最大值、平均值 |
@@ -261,6 +262,7 @@ pub fn with_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> AppResul
 | `column_compare` | 两列一致性校验（可忽略空值行），如姓名与身份证解析结果 |
 | `format_check` | 手机号 / 身份证号 / 邮箱 / 银行卡号格式校验 |
 | `range_check` | 数值范围校验，如成绩 0~100、金额不能为负 |
+| `sum_check` | 合计一致性校验：校验合计字段是否等于各明细字段之和（总成绩、发票金额） |
 | `balance_check` | 按凭证号汇总借贷方，检查每张凭证是否平衡 |
 | `shuffle` | 随机打散行顺序；按学校/岗位分组后各组轮流穿插，避免同组考生连号相邻 |
 | `assign_seats` | 按顺序自动编排考场号与座位号，可设每考场人数和起始考场 |
@@ -356,6 +358,8 @@ SELECT * FROM s2 ORDER BY "总成绩" DESC
   空值忽略、非数值跳过；`rate` 返回达到阈值的百分比（如 `{{rate:成绩:60}}` → `92.5`）。
   这些占位符中的字段名同样会进入模板必需字段校验。
 - **文本宽度** `text_width_mm`：按字符类型（CJK / ASCII / 其他）估算，用于对齐计算。
+- **自动换行** `wrap_text`：元素设置 `wrap = true` 后，文本按元素宽度在字符边界折行，
+  保留显式换行并按元素高度裁剪，适合考生须知、备注等长文本。
 - **矩阵排版**：网格是连续栅格（无间距），`children` 复制到每个 `rows × cols` 单元格；
   `page_level` 元素每页只画一次（标题等）。
 - **照片解析** `resolve_photo(name, dir, exts)`：先按名称原样（含绝对路径）查找，

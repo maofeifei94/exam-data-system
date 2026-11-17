@@ -342,6 +342,8 @@ export interface TemplateElement {
   field: string;
   font_size: number;
   bold: boolean;
+  /** 文本超出元素宽度时自动换行 */
+  wrap?: boolean;
   align: 'left' | 'center' | 'right';
   color: string;
   fill: string;

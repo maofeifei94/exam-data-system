@@ -2583,6 +2583,16 @@ function ElementEditor({
             />
             加粗
           </label>
+          {element.type === 'text' || element.type === 'field' ? (
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={element.wrap ?? false}
+                onChange={(event) => onChange({ wrap: event.target.checked })}
+              />
+              自动换行（超出元素宽度时折行）
+            </label>
+          ) : null}
         </div>
       ) : null}
 

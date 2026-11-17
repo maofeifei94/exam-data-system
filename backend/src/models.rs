@@ -562,6 +562,9 @@ pub struct TemplateElement {
     pub font_size: f32,
     #[serde(default)]
     pub bold: bool,
+    /// type = "text" / "field" 时：超出元素宽度自动换行
+    #[serde(default)]
+    pub wrap: bool,
     #[serde(default = "default_align")]
     pub align: String,
     #[serde(default = "default_color")]
@@ -605,6 +608,7 @@ impl TemplateElement {
             field: String::new(),
             font_size: default_font_size(),
             bold: false,
+            wrap: false,
             align: default_align(),
             color: default_color(),
             fill: String::new(),

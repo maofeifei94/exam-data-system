@@ -408,6 +408,21 @@ pub fn catalog() -> Vec<OperatorDef> {
             ],
         ),
         def(
+            "loan_payment",
+            "等额本息月供",
+            "计算",
+            "按本金、年利率和期限计算等额本息月供、总利息与还款总额，适用于贷款台账与融资测算。",
+            vec![
+                p("principal", "本金字段", "column", true, json!("")),
+                with_help(p("annual_rate", "年利率", "number", true, json!(0.049)), "如 4.9% 填 0.049"),
+                p("years", "期限(年)", "number", true, json!(10)),
+                p("decimals", "保留小数位", "number", false, json!(2)),
+                p("payment_out", "月供字段名", "text", false, json!("月供")),
+                p("interest_out", "总利息字段名", "text", false, json!("总利息")),
+                p("total_out", "还款总额字段名", "text", false, json!("还款总额")),
+            ],
+        ),
+        def(
             "reconcile",
             "对账核对",
             "分析",
@@ -484,6 +499,21 @@ pub fn catalog() -> Vec<OperatorDef> {
                 with_help(p("min", "最小值", "number", false, json!(null)), "留空表示不限制下限"),
                 with_help(p("max", "最大值", "number", false, json!(null)), "留空表示不限制上限"),
                 with_options(p("on_error", "发现越界时", "enum", false, json!("fail")), &["fail", "warn"]),
+            ],
+        ),
+        def(
+            "sum_check",
+            "合计一致性校验",
+            "校验",
+            "校验合计字段是否等于各明细字段之和，例如总成绩与各科成绩、发票金额与明细合计。",
+            vec![
+                p("total", "合计字段", "column", true, json!("")),
+                p("parts", "明细字段", "columns", true, json!([])),
+                with_help(p("tolerance", "允许误差", "number", false, json!(0.01)), "绝对值不超过该误差视为一致"),
+                with_options(
+                    p("on_error", "不一致时", "enum", false, json!("fail")),
+                    &["fail", "warn"],
+                ),
             ],
         ),
         def(

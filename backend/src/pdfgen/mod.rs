@@ -175,19 +175,44 @@ fn find_seq(chars: &[char], from: usize, seq: &[char]) -> Option<usize> {
     None
 }
 
-fn text_width_mm(s: &str, size_pt: f32) -> f32 {
-    let mut units = 0.0f32;
-    for ch in s.chars() {
-        let c = ch as u32;
-        units += if c >= 0x2E80 {
-            1.0
-        } else if c < 0x80 {
-            0.53
-        } else {
-            0.85
-        };
-    }
+fn char_width_mm(ch: char, size_pt: f32) -> f32 {
+    let c = ch as u32;
+    let units = if c >= 0x2E80 {
+        1.0
+    } else if c < 0x80 {
+        0.53
+    } else {
+        0.85
+    };
     units * size_pt * MM_PER_PT
+}
+
+fn text_width_mm(s: &str, size_pt: f32) -> f32 {
+    s.chars().map(|ch| char_width_mm(ch, size_pt)).sum()
+}
+
+/// 按元素宽度把文本拆成多行：保留显式换行，超宽时在字符边界折行。
+fn wrap_text(text: &str, size_pt: f32, max_w: f32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for para in text.split('\n') {
+        if max_w <= 0.0 {
+            lines.push(para.to_string());
+            continue;
+        }
+        let mut line = String::new();
+        let mut width = 0.0f32;
+        for ch in para.chars() {
+            let w = char_width_mm(ch, size_pt);
+            if width + w > max_w && !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                width = 0.0;
+            }
+            line.push(ch);
+            width += w;
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 fn color_of(spec: &str) -> Option<Color> {
@@ -212,20 +237,39 @@ fn draw_text(
     }
     let fs_mm = el.font_size * MM_PER_PT;
     let (x0, w) = (origin.x + el.x_mm, el.w_mm.max(0.0));
-    let tw = text_width_mm(text, el.font_size);
-    let x = match el.align.as_str() {
-        "center" => x0 + (w - tw) / 2.0,
-        "right" => x0 + w - tw,
-        _ => x0,
-    };
-    let top_offset = ((el.h_mm - fs_mm) / 2.0).max(0.0);
-    let baseline = page_h - (origin.y_top + el.y_mm + top_offset + fs_mm * 0.80);
     layer.set_fill_color(color_of(&el.color).unwrap_or(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))));
-    layer.use_text(text, el.font_size, Mm(x), Mm(baseline), font);
-    if el.bold {
-        // 没有独立粗体字体，用微小偏移重绘模拟加粗
-        layer.use_text(text, el.font_size, Mm(x + 0.18), Mm(baseline), font);
+
+    let draw_line = |line: &str, top: f32| {
+        let tw = text_width_mm(line, el.font_size);
+        let x = match el.align.as_str() {
+            "center" => x0 + (w - tw) / 2.0,
+            "right" => x0 + w - tw,
+            _ => x0,
+        };
+        let baseline = page_h - (top + fs_mm * 0.80);
+        layer.use_text(line, el.font_size, Mm(x), Mm(baseline), font);
+        if el.bold {
+            // 没有独立粗体字体，用微小偏移重绘模拟加粗
+            layer.use_text(line, el.font_size, Mm(x + 0.18), Mm(baseline), font);
+        }
+    };
+
+    if el.wrap && w > 0.0 {
+        let lines = wrap_text(text, el.font_size, w);
+        let line_h = fs_mm * 1.35;
+        let bottom = origin.y_top + el.y_mm + el.h_mm.max(line_h);
+        for (index, line) in lines.iter().enumerate() {
+            let top = origin.y_top + el.y_mm + index as f32 * line_h;
+            if index > 0 && top + fs_mm > bottom + 0.01 {
+                break;
+            }
+            draw_line(line, top);
+        }
+        return;
     }
+
+    let top_offset = ((el.h_mm - fs_mm) / 2.0).max(0.0);
+    draw_line(text, origin.y_top + el.y_mm + top_offset);
 }
 
 fn draw_rect(layer: &PdfLayerReference, el: &TemplateElement, origin: &Origin, page_h: f32) {
@@ -1242,6 +1286,35 @@ mod tests {
         let rows = vec![vec!["2026001".into()]];
         let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
             .expect("render qr");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert!(pdf.len() > 1000);
+    }
+
+    #[test]
+    fn wrap_text_breaks_long_lines_and_keeps_explicit_newlines() {
+        let lines = wrap_text("考生须知考生须知", 10.0, 20.0);
+        assert!(lines.len() >= 2, "{lines:?}");
+        assert!(lines.iter().all(|line| text_width_mm(line, 10.0) <= 20.01));
+        assert_eq!(wrap_text("甲\n乙", 10.0, 100.0), vec!["甲", "乙"]);
+        assert_eq!(wrap_text("不限宽", 10.0, 0.0), vec!["不限宽"]);
+    }
+
+    #[test]
+    fn wrapped_text_element_renders_within_height() {
+        let cols = vec![DatasetColumn {
+            name: "须知".into(),
+            dtype: "text".into(),
+        }];
+        let mut body = TemplateBody::default();
+        let mut text = TemplateElement::empty("t", "text");
+        text.text = "{须知}".into();
+        text.w_mm = 20.0;
+        text.h_mm = 12.0;
+        text.wrap = true;
+        body.elements.push(text);
+        let rows = vec![vec!["考生须携带准考证和身份证按时入场".into()]];
+        let pdf = render_pdf_data(&cols, &rows, &body, "single", &RenderOpts::default())
+            .expect("render wrapped text");
         assert!(pdf.starts_with(b"%PDF"));
         assert!(pdf.len() > 1000);
     }

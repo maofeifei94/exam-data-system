@@ -398,6 +398,7 @@ impl<'a> Compiler<'a> {
             "percentage" => self.op_percentage(step_index, step, &params),
             "tax_calc" => self.op_tax_calc(step_index, step, &params),
             "budget_variance" => self.op_budget_variance(step_index, step, &params),
+            "loan_payment" => self.op_loan_payment(step_index, step, &params),
             "reconcile" => self.op_reconcile(step_index, step, &params),
             "depreciation" => self.op_depreciation(step_index, step, &params),
             "allocate" => self.op_allocate(step_index, step, &params),
@@ -408,6 +409,7 @@ impl<'a> Compiler<'a> {
             "range_check" => self.op_range_check(step_index, step, &params),
             "shuffle" => self.op_shuffle(step_index, step, &params),
             "assign_seats" => self.op_assign_seats(step_index, step, &params),
+            "sum_check" => self.op_sum_check(step_index, step, &params),
             "balance_check" => self.op_balance_check(step_index, step, &params),
             "split_column" => self.op_split_column(step_index, step, &params),
             "join_dataset" => self.op_join_dataset(step_index, step, &params),
@@ -1928,6 +1930,75 @@ impl<'a> Compiler<'a> {
         ))
     }
 
+    fn op_loan_payment(
+        &mut self,
+        i: i64,
+        step: &FlowStep,
+        p: &Value,
+    ) -> Result<RunLogEntry, String> {
+        let principal = str_param(p, "principal");
+        if !self.has_column(&principal) {
+            return Err(format!("字段 [{principal}] 不存在"));
+        }
+        let annual_rate =
+            f64_param(p, "annual_rate").ok_or_else(|| "年利率不能为空".to_string())?;
+        if !(0.0..=1.0).contains(&annual_rate) {
+            return Err("年利率应在 0~1 之间（如 4.9% 填 0.049）".to_string());
+        }
+        let years = num_param(p, "years").unwrap_or(10);
+        if years <= 0 {
+            return Err("期限必须大于 0 年".to_string());
+        }
+        let months = years * 12;
+        let decimals = num_param(p, "decimals").unwrap_or(2).max(0);
+        let payment_out = defaulted(str_param(p, "payment_out"), "月供");
+        let interest_out = defaulted(str_param(p, "interest_out"), "总利息");
+        let total_out = defaulted(str_param(p, "total_out"), "还款总额");
+        for out in [&payment_out, &interest_out, &total_out] {
+            if self.has_column(out) {
+                return Err(format!("字段 [{out}] 已存在"));
+            }
+        }
+        if payment_out == interest_out || payment_out == total_out || interest_out == total_out {
+            return Err("三个输出字段名不能相同".to_string());
+        }
+        let principal_expr = format!("CAST({} AS REAL)", q(&principal));
+        let raw_payment = if annual_rate == 0.0 {
+            format!("({principal_expr}) / {months}")
+        } else {
+            let rate = annual_rate / 12.0;
+            let growth = format!("power(1.0 + ({rate}), {months})");
+            format!("({principal_expr}) * ({rate}) * {growth} / ({growth} - 1.0)")
+        };
+        let payment = format!("ROUND({raw_payment}, {decimals})");
+        let total = format!("ROUND(({payment}) * {months}, {decimals})");
+        let interest = format!("ROUND(({total}) - ({principal_expr}), {decimals})");
+        let cte = self.push_cte(format!(
+            "SELECT *, {payment} AS {}, {interest} AS {}, {total} AS {} FROM {}",
+            q(&payment_out),
+            q(&interest_out),
+            q(&total_out),
+            self.cur
+        ));
+        for out in [&payment_out, &interest_out, &total_out] {
+            self.add_column(DatasetColumn {
+                name: out.clone(),
+                dtype: "number".to_string(),
+            });
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            Some(cte),
+            Some(format!(
+                "等额本息：{years} 年 · 年利率 {:.2}%",
+                annual_rate * 100.0
+            )),
+        ))
+    }
+
     fn op_reconcile(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
         let right_id = str_param(p, "dataset_id");
         if right_id.is_empty() {
@@ -2297,6 +2368,55 @@ impl<'a> Compiler<'a> {
                 format!("字段 {} 均无空值", cols.join("、"))
             } else {
                 format!("有 {bad} 行存在空值，已按警告继续")
+            }),
+        ))
+    }
+
+    fn op_sum_check(&mut self, i: i64, step: &FlowStep, p: &Value) -> Result<RunLogEntry, String> {
+        let total = str_param(p, "total");
+        let parts = list_param(p, "parts");
+        if total.is_empty() {
+            return Err("合计字段不能为空".to_string());
+        }
+        if parts.is_empty() {
+            return Err("明细字段不能为空".to_string());
+        }
+        for col in std::iter::once(&total).chain(parts.iter()) {
+            if !self.has_column(col) {
+                return Err(format!("字段 [{col}] 不存在"));
+            }
+        }
+        let tolerance = f64_param(p, "tolerance").unwrap_or(0.01).max(0.0);
+        let sum = parts
+            .iter()
+            .map(|c| format!("COALESCE(CAST({} AS REAL), 0)", q(c)))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let cond = format!(
+            "ABS(COALESCE(CAST({} AS REAL), 0) - ({sum})) > {tolerance}",
+            q(&total)
+        );
+        let sql = self.with_ctes(&format!("SELECT COUNT(*) FROM {} WHERE {cond}", self.cur));
+        let bad: i64 = self
+            .conn
+            .query_row(&sql, [], |r| r.get(0))
+            .map_err(|e| format!("合计一致性校验失败: {e}"))?;
+        if bad > 0 && str_param(p, "on_error") != "warn" {
+            return Err(format!(
+                "有 {bad} 行合计 [{total}] 与明细之和（{}）不一致",
+                parts.join(" + ")
+            ));
+        }
+        Ok(self.log_entry(
+            i,
+            step,
+            "ok",
+            self.count_current()?,
+            None,
+            Some(if bad == 0 {
+                format!("合计 [{total}] 与明细之和一致")
+            } else {
+                format!("有 {bad} 行合计不一致，已按警告继续")
             }),
         ))
     }
@@ -4533,6 +4653,34 @@ pub fn validate_steps_with(
                 next.push(status);
                 cols = next;
             }
+            "loan_payment" => {
+                let principal = str_param(&p, "principal");
+                if !cols.contains(&principal) {
+                    step_errors.push(format!("字段 [{principal}] 不存在"));
+                }
+                match f64_param(&p, "annual_rate") {
+                    Some(rate) if (0.0..=1.0).contains(&rate) => {}
+                    Some(_) => step_errors.push("年利率应在 0~1 之间（如 4.9% 填 0.049）".into()),
+                    None => step_errors.push("年利率不能为空".into()),
+                }
+                if num_param(&p, "years").unwrap_or(10) <= 0 {
+                    step_errors.push("期限必须大于 0 年".into());
+                }
+                let mut outs = Vec::new();
+                for (key, fallback) in [
+                    ("payment_out", "月供"),
+                    ("interest_out", "总利息"),
+                    ("total_out", "还款总额"),
+                ] {
+                    let name = defaulted(str_param(&p, key), fallback);
+                    if cols.contains(&name) || outs.contains(&name) {
+                        step_errors.push(format!("字段 [{name}] 已存在"));
+                    } else {
+                        outs.push(name);
+                    }
+                }
+                cols.extend(outs);
+            }
             "reconcile" => {
                 for (key, label) in [("left_key", "本方关键"), ("left_amount", "本方金额")]
                 {
@@ -4662,6 +4810,23 @@ pub fn validate_steps_with(
                 let c = str_param(&p, "column");
                 if !cols.contains(&c) {
                     step_errors.push(format!("字段 [{c}] 不存在"));
+                }
+            }
+            "sum_check" => {
+                let total = str_param(&p, "total");
+                let parts = list_param(&p, "parts");
+                if total.is_empty() {
+                    step_errors.push("合计字段不能为空".into());
+                } else if !cols.contains(&total) {
+                    step_errors.push(format!("字段 [{total}] 不存在"));
+                }
+                if parts.is_empty() {
+                    step_errors.push("明细字段不能为空".into());
+                }
+                for c in &parts {
+                    if !cols.contains(c) {
+                        step_errors.push(format!("字段 [{c}] 不存在"));
+                    }
                 }
             }
             "shuffle" => {
@@ -6148,5 +6313,56 @@ mod tests {
             .expect("read");
         assert_eq!(page.rows.len(), 3);
         assert!(page.rows.iter().all(|r| r[4] != json!("一致")));
+    }
+
+    #[test]
+    fn sum_check_validates_total_against_detail_columns() {
+        let (mut conn, ds_id) = setup_custom(
+            &[("语文", "number"), ("数学", "number"), ("总分", "number")],
+            &[vec!["80", "90", "170"], vec!["70", "90", "150"]],
+        );
+        let ok = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_sum_warn",
+            json!([{ "id": "s1", "operator": "sum_check",
+                     "params": { "total": "总分", "parts": ["语文", "数学"], "on_error": "warn" } }]),
+        );
+        assert_eq!(ok.status, "success", "{:?}", ok.message);
+
+        let failed = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_sum_fail",
+            json!([{ "id": "s1", "operator": "sum_check",
+                     "params": { "total": "总分", "parts": ["语文", "数学"], "on_error": "fail" } }]),
+        );
+        assert_eq!(failed.status, "failed");
+        assert!(failed.message.unwrap_or_default().contains("合计"));
+    }
+
+    #[test]
+    fn loan_payment_computes_equal_installment_amounts() {
+        let (mut conn, ds_id) = setup_custom(&[("本金", "number")], &[vec!["120000"]]);
+        let result = run_steps(
+            &mut conn,
+            &ds_id,
+            "f_loan",
+            json!([
+                { "id": "s1", "operator": "loan_payment",
+                  "params": { "principal": "本金", "annual_rate": 0.06, "years": 10 } },
+                { "id": "s2", "operator": "output", "params": { "name": "还款测算" } }
+            ]),
+        );
+        assert_eq!(result.status, "success", "{:?}", result.message);
+        let page = store::read_rows(&conn, result.output_dataset_id.as_deref().unwrap(), 0, 10)
+            .expect("read");
+        let expected = 120000.0 * 0.005 * 1.005f64.powi(120) / (1.005f64.powi(120) - 1.0);
+        let payment = page.rows[0][1].as_f64().unwrap();
+        assert!((payment - expected).abs() < 0.02, "{payment} vs {expected}");
+        let total = page.rows[0][3].as_f64().unwrap();
+        assert!((total - payment * 120.0).abs() < 0.05);
+        let interest = page.rows[0][2].as_f64().unwrap();
+        assert!((interest - (total - 120000.0)).abs() < 0.05);
     }
 }
