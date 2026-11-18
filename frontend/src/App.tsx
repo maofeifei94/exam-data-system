@@ -199,7 +199,15 @@ function MenuBar({
   const api = desktop();
   const { projects, currentProject, selectProject } = useProject();
   const { mode, toggle: toggleTheme } = useThemeMode();
-  const { tableCenter, tableBorder, setTableCenter, setTableBorder, reset } = useUiSettings();
+  const {
+    tableCenter,
+    tableBorder,
+    setTableCenter,
+    setTableBorder,
+    operatorDomains,
+    toggleOperatorDomain,
+    reset,
+  } = useUiSettings();
   const [open, setOpen] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
 
@@ -247,6 +255,19 @@ function MenuBar({
       {
         label: `${tableBorder ? '✓' : '　'} 显示表格边框`,
         onClick: () => setTableBorder(!tableBorder),
+      },
+      { separator: true, label: '' },
+      {
+        label: `${operatorDomains.includes('general') ? '✓' : '　'} 算子：基础通用`,
+        onClick: () => toggleOperatorDomain('general'),
+      },
+      {
+        label: `${operatorDomains.includes('exam') ? '✓' : '　'} 算子：考试专业`,
+        onClick: () => toggleOperatorDomain('exam'),
+      },
+      {
+        label: `${operatorDomains.includes('finance') ? '✓' : '　'} 算子：财务专业`,
+        onClick: () => toggleOperatorDomain('finance'),
       },
       { separator: true, label: '' },
       { label: '恢复默认外观', onClick: reset },

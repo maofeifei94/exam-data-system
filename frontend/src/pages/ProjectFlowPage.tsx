@@ -34,6 +34,8 @@ import { PdfPreviewDialog } from '../components/PdfPreviewDialog';
 import { Spinner } from '../components/Spinner';
 import { useToast } from '../components/Toast';
 import { useProject } from '../context/ProjectContext';
+import { useUiSettings, OPERATOR_DOMAIN_OPTIONS } from '../context/UiSettingsContext';
+import type { OperatorDomain } from '../context/UiSettingsContext';
 import { projectFieldsAsStandard } from '../lib/projectFields';
 import { TokenEditor } from '../components/TokenEditor';
 import {
@@ -412,6 +414,7 @@ function branchEdgePath(from: Point, to: Point): string {
 export default function ProjectFlowPage() {
   const { show } = useToast();
   const { currentProject, currentProjectId, patchCurrentProject, refresh } = useProject();
+  const { operatorDomains } = useUiSettings();
 
   const [operators, setOperators] = useState<OperatorDef[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -457,12 +460,14 @@ export default function ProjectFlowPage() {
   const operatorGroups = useMemo(() => {
     const groups = new Map<string, OperatorDef[]>();
     operators.forEach((op) => {
+      // 只展示「选项 → 算子领域」中勾选的领域，减少选择成本。
+      if (!operatorDomains.includes(op.domain as OperatorDomain)) return;
       const list = groups.get(op.group) ?? [];
       list.push(op);
       groups.set(op.group, list);
     });
     return [...groups.entries()];
-  }, [operators]);
+  }, [operators, operatorDomains]);
 
   const filteredOperatorGroups = useMemo(() => {
     const query = operatorQuery.trim().toLowerCase();
@@ -1169,6 +1174,13 @@ export default function ProjectFlowPage() {
             placeholder="搜索算子，如 排名、账龄、身份证"
             onChange={(event) => setOperatorQuery(event.target.value)}
           />
+          <p className="panel-hint palette-domains">
+            已启用：
+            {OPERATOR_DOMAIN_OPTIONS.filter((item) => operatorDomains.includes(item.value))
+              .map((item) => item.label)
+              .join(' / ')}
+            <span className="palette-domains-tip">（在顶部「选项」中调整）</span>
+          </p>
           <div className="palette">
             {filteredOperatorGroups.map(([group, list]) => (
               <div key={group} className="palette-group">

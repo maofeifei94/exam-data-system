@@ -225,6 +225,8 @@ export interface OperatorDef {
   type: string;
   label: string;
   group: string;
+  /** 算子领域：general（基础通用）/ exam（考试专业）/ finance（财务专业） */
+  domain: string;
   description: string;
   params: OperatorParam[];
 }

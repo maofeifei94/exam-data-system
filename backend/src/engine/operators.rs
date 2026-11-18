@@ -42,8 +42,58 @@ fn def(
         otype: otype.to_string(),
         label: label.to_string(),
         group: group.to_string(),
+        domain: domain_of(otype).to_string(),
         description: description.to_string(),
         params,
+    }
+}
+
+/// 算子领域分类：前端「选项 → 算子领域」据此过滤，避免算子面板过于冗长。
+///
+/// 未列出的新算子默认归入「基础通用」，保证新增算子始终可见。
+fn domain_of(otype: &str) -> &'static str {
+    match otype {
+        // 考试专业
+        "parse_id_card"
+        | "age_check"
+        | "zero_score_check"
+        | "score_balance_check"
+        | "recheck_diff"
+        | "room_capacity_check"
+        | "balance_classes"
+        | "score_scale"
+        | "assign_seats"
+        | "absence_flag"
+        | "exam_number"
+        | "grade_level"
+        | "standard_score"
+        | "score_summary"
+        | "attendance_stats"
+        | "score_segment" => "exam",
+        // 财务专业
+        "amount_upper"
+        | "depreciation"
+        | "allocate"
+        | "tax_calc"
+        | "budget_variance"
+        | "exchange_convert"
+        | "interest_accrual"
+        | "compound_interest"
+        | "loan_payment"
+        | "amount_unit"
+        | "balance_direction"
+        | "balance_rollforward"
+        | "bonus_tax"
+        | "income_tax"
+        | "reconcile"
+        | "invoice_validate"
+        | "tax_rate_check"
+        | "trial_balance_check"
+        | "voucher_check"
+        | "balance_check"
+        | "aging_bucket"
+        | "window_compare" => "finance",
+        _ => "general",
     }
 }
 
@@ -1298,4 +1348,30 @@ pub fn default_params(otype: &str) -> Value {
         }
     }
     Value::Object(obj)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_covers_all_three_domains() {
+        let catalog = catalog();
+        for domain in ["general", "exam", "finance"] {
+            assert!(
+                catalog.iter().any(|op| op.domain == domain),
+                "领域 {domain} 至少应包含一个算子"
+            );
+        }
+        assert!(catalog
+            .iter()
+            .all(|op| matches!(op.domain.as_str(), "general" | "exam" | "finance")));
+    }
+
+    #[test]
+    fn unknown_operators_default_to_general_domain() {
+        assert_eq!(domain_of("brand_new_operator"), "general");
+        assert_eq!(domain_of("grade_level"), "exam");
+        assert_eq!(domain_of("income_tax"), "finance");
+    }
 }

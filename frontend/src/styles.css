@@ -1480,6 +1480,17 @@ body {
   box-shadow: 0 0 0 3px var(--accent-soft, rgba(37, 99, 235, 0.12));
 }
 
+.palette-domains {
+  margin: -4px 0 8px;
+  font-size: 11px;
+}
+
+.palette-domains-tip {
+  margin-left: 2px;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
 .palette {
   display: flex;
   flex-direction: column;

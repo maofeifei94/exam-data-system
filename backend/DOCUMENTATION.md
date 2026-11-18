@@ -59,7 +59,7 @@ SQLite（WAL 模式）
 | `src/importer.rs` | `xlsx / xls / ods / csv / tsv` 解析，CSV 编码自动识别，表头切分与空行/空列清理。 |
 | `src/engine/mod.rs` | 流程引擎。把可编辑的操作符流程编译成一条 SQL（命名 CTE 串联）并执行、写运行日志；`preview_step` 提供不落库的节点数据预览。 |
 | `src/engine/expr.rs` | 面向用户的表达式编译器：`[字段]*0.6 + [面试成绩]*0.4` → 安全 SQL。 |
-| `src/engine/operators.rs` | 原子操作符目录（类型、标签、参数 schema、默认值），前端据此渲染参数表单。 |
+| `src/engine/operators.rs` | 原子操作符目录（类型、标签、分组、领域、参数 schema、默认值），前端据此渲染参数表单；领域分为 `general`（基础通用）、`exam`（考试专业）、`finance`（财务专业）。 |
 | `src/pdfgen/mod.rs` | PDF 渲染引擎：坐标系换算、占位符插值、矩阵网格排版、照片文件解析。 |
 | `src/auth.rs` | 登录认证与操作日志：加盐多轮 SHA-256 口令、会话 token、鉴权中间件、写操作自动审计。 |
 

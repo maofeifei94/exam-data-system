@@ -413,6 +413,8 @@ pub struct OperatorDef {
     pub otype: String,
     pub label: String,
     pub group: String,
+    /// 算子领域：general（基础通用）/ exam（考试专业）/ finance（财务专业）
+    pub domain: String,
     pub description: String,
     pub params: Vec<OperatorParam>,
 }

@@ -44,7 +44,7 @@ React 应用 src/main.tsx → App.tsx
 | `src/main.tsx` | React 挂载入口。 |
 | `src/App.tsx` | 应用外壳：登录门禁、顶栏菜单栏（含「选项」下拉）、项目切换工具条、左侧活动栏、编辑区、状态栏、窗口控制按钮；路由到 8 个页面（含操作日志）；5 秒轮询 `/api/health` 显示后端连接状态。 |
 | `src/theme.tsx` | 明暗主题上下文 `ThemeProvider` / `useThemeMode`，持久化到 localStorage，切换 `<html>` 上的主题属性。 |
-| `src/context/UiSettingsContext.tsx` | **外观选项**上下文 `UiSettingsProvider` / `useUiSettings`：`tableCenter`（表格内容居中，默认 true）、`tableBorder`（表格边框，默认 true）；持久化 `localStorage['exam.ui.settings.v1']`，解析失败回退默认值。 |
+| `src/context/UiSettingsContext.tsx` | **外观选项**上下文 `UiSettingsProvider` / `useUiSettings`：`tableCenter`（表格内容居中，默认 true）、`tableBorder`（表格边框，默认 true）、`operatorDomains`（启用算子领域，默认全部：基础通用 / 考试专业 / 财务专业，至少保留一个）；持久化 `localStorage['exam.ui.settings.v1']`，解析失败回退默认值。 |
 | `src/styles.css` | 全量样式（VS Code 风格的布局与组件视觉），颜色全部走 CSS 变量。 |
 | `src/context/ProjectContext.tsx` | 「当前考试项目」全局上下文：项目列表、当前选中项目、切换、刷新、局部更新。选中项持久化到 `localStorage`。 |
 | `src/context/AuthContext.tsx` | 登录态上下文：启动时用本地 token 获取当前用户，任意接口 401 时自动退回登录页；提供 `login` / `logout`。 |
